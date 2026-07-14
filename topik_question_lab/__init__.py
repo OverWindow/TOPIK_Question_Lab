@@ -1,0 +1,3 @@
+"""TOPIK blank-question generation lab."""
+
+__version__ = "0.1.0"

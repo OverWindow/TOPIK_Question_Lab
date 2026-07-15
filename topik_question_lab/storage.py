@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     analysis_guide TEXT NOT NULL,
     generation_count INTEGER NOT NULL,
     difficulty TEXT NOT NULL,
+    question_type TEXT NOT NULL DEFAULT 'grammar_blank',
+    prompt_mode TEXT NOT NULL DEFAULT 'standard',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -38,6 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
     prompt_system TEXT NOT NULL,
     prompt_user TEXT NOT NULL,
     result_json TEXT NOT NULL,
+    question_type TEXT NOT NULL DEFAULT 'grammar_blank',
+    prompt_mode TEXT NOT NULL DEFAULT 'standard',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS generated_questions (
@@ -67,6 +71,30 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._ensure_column(connection, "prompt_versions", "question_type", "TEXT NOT NULL DEFAULT 'grammar_blank'")
+            self._ensure_column(connection, "prompt_versions", "prompt_mode", "TEXT NOT NULL DEFAULT 'standard'")
+            self._ensure_column(connection, "runs", "question_type", "TEXT NOT NULL DEFAULT 'grammar_blank'")
+            self._ensure_column(connection, "runs", "prompt_mode", "TEXT NOT NULL DEFAULT 'standard'")
+
+    def delete_files(self) -> list[Path]:
+        """Delete this SQLite database and its transient sidecar files."""
+        deleted: list[Path] = []
+        for candidate in (
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+            Path(f"{self.path}-journal"),
+        ):
+            if candidate.exists():
+                candidate.unlink()
+                deleted.append(candidate)
+        return deleted
+
+    @staticmethod
+    def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -94,6 +122,13 @@ class Storage:
                     example.approved = current.approved
                     example.enrichment_model = current.enrichment_model
                     example.enrichment_confidence = current.enrichment_confidence
+                    example.question_type = current.question_type or example.question_type
+                    example.highlight_text = current.highlight_text or example.highlight_text
+                    example.passage = current.passage or example.passage
+                    example.question_prompt = current.question_prompt or example.question_prompt
+                    example.auxiliary_text = current.auxiliary_text or example.auxiliary_text
+                    example.set_key = current.set_key or example.set_key
+                    example.parse_warning = current.parse_warning or example.parse_warning
                 else:
                     inserted += 1
                 connection.execute(
@@ -126,6 +161,22 @@ class Storage:
                      updated_at=CURRENT_TIMESTAMP""",
                 (example.source_key, example.source_exam, example.question_number, example.model_dump_json()),
             )
+            if example.set_key and example.passage:
+                rows = connection.execute("SELECT source_key, data_json FROM examples").fetchall()
+                for row in rows:
+                    sibling = QuestionExample.model_validate_json(row["data_json"])
+                    if sibling.source_key == example.source_key or sibling.set_key != example.set_key:
+                        continue
+                    sibling.passage = example.passage
+                    sibling.stem = "\n".join(
+                        value.strip()
+                        for value in (sibling.auxiliary_text, sibling.passage, sibling.question_prompt)
+                        if value.strip()
+                    )
+                    connection.execute(
+                        "UPDATE examples SET data_json = ?, updated_at = CURRENT_TIMESTAMP WHERE source_key = ?",
+                        (sibling.model_dump_json(), sibling.source_key),
+                    )
 
     def get_setting(self, key: str, default: str = "") -> str:
         with self.connect() as connection:
@@ -140,12 +191,21 @@ class Storage:
                 (key, value),
             )
 
-    def save_prompt_version(self, system_prompt: str, analysis_guide: str, generation_count: int, difficulty: str) -> int:
+    def save_prompt_version(
+        self,
+        system_prompt: str,
+        analysis_guide: str,
+        generation_count: int,
+        difficulty: str,
+        question_type: str = "grammar_blank",
+        prompt_mode: str = "standard",
+    ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                """INSERT INTO prompt_versions(system_prompt, analysis_guide, generation_count, difficulty)
-                   VALUES (?, ?, ?, ?)""",
-                (system_prompt, analysis_guide, generation_count, difficulty),
+                """INSERT INTO prompt_versions(
+                       system_prompt, analysis_guide, generation_count, difficulty, question_type, prompt_mode
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (system_prompt, analysis_guide, generation_count, difficulty, question_type, prompt_mode),
             )
             return int(cursor.lastrowid)
 
@@ -153,12 +213,29 @@ class Storage:
         with self.connect() as connection:
             return [dict(row) for row in connection.execute("SELECT * FROM prompt_versions ORDER BY id DESC").fetchall()]
 
-    def save_run(self, result: ProviderResult, system_prompt: str, user_prompt: str) -> int:
+    def save_run(
+        self,
+        result: ProviderResult,
+        system_prompt: str,
+        user_prompt: str,
+        question_type: str = "grammar_blank",
+        prompt_mode: str = "standard",
+    ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                """INSERT INTO runs(provider, model, operation, prompt_system, prompt_user, result_json)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (result.provider, result.model, result.operation, system_prompt, user_prompt, result.model_dump_json()),
+                """INSERT INTO runs(
+                       provider, model, operation, prompt_system, prompt_user, result_json, question_type, prompt_mode
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    result.provider,
+                    result.model,
+                    result.operation,
+                    system_prompt,
+                    user_prompt,
+                    result.model_dump_json(),
+                    question_type,
+                    prompt_mode,
+                ),
             )
             return int(cursor.lastrowid)
 
@@ -205,6 +282,42 @@ class Storage:
                 "UPDATE generated_questions SET edited_json = ? WHERE id = ?",
                 (json.dumps(data, ensure_ascii=False), question_id),
             )
+
+    def sync_generated_set_passage(self, question_id: int, set_id: str, passage: str) -> list[int]:
+        """Keep a generated shared passage aligned within the same model run."""
+        if not set_id.strip() or not passage.strip():
+            return []
+        updated_ids: list[int] = []
+        with self.connect() as connection:
+            target = connection.execute(
+                "SELECT run_id FROM generated_questions WHERE id = ?", (question_id,)
+            ).fetchone()
+            if target is None:
+                return updated_ids
+            rows = connection.execute(
+                "SELECT id, data_json, edited_json FROM generated_questions WHERE run_id = ?",
+                (target["run_id"],),
+            ).fetchall()
+            for row in rows:
+                data = json.loads(row["edited_json"] or row["data_json"])
+                if row["id"] == question_id or data.get("set_id") != set_id:
+                    continue
+                data["passage"] = passage
+                data["stem"] = "\n".join(
+                    value.strip()
+                    for value in (
+                        data.get("auxiliary_text", ""),
+                        passage,
+                        data.get("question_prompt", ""),
+                    )
+                    if value.strip()
+                )
+                connection.execute(
+                    "UPDATE generated_questions SET edited_json = ? WHERE id = ?",
+                    (json.dumps(data, ensure_ascii=False), row["id"]),
+                )
+                updated_ids.append(int(row["id"]))
+        return updated_ids
 
     def save_validation(self, question_id: int, issues: list[dict]) -> None:
         with self.connect() as connection:

@@ -17,7 +17,7 @@ CHATKHU_WEB_URL = os.getenv("CHATKHU_WEB_URL", "https://chat.khu.ac.kr")
 
 @dataclass(frozen=True)
 class ProviderConfig:
-    name: ProviderName
+    name: str
     label: str
     model: str
     gateway_supported: bool = True
@@ -26,8 +26,14 @@ class ProviderConfig:
 # These are initial suggestions only. The models enabled for ChatKHU can differ by
 # account, so the UI can fetch and display the tenant's actual model list.
 DEFAULT_PROVIDERS = {
+    "gpt_5_6_luna": ProviderConfig("gpt_5_6_luna", "GPT-5.6 Luna", "gpt-5.6-luna"),
     "gpt_5_3_chat": ProviderConfig("gpt_5_3_chat", "GPT 5.3 Chat", "gpt-5.3-chat-latest"),
     "claude": ProviderConfig("claude", "Claude Haiku 4.5", "claude-haiku-4-5-20251001"),
+    "gemini_3_5_flash": ProviderConfig(
+        "gemini_3_5_flash",
+        "Gemini 3.5 Flash",
+        "gemini-3.5-flash",
+    ),
     "gemini": ProviderConfig("gemini", "Gemini 3.1 Flash Lite", "gemini-3.1-flash-lite"),
     "k_exaone": ProviderConfig("k_exaone", "K-EXAONE", "LGAI-EXAONE/K-EXAONE-236B-A23B"),
     "solar_pro3": ProviderConfig("solar_pro3", "Solar Pro 3", "solar-pro3"),
@@ -39,6 +45,12 @@ DEFAULT_PROVIDERS = {
     "gemma": ProviderConfig("gemma", "Gemma 3 27B", "google/gemma-3-27b-it"),
     "gpt_5_4_nano": ProviderConfig("gpt_5_4_nano", "GPT-5.4 Nano", "gpt-5.4-nano"),
 }
+
+DEFAULT_ACTIVE_PROVIDERS = [
+    "gpt_5_6_luna",
+    "claude",
+    "gemini_3_5_flash",
+]
 
 LEGACY_PROVIDER_LABELS = {
     "gpt_5_1": "GPT 5.1 (기존 기록)",
@@ -59,7 +71,7 @@ def has_api_key(provider: ProviderName) -> bool:
 
 def can_gateway_call(provider: ProviderName) -> bool:
     config = DEFAULT_PROVIDERS.get(provider)
-    return bool(has_chatkhu_api_key() and config and config.gateway_supported)
+    return bool(has_chatkhu_api_key() and (config is None or config.gateway_supported))
 
 
 def provider_label(provider: str) -> str:

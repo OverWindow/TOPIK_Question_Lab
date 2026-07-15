@@ -6,21 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-ProviderName = Literal[
-    "gpt_5_3_chat",
-    "claude",
-    "gemini",
-    "k_exaone",
-    "solar_pro3",
-    "llama",
-    "gemma",
-    "gpt_5_4_nano",
-    # Legacy provider IDs remain valid so saved runs can still be loaded.
-    "gpt_5_1",
-    "gpt_5_2",
-    "openai",
-    "deepseek",
-]
+ProviderName = str
 
 
 def utc_now() -> str:
@@ -40,6 +26,13 @@ class QuestionExample(BaseModel):
     raw_text: str = ""
     enrichment_model: str = ""
     enrichment_confidence: float | None = Field(default=None, ge=0, le=1)
+    question_type: str = "grammar_blank"
+    highlight_text: str = ""
+    passage: str = ""
+    question_prompt: str = ""
+    auxiliary_text: str = ""
+    set_key: str = ""
+    parse_warning: str = ""
 
     @property
     def source_key(self) -> str:
@@ -56,13 +49,19 @@ class TypeAnalysis(BaseModel):
 
 
 class GeneratedQuestion(BaseModel):
-    type_slot: int = Field(ge=1, le=2)
+    type_slot: int = Field(ge=1, le=50)
     stem: str
     choices: list[str] = Field(min_length=4, max_length=4)
     answer: int = Field(ge=1, le=4)
     explanation: str
     target_grammar: str
     difficulty: str = "TOPIK II 읽기 초반"
+    question_type: str = "grammar_blank"
+    highlight_text: str = ""
+    passage: str = ""
+    question_prompt: str = ""
+    auxiliary_text: str = ""
+    set_id: str = ""
 
     @field_validator("stem")
     @classmethod

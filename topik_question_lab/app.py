@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -16,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 from topik_question_lab.exports import approved_items, to_csv, to_json, to_txt
+from topik_question_lab.highlights import (
+    has_valid_highlight,
+    highlighted_html,
+    parse_highlight_marker,
+    stem_with_highlight_marker,
+)
 from topik_question_lab.models import (
     AnalysisPayload,
     EnrichmentPayload,
@@ -24,18 +32,26 @@ from topik_question_lab.models import (
     QuestionExample,
     Review,
 )
+from topik_question_lab.navigation import next_sequence_item
 from topik_question_lab.parser import scan_extracted_text
 from topik_question_lab.prompts import (
-    DEFAULT_ANALYSIS_GUIDE,
     DEFAULT_SYSTEM_PROMPT,
     ENRICHMENT_SYSTEM_PROMPT,
     build_analysis_prompt,
     build_enrichment_prompt,
     build_generation_prompt,
 )
+from topik_question_lab.prompt_profiles import (
+    DEFAULT_PROVIDER_INSTRUCTIONS,
+    QUESTION_TYPE_PROFILES,
+    apply_provider_instruction,
+    default_analysis_guide,
+    question_type_profile,
+)
 from topik_question_lab.providers import (
     CHATKHU_BASE_URL,
     CHATKHU_WEB_URL,
+    DEFAULT_ACTIVE_PROVIDERS,
     DEFAULT_PROVIDERS,
     can_gateway_call,
     call_provider,
@@ -50,7 +66,8 @@ from topik_question_lab.validation import validate_generation_payload, validate_
 
 
 DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "topik_lab.db"
+LEGACY_DB_PATH = DATA_DIR / "topik_lab.db"
+TYPE_DB_DIR = DATA_DIR / "types"
 EXTRACTED_DIR = ROOT / "extracted_text"
 
 st.set_page_config(page_title="TOPIK Question Lab", page_icon="문", layout="wide")
@@ -71,24 +88,62 @@ st.markdown(
 
 
 @st.cache_resource
-def get_storage() -> Storage:
-    return Storage(DB_PATH)
+def get_storage(type_id: str) -> Storage:
+    TYPE_DB_DIR.mkdir(parents=True, exist_ok=True)
+    type_path = TYPE_DB_DIR / f"{type_id}.db"
+    deletion_marker = TYPE_DB_DIR / f".{type_id}.deleted"
+    if (
+        type_id == "grammar_blank"
+        and not type_path.exists()
+        and LEGACY_DB_PATH.exists()
+        and not deletion_marker.exists()
+    ):
+        shutil.copy2(LEGACY_DB_PATH, type_path)
+    return Storage(type_path)
 
 
-storage = get_storage()
+st.sidebar.title("TOPIK Question Lab")
+implemented_type_ids = [
+    type_id for type_id, profile in QUESTION_TYPE_PROFILES.items() if profile.implemented
+]
+pending_type = st.session_state.pop("_selected_type_after_delete", "")
+if pending_type in implemented_type_ids:
+    st.session_state["selected-question-type"] = pending_type
+selected_type_id = st.sidebar.selectbox(
+    "문제 유형",
+    implemented_type_ids,
+    format_func=lambda value: (
+        f"{question_type_profile(value).number_range} · {question_type_profile(value).label}"
+    ),
+    key="selected-question-type",
+)
+selected_type_profile = question_type_profile(selected_type_id)
+storage = get_storage(selected_type_id)
+st.sidebar.caption(f"유형 DB · {selected_type_id}.db")
+if "_database_delete_notice" in st.session_state:
+    st.sidebar.success(st.session_state.pop("_database_delete_notice"))
 
 
 def initialize_data() -> None:
     if not storage.list_examples() and EXTRACTED_DIR.exists():
-        storage.upsert_examples(scan_extracted_text(EXTRACTED_DIR))
+        storage.upsert_examples(
+            scan_extracted_text(
+                EXTRACTED_DIR,
+                selected_type_profile.question_numbers,
+                selected_type_id,
+            )
+        )
     if not storage.get_setting("system_prompt"):
         storage.set_setting("system_prompt", DEFAULT_SYSTEM_PROMPT)
     if not storage.get_setting("analysis_guide"):
-        storage.set_setting("analysis_guide", DEFAULT_ANALYSIS_GUIDE)
+        storage.set_setting("analysis_guide", default_analysis_guide(selected_type_id))
     if not storage.get_setting("generation_count"):
-        storage.set_setting("generation_count", "10")
+        storage.set_setting("generation_count", str(len(selected_type_profile.question_numbers)))
     if not storage.get_setting("difficulty"):
         storage.set_setting("difficulty", "TOPIK II 읽기 초반 수준")
+    if not storage.get_setting("prompt_mode"):
+        storage.set_setting("prompt_mode", "optimized")
+    storage.set_setting("question_type", selected_type_id)
     model_migrations = {
         "gemini": {"", "gemini-2.5-flash"},
         "k_exaone": {"", "K-EXAONE"},
@@ -102,29 +157,115 @@ def initialize_data() -> None:
 initialize_data()
 
 
+def active_provider_ids() -> list[str]:
+    raw = storage.get_setting("active_providers", "")
+    try:
+        saved = json.loads(raw) if raw else DEFAULT_ACTIVE_PROVIDERS
+    except json.JSONDecodeError:
+        saved = DEFAULT_ACTIVE_PROVIDERS
+    active = [str(provider).strip() for provider in saved if str(provider).strip()]
+    return active or list(DEFAULT_ACTIVE_PROVIDERS)
+
+
 def model_for(provider: str) -> str:
-    config = DEFAULT_PROVIDERS[provider]
-    saved_model = storage.get_setting(f"model_{provider}", config.model).strip()
-    return saved_model or config.model
+    config = DEFAULT_PROVIDERS.get(provider)
+    default_model = config.model if config else provider
+    saved_model = storage.get_setting(f"model_{provider}", default_model).strip()
+    return saved_model or default_model
 
 
-def prompts_for(operation: str) -> tuple[str, str]:
+def default_instruction_for(provider: str) -> str:
+    if provider in DEFAULT_PROVIDER_INSTRUCTIONS:
+        return DEFAULT_PROVIDER_INSTRUCTIONS[provider]
+    model = model_for(provider).lower()
+    family_keys = (
+        ("gpt-5.6", "gpt_5_6_luna"),
+        ("gpt", "gpt_5_3_chat"),
+        ("claude", "claude"),
+        ("gemini-3.5", "gemini_3_5_flash"),
+        ("gemini", "gemini"),
+        ("exaone", "k_exaone"),
+        ("solar", "solar_pro3"),
+        ("llama", "llama"),
+        ("gemma", "gemma"),
+    )
+    for marker, instruction_key in family_keys:
+        if marker in model:
+            return DEFAULT_PROVIDER_INSTRUCTIONS[instruction_key]
+    return "요청된 JSON 구조와 문항 수를 정확히 지키고 JSON 바깥의 설명은 출력하지 마십시오."
+
+
+def provider_instruction(provider: str) -> str:
+    return storage.get_setting(
+        f"provider_instruction_{provider}",
+        default_instruction_for(provider),
+    )
+
+
+def optimize_prompts(system_prompt: str, user_prompt: str, provider: str | None) -> tuple[str, str]:
+    return apply_provider_instruction(
+        system_prompt,
+        user_prompt,
+        provider,
+        optimized=storage.get_setting("prompt_mode", "optimized") == "optimized",
+        instruction=provider_instruction(provider) if provider else "",
+    )
+
+
+def prompts_for(operation: str, provider: str | None = None) -> tuple[str, str]:
     examples = storage.list_examples(approved_only=True)
     system_prompt = storage.get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT)
+    type_id = storage.get_setting("question_type", "grammar_blank")
     if operation == "analysis":
-        user_prompt = build_analysis_prompt(examples)
+        user_prompt = build_analysis_prompt(examples, type_id)
     else:
         user_prompt = build_generation_prompt(
             examples,
-            storage.get_setting("analysis_guide", DEFAULT_ANALYSIS_GUIDE),
-            int(storage.get_setting("generation_count", "10")),
+            storage.get_setting("analysis_guide", default_analysis_guide(selected_type_id)),
+            int(storage.get_setting("generation_count", "2")),
             storage.get_setting("difficulty", "TOPIK II 읽기 초반 수준"),
+            type_id,
         )
-    return system_prompt, user_prompt
+    return optimize_prompts(system_prompt, user_prompt, provider)
+
+
+def enrichment_prompts_for(examples: list[QuestionExample], provider: str) -> tuple[str, str]:
+    type_id = storage.get_setting("question_type", "grammar_blank")
+    return optimize_prompts(
+        ENRICHMENT_SYSTEM_PROMPT,
+        build_enrichment_prompt(examples, type_id),
+        provider,
+    )
+
+
+def has_complete_structure(example: QuestionExample) -> bool:
+    if any(not choice.strip() for choice in example.choices):
+        return False
+    profile = question_type_profile(example.question_type)
+    if profile.content_mode == "single_sentence":
+        return bool(example.stem.strip())
+    if not example.passage.strip():
+        return False
+    if profile.content_mode == "sentence_insertion":
+        if not example.auxiliary_text.strip():
+            return False
+        if any(marker not in example.passage for marker in ("(①)", "(②)", "(③)", "(④)")):
+            return False
+    return True
+
+
+def compose_structured_stem(passage: str, question_prompt: str, auxiliary_text: str) -> str:
+    return "\n".join(value.strip() for value in (auxiliary_text, passage, question_prompt) if value.strip())
 
 
 def save_provider_result(result: ProviderResult, system_prompt: str, user_prompt: str) -> tuple[bool, str]:
-    run_id = storage.save_run(result, system_prompt, user_prompt)
+    run_id = storage.save_run(
+        result,
+        system_prompt,
+        user_prompt,
+        storage.get_setting("question_type", "grammar_blank"),
+        storage.get_setting("prompt_mode", "optimized"),
+    )
     if result.error or result.parsed_json is None:
         return False, result.error or "JSON 응답이 없습니다."
     try:
@@ -158,6 +299,7 @@ def save_provider_result(result: ProviderResult, system_prompt: str, user_prompt
                 result.parsed_json,
                 storage.list_examples(approved_only=True),
                 existing_generated_stems=existing_stems,
+                question_type=selected_type_id,
             )
             storage.add_generated_questions(
                 run_id,
@@ -166,7 +308,7 @@ def save_provider_result(result: ProviderResult, system_prompt: str, user_prompt
                 [question.model_dump() for question in questions],
                 [[issue.model_dump() for issue in issues] for issues in issue_groups],
             )
-            expected = int(storage.get_setting("generation_count", "10"))
+            expected = int(storage.get_setting("generation_count", "2"))
             if len(questions) != expected:
                 return True, f"저장했지만 요청한 {expected}개 대신 {len(questions)}개가 생성되었습니다."
     except (ValidationError, ValueError, TypeError) as exc:
@@ -174,7 +316,128 @@ def save_provider_result(result: ProviderResult, system_prompt: str, user_prompt
     return True, "결과를 저장했습니다."
 
 
-st.sidebar.title("TOPIK Question Lab")
+def available_provider_options() -> list[str]:
+    try:
+        synced_models = json.loads(storage.get_setting("chatkhu_models", "[]"))
+    except json.JSONDecodeError:
+        synced_models = []
+    known_models = {config.model: provider for provider, config in DEFAULT_PROVIDERS.items()}
+    options = list(DEFAULT_PROVIDERS)
+    for model_id in [*synced_models, *active_provider_ids()]:
+        option = known_models.get(model_id, model_id)
+        if isinstance(option, str) and option.strip() and option not in options:
+            options.append(option)
+    return options
+
+
+@st.dialog("ChatKHU 모델 선택", width="large")
+def show_model_picker() -> None:
+    st.caption("현재 문제 유형에서 비교할 모델을 고릅니다. 선택 결과는 이 유형 DB에만 저장됩니다.")
+    if has_chatkhu_api_key():
+        if st.button("ChatKHU 전체 모델 동기화", icon=":material/sync:", use_container_width=True):
+            try:
+                models = list_chatkhu_models()
+                storage.set_setting("chatkhu_models", json.dumps(models, ensure_ascii=False))
+                st.success(f"허용 모델 {len(models)}개를 불러왔습니다.")
+            except Exception as exc:
+                st.error(f"모델 목록 조회 실패: {exc}")
+    else:
+        st.info("API 키가 없으면 아래 직접 추가란에 ChatKHU 웹의 모델 ID를 입력할 수 있습니다.")
+
+    options = available_provider_options()
+    picker_key = f"model-picker-values-{selected_type_id}"
+    action_all, action_clear = st.columns(2)
+    if action_all.button("전체 선택", icon=":material/select_all:", use_container_width=True):
+        st.session_state[picker_key] = options
+    if action_clear.button("선택 해제", icon=":material/deselect:", use_container_width=True):
+        st.session_state[picker_key] = []
+    selected = st.multiselect(
+        "사용할 모델",
+        options,
+        default=[provider for provider in active_provider_ids() if provider in options],
+        format_func=provider_label,
+        key=picker_key,
+        help="입력란에서 모델 이름이나 ID를 검색할 수 있습니다.",
+    )
+    custom_ids = st.text_area(
+        "목록에 없는 모델 ID 직접 추가",
+        placeholder="모델 ID를 줄바꿈 또는 쉼표로 구분",
+        height=90,
+    )
+    custom = [value.strip() for value in re.split(r"[,\n]", custom_ids) if value.strip()]
+    final_selection = list(dict.fromkeys([*selected, *custom]))
+    if st.button(
+        "선택 모델 적용",
+        type="primary",
+        icon=":material/check:",
+        use_container_width=True,
+        disabled=not final_selection,
+    ):
+        storage.set_setting("active_providers", json.dumps(final_selection, ensure_ascii=False))
+        st.rerun()
+
+
+@st.dialog("유형 데이터베이스 삭제")
+def show_database_manager() -> None:
+    existing_type_ids = [
+        type_id for type_id in implemented_type_ids if (TYPE_DB_DIR / f"{type_id}.db").exists()
+    ]
+    if not existing_type_ids:
+        st.info("삭제할 유형 데이터베이스가 없습니다.")
+        return
+
+    target_type = st.selectbox(
+        "삭제할 유형 DB",
+        existing_type_ids,
+        index=existing_type_ids.index(selected_type_id) if selected_type_id in existing_type_ids else 0,
+        format_func=lambda value: (
+            f"{question_type_profile(value).number_range} · "
+            f"{question_type_profile(value).label} · {value}.db"
+        ),
+        key="delete-database-target",
+    )
+    target_path = TYPE_DB_DIR / f"{target_type}.db"
+    size_kb = target_path.stat().st_size / 1024 if target_path.exists() else 0
+    st.caption(f"삭제 파일 · {target_path.name} · {size_kb:,.1f} KB")
+    st.warning(
+        "이 DB에 저장된 승인, 유형 분석서, 프롬프트 버전, 모델 실행 결과와 평가는 모두 삭제됩니다. "
+        "extracted_text 원문은 삭제하지 않으며, 이 유형을 다시 열면 새 DB에 원문 문제가 재수집됩니다."
+    )
+    confirmed = st.checkbox("삭제 결과를 이해했으며 이 유형 DB를 삭제합니다.")
+    typed_type = st.text_input(
+        "확인을 위해 유형 ID 입력",
+        placeholder=target_type,
+        key="delete-database-confirmation",
+    )
+    if st.button(
+        "유형 DB 영구 삭제",
+        type="primary",
+        icon=":material/delete_forever:",
+        use_container_width=True,
+        disabled=not confirmed or typed_type.strip() != target_type,
+    ):
+        target_storage = get_storage(target_type)
+        deleted = target_storage.delete_files()
+        (TYPE_DB_DIR / f".{target_type}.deleted").touch()
+        get_storage.clear()
+        st.session_state["_database_delete_notice"] = (
+            f"{target_type}.db를 삭제했습니다. 제거 파일 {len(deleted)}개"
+        )
+        if target_type == selected_type_id:
+            st.session_state["_selected_type_after_delete"] = next(
+                type_id for type_id in implemented_type_ids if type_id != target_type
+            )
+        st.rerun()
+
+
+active_providers = active_provider_ids()
+if st.sidebar.button("모델 선택", icon=":material/tune:", use_container_width=True):
+    show_model_picker()
+st.sidebar.caption(f"이 유형의 비교 대상 · {len(active_providers)}개")
+if st.sidebar.button("유형 DB 관리", icon=":material/database:", use_container_width=True):
+    show_database_manager()
+
+
 stage = st.sidebar.radio(
     "작업 단계",
     ["1. 기출 데이터", "2. 유형 분석", "3. 프롬프트 작업실", "4. 문제 생성", "5. 검수·비교", "6. 내보내기"],
@@ -186,36 +449,61 @@ gateway_status = "Gateway 연결" if has_chatkhu_api_key() else "웹 수동 모�
 gateway_class = "status-ok" if has_chatkhu_api_key() else "status-warn"
 st.sidebar.markdown(f"**ChatKHU** · <span class='{gateway_class}'>{gateway_status}</span>", unsafe_allow_html=True)
 st.sidebar.link_button("ChatKHU 열기", CHATKHU_WEB_URL, use_container_width=True)
-st.sidebar.caption("비교 모델")
-for provider, config in DEFAULT_PROVIDERS.items():
-    mode = "웹 전용" if not config.gateway_supported else model_for(provider)
-    st.sidebar.write(f"{config.label} · {mode}")
+st.sidebar.caption("선택된 비교 모델")
+for provider in active_providers:
+    config = DEFAULT_PROVIDERS.get(provider)
+    mode = "웹 전용" if config and not config.gateway_supported else model_for(provider)
+    st.sidebar.write(f"{provider_label(provider)} · {mode}")
 
 
 if stage == "1. 기출 데이터":
     st.title("기출 데이터")
-    st.caption("원문에서 1·2번을 구조화하고, 검토가 끝난 예시만 모델에 제공합니다.")
+    st.caption(
+        f"{selected_type_profile.number_range} {selected_type_profile.label}만 이 유형 DB에 수집합니다. "
+        "검토가 끝난 예시만 모델에 제공합니다."
+    )
 
     if "enrichment_message" in st.session_state:
         st.success(st.session_state.pop("enrichment_message"))
+    if "source_review_message" in st.session_state:
+        st.success(st.session_state.pop("source_review_message"))
 
     examples = storage.list_examples()
     approved_count = sum(example.approved for example in examples)
+    highlight_needed = [
+        example
+        for example in examples
+        if selected_type_id == "similar_expression" and not has_valid_highlight(example)
+    ]
+    structure_needed = [example for example in examples if not has_complete_structure(example)]
     enrichment_needed = [
         example
         for example in examples
         if example.answer is None or not example.grammar_point.strip() or not example.rationale.strip()
+        if example not in structure_needed
+        if selected_type_id != "similar_expression" or has_valid_highlight(example)
     ]
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("수집 문제", len(examples))
-    col2.metric("승인 문제", approved_count)
-    col3.metric("시험 회차", len({example.source_exam for example in examples}))
-    col4.metric("AI 보완 필요", len(enrichment_needed))
+    metric_values = [
+        ("수집 문제", len(examples)),
+        ("승인 문제", approved_count),
+        ("시험 회차", len({example.source_exam for example in examples})),
+        ("구조 확인 필요", len(structure_needed)),
+        ("AI 보완 필요", len(enrichment_needed)),
+    ]
+    if selected_type_id == "similar_expression":
+        metric_values.append(("밑줄 지정 필요", len(highlight_needed)))
+    metric_columns = st.columns(len(metric_values))
+    for column, (label, value) in zip(metric_columns, metric_values):
+        column.metric(label, value)
 
     action1, action2 = st.columns(2)
     if action1.button("텍스트 다시 스캔", use_container_width=True):
         try:
-            parsed = scan_extracted_text(EXTRACTED_DIR)
+            parsed = scan_extracted_text(
+                EXTRACTED_DIR,
+                selected_type_profile.question_numbers,
+                selected_type_id,
+            )
             inserted = storage.upsert_examples(parsed)
             st.success(f"{len(parsed)}개를 확인했고 새 문제 {inserted}개를 추가했습니다.")
             st.rerun()
@@ -230,7 +518,11 @@ if stage == "1. 기출 데이터":
                 text=True,
                 check=True,
             )
-            parsed = scan_extracted_text(EXTRACTED_DIR)
+            parsed = scan_extracted_text(
+                EXTRACTED_DIR,
+                selected_type_profile.question_numbers,
+                selected_type_id,
+            )
             inserted = storage.upsert_examples(parsed)
             st.success(f"변환 완료. {len(parsed)}개를 확인하고 새 문제 {inserted}개를 추가했습니다.")
             with st.expander("변환 로그"):
@@ -239,20 +531,32 @@ if stage == "1. 기출 데이터":
         except Exception as exc:
             st.error(f"변환 실패: {exc}")
 
+    if highlight_needed:
+        st.warning(
+            f"{len(highlight_needed)}개 문제는 원문에서 밑줄 위치가 추출되지 않았습니다. "
+            "먼저 아래 검토 화면에서 밑줄을 지정해야 AI 정답 보완에 포함됩니다."
+        )
+
+    if structure_needed:
+        st.warning(
+            f"{len(structure_needed)}개 문제는 보기 또는 지문 구조를 완전히 구분하지 못했습니다. "
+            "추출 원문을 보면서 지문과 보기 4개를 수정하세요."
+        )
+
     if enrichment_needed:
         with st.expander(f"AI로 누락 정보 보완 · {len(enrichment_needed)}개", expanded=True):
             st.caption("한 모델에 보완이 필요한 문제만 한 번 요청합니다. 결과는 제안 상태로 저장되며 자동 승인되지 않습니다.")
-            provider_keys = list(DEFAULT_PROVIDERS)
+            provider_keys = active_providers
             default_provider = provider_keys.index("k_exaone") if "k_exaone" in provider_keys else 0
             enrichment_provider = st.selectbox(
                 "보완 모델",
                 provider_keys,
                 index=default_provider,
                 format_func=provider_label,
-                key="enrichment-provider",
+                key=f"enrichment-provider-{selected_type_id}",
             )
             enrichment_model = model_for(enrichment_provider)
-            enrichment_prompt = build_enrichment_prompt(enrichment_needed)
+            enrichment_system, enrichment_prompt = enrichment_prompts_for(enrichment_needed, enrichment_provider)
             st.text_area(
                 "모델에 전달할 보완 프롬프트",
                 enrichment_prompt,
@@ -271,10 +575,10 @@ if stage == "1. 기출 데이터":
                         enrichment_provider,
                         enrichment_model,
                         "enrichment",
-                        ENRICHMENT_SYSTEM_PROMPT,
+                        enrichment_system,
                         enrichment_prompt,
                     )
-                    ok, message = save_provider_result(result, ENRICHMENT_SYSTEM_PROMPT, enrichment_prompt)
+                    ok, message = save_provider_result(result, enrichment_system, enrichment_prompt)
                 if ok:
                     st.session_state["enrichment_message"] = message
                     st.rerun()
@@ -298,7 +602,7 @@ if stage == "1. 기출 데이터":
                     "enrichment",
                     raw_enrichment,
                 )
-                ok, message = save_provider_result(result, ENRICHMENT_SYSTEM_PROMPT, enrichment_prompt)
+                ok, message = save_provider_result(result, enrichment_system, enrichment_prompt)
                 if ok:
                     st.session_state["enrichment_message"] = message
                     st.rerun()
@@ -333,27 +637,73 @@ if stage == "1. 기출 데이터":
         labels = {
             example.source_key: (
                 f"{example.source_exam} · 문제 {example.question_number}"
+                + (" · 구조 확인" if example in structure_needed else "")
+                + (" · 밑줄 필요" if example in highlight_needed else "")
                 + (" · 보완 필요" if example in enrichment_needed else "")
             )
             for example in examples
         }
         example_keys = list(labels)
         default_example_index = next(
-            (index for index, example in enumerate(examples) if example in enrichment_needed),
+            (
+                index
+                for index, example in enumerate(examples)
+                if example in structure_needed or example in highlight_needed or example in enrichment_needed
+            ),
             0,
         )
+        source_selector_key = f"source-review-selection-{selected_type_id}"
+        pending_source_key = st.session_state.pop(
+            f"pending-source-review-selection-{selected_type_id}",
+            "",
+        )
+        if pending_source_key in example_keys:
+            st.session_state[source_selector_key] = pending_source_key
         selected_key = st.selectbox(
             "검토할 문제",
             example_keys,
             index=default_example_index,
             format_func=labels.get,
+            key=source_selector_key,
         )
+        st.caption(f"검토 위치 · {example_keys.index(selected_key) + 1} / {len(example_keys)}")
         selected = next(example for example in examples if example.source_key == selected_key)
+        if selected.parse_warning:
+            st.warning(selected.parse_warning)
         if selected.enrichment_model:
             confidence = selected.enrichment_confidence or 0
             st.info(f"AI 제안 · {selected.enrichment_model} · 신뢰도 {confidence:.0%}. 원문과 보기를 확인한 뒤 승인하세요.")
+        if selected_type_id == "similar_expression":
+            if has_valid_highlight(selected):
+                st.markdown(
+                    f"**밑줄 미리보기**  \n{highlighted_html(selected.stem, selected.highlight_text)}",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("문장 입력란에서 대상 표현을 `[[이렇게]]` 감싸거나 밑줄 대상 표현에 직접 입력하세요.")
         with st.form(f"example-{selected.source_key}"):
-            stem = st.text_input("문장", selected.stem)
+            passage = selected.passage
+            question_prompt = selected.question_prompt
+            auxiliary_text = selected.auxiliary_text
+            if selected_type_profile.content_mode == "single_sentence":
+                stem = st.text_input(
+                    "문장" + (" · [[밑줄 부분]] 표시 가능" if selected_type_id == "similar_expression" else ""),
+                    stem_with_highlight_marker(selected) if selected_type_id == "similar_expression" else selected.stem,
+                )
+            else:
+                if selected_type_profile.content_mode == "sentence_insertion":
+                    auxiliary_text = st.text_area("주어진 문장", selected.auxiliary_text, height=80)
+                content_label = {
+                    "short_text": "짧은 글·안내문·도표",
+                    "sentence_order": "(가)~(라) 문장",
+                    "headline": "신문 기사 제목",
+                }.get(selected_type_profile.content_mode, "지문·자료")
+                passage = st.text_area(content_label, selected.passage or selected.stem, height=260)
+                question_prompt = st.text_input("문항 질문", selected.question_prompt)
+                stem = compose_structured_stem(passage, question_prompt, auxiliary_text)
+            highlight_text = selected.highlight_text
+            if selected_type_id == "similar_expression":
+                highlight_text = st.text_input("밑줄 대상 표현", selected.highlight_text)
             choice_columns = st.columns(2)
             choices = []
             for index, choice in enumerate(selected.choices):
@@ -363,20 +713,59 @@ if stage == "1. 기출 데이터":
                 ["미확정", "1", "2", "3", "4"],
                 index=selected.answer or 0,
             )
-            grammar = st.text_input("문법 포인트", selected.grammar_point)
+            grammar_label = "문법 포인트" if selected_type_profile.content_mode == "single_sentence" else "출제 포인트"
+            grammar = st.text_input(grammar_label, selected.grammar_point)
             rationale = st.text_area("정답·오답 설계 설명", selected.rationale, height=100)
             approved = st.checkbox("학습 예시로 승인", selected.approved)
-            submitted = st.form_submit_button("문제 저장", type="primary")
+            submitted = st.form_submit_button("저장하고 다음 문제", type="primary")
             if submitted:
                 answer = None if answer_label == "미확정" else int(answer_label)
-                if approved and answer is None:
+                highlight_error = ""
+                if selected_type_id == "similar_expression":
+                    stem, highlight_text, highlight_error = parse_highlight_marker(stem, highlight_text)
+                structure_error = ""
+                if any(not choice.strip() for choice in choices):
+                    structure_error = "비어 있지 않은 보기 4개를 입력하세요."
+                elif selected_type_profile.content_mode != "single_sentence" and not passage.strip():
+                    structure_error = "지문·자료를 입력하세요."
+                elif selected_type_profile.content_mode == "sentence_insertion" and not auxiliary_text.strip():
+                    structure_error = "삽입할 주어진 문장을 입력하세요."
+                elif selected_type_profile.content_mode == "sentence_insertion" and any(
+                    marker not in passage for marker in ("(①)", "(②)", "(③)", "(④)")
+                ):
+                    structure_error = "지문에 삽입 위치 (①)~(④)를 모두 입력하세요."
+                if approved and structure_error:
+                    st.error(structure_error)
+                elif highlight_error:
+                    st.error(highlight_error)
+                elif approved and answer is None:
                     st.error("승인하려면 정답을 먼저 확정해야 합니다.")
                 else:
                     updated = selected.model_copy(
-                        update={"stem": stem, "choices": choices, "answer": answer, "grammar_point": grammar, "rationale": rationale, "approved": approved}
+                        update={
+                            "stem": stem,
+                            "choices": choices,
+                            "answer": answer,
+                            "grammar_point": grammar,
+                            "rationale": rationale,
+                            "approved": approved,
+                            "question_type": selected_type_id,
+                            "highlight_text": highlight_text,
+                            "passage": passage,
+                            "question_prompt": question_prompt,
+                            "auxiliary_text": auxiliary_text,
+                            "parse_warning": structure_error,
+                        }
                     )
                     storage.save_example(updated)
-                    st.success("저장했습니다.")
+                    next_key = next_sequence_item(example_keys, selected_key)
+                    if next_key is not None:
+                        st.session_state[
+                            f"pending-source-review-selection-{selected_type_id}"
+                        ] = next_key
+                        st.session_state["source_review_message"] = "저장했습니다. 다음 문제로 이동했습니다."
+                    else:
+                        st.session_state["source_review_message"] = "저장했습니다. 마지막 문제입니다."
                     st.rerun()
         with st.expander("추출 원문 보기"):
             st.code(selected.raw_text, language=None)
@@ -388,7 +777,13 @@ elif stage == "2. 유형 분석":
     examples = storage.list_examples(approved_only=True)
     if not examples:
         st.warning("먼저 기출 데이터에서 사용할 예시를 승인하세요.")
-    system_prompt, user_prompt = prompts_for("analysis")
+    preview_provider = st.selectbox(
+        "프롬프트 미리보기 모델",
+        active_providers,
+        format_func=provider_label,
+        key=f"analysis-preview-provider-{selected_type_id}",
+    )
+    system_prompt, user_prompt = prompts_for("analysis", preview_provider)
     with st.expander("모델에 전달할 프롬프트"):
         st.text_area("System", system_prompt, height=130, disabled=True)
         st.text_area("User", user_prompt, height=300, disabled=True)
@@ -397,7 +792,12 @@ elif stage == "2. 유형 분석":
     st.info("무료 우선: 위 코드 블록을 복사해 ChatKHU에서 모델을 선택하고 실행한 뒤 JSON 응답을 아래에 붙여넣으세요.")
     st.link_button("ChatKHU에서 분석하기", CHATKHU_WEB_URL)
 
-    providers = st.multiselect("ChatKHU Gateway로 자동 분석할 모델", list(DEFAULT_PROVIDERS), default=[p for p in DEFAULT_PROVIDERS if can_gateway_call(p)], format_func=provider_label)
+    providers = st.multiselect(
+        "ChatKHU Gateway로 자동 분석할 모델",
+        active_providers,
+        default=[provider for provider in active_providers if can_gateway_call(provider)],
+        format_func=provider_label,
+    )
     if st.button("선택한 Gateway 모델로 분석", type="primary", disabled=not examples or not providers):
         callable_providers = [provider for provider in providers if can_gateway_call(provider)]
         missing = [provider_label(provider) for provider in providers if not can_gateway_call(provider)]
@@ -406,21 +806,32 @@ elif stage == "2. 유형 분석":
         if callable_providers:
             with st.spinner("모델별 분석을 실행하고 있습니다..."):
                 with ThreadPoolExecutor(max_workers=len(callable_providers)) as executor:
-                    futures = {
-                        executor.submit(call_provider, provider, model_for(provider), "analysis", system_prompt, user_prompt): provider
-                        for provider in callable_providers
-                    }
+                    futures = {}
+                    for provider in callable_providers:
+                        provider_system, provider_user = prompts_for("analysis", provider)
+                        future = executor.submit(
+                            call_provider,
+                            provider,
+                            model_for(provider),
+                            "analysis",
+                            provider_system,
+                            provider_user,
+                        )
+                        futures[future] = (provider, provider_system, provider_user)
                     for future in as_completed(futures):
                         result = future.result()
-                        ok, message = save_provider_result(result, system_prompt, user_prompt)
+                        _, provider_system, provider_user = futures[future]
+                        ok, message = save_provider_result(result, provider_system, provider_user)
                         (st.success if ok else st.error)(f"{provider_label(result.provider)}: {message}")
 
     st.subheader("ChatKHU 웹 응답 가져오기")
-    manual_provider = st.selectbox("ChatKHU에서 선택한 모델", list(DEFAULT_PROVIDERS), format_func=provider_label, key="analysis-manual-provider")
+    manual_provider = preview_provider
+    st.caption(f"응답 모델 · {provider_label(manual_provider)}")
+    manual_system, manual_user = prompts_for("analysis", manual_provider)
     raw_analysis = st.text_area("ChatKHU의 JSON 응답", height=180, key="analysis-manual-raw")
     if st.button("분석 응답 저장", disabled=not raw_analysis.strip() or not examples):
         result = manual_result(manual_provider, model_for(manual_provider), "analysis", raw_analysis)
-        ok, message = save_provider_result(result, system_prompt, user_prompt)
+        ok, message = save_provider_result(result, manual_system, manual_user)
         (st.success if ok else st.error)(message)
         if ok:
             st.rerun()
@@ -444,7 +855,11 @@ elif stage == "2. 유형 분석":
                     st.rerun()
 
     st.subheader("공통 유형 분석서")
-    guide = st.text_area("모든 모델에 동일하게 전달됩니다", storage.get_setting("analysis_guide", DEFAULT_ANALYSIS_GUIDE), height=280)
+    guide = st.text_area(
+        "모든 모델에 동일하게 전달됩니다",
+        storage.get_setting("analysis_guide", default_analysis_guide(selected_type_id)),
+        height=280,
+    )
     if st.button("공통 분석서 저장"):
         storage.set_setting("analysis_guide", guide)
         st.success("저장했습니다.")
@@ -454,18 +869,57 @@ elif stage == "3. 프롬프트 작업실":
     st.title("프롬프트 작업실")
     st.caption("모델에 실제로 전달될 지시문과 생성 조건을 버전처럼 보관합니다.")
     with st.form("prompt-settings"):
+        settings_col1, settings_col2 = st.columns(2)
+        type_id = selected_type_id
+        settings_col1.text_input(
+            "문제 유형 DB",
+            f"{selected_type_profile.number_range} · {selected_type_profile.label}",
+            disabled=True,
+        )
+        mode_values = ["optimized", "standard"]
+        current_mode = storage.get_setting("prompt_mode", "optimized")
+        prompt_mode = settings_col2.radio(
+            "프롬프트 적용 방식",
+            mode_values,
+            index=mode_values.index(current_mode) if current_mode in mode_values else 0,
+            format_func=lambda value: "모델별 최적화" if value == "optimized" else "공통 프롬프트",
+            horizontal=True,
+        )
         system_prompt = st.text_area("시스템 지시문", storage.get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT), height=220)
-        analysis_guide = st.text_area("공통 유형 분석서", storage.get_setting("analysis_guide", DEFAULT_ANALYSIS_GUIDE), height=260)
+        analysis_guide = st.text_area(
+            "공통 유형 분석서",
+            storage.get_setting("analysis_guide", default_analysis_guide(selected_type_id)),
+            height=260,
+        )
         col1, col2 = st.columns(2)
-        count = col1.number_input("모델별 생성 문제 수", min_value=2, max_value=40, step=2, value=int(storage.get_setting("generation_count", "10")))
+        slot_count = len(selected_type_profile.question_numbers)
+        saved_count = int(storage.get_setting("generation_count", str(slot_count)))
+        if saved_count < slot_count or saved_count % slot_count:
+            saved_count = slot_count
+        count = col1.number_input(
+            "모델별 생성 문제 수",
+            min_value=slot_count,
+            max_value=max(40, slot_count),
+            step=slot_count,
+            value=saved_count,
+        )
         difficulty = col2.text_input("목표 난이도", storage.get_setting("difficulty", "TOPIK II 읽기 초반 수준"))
         submitted = st.form_submit_button("프롬프트 설정 저장", type="primary")
         if submitted:
+            storage.set_setting("question_type", type_id)
+            storage.set_setting("prompt_mode", prompt_mode)
             storage.set_setting("system_prompt", system_prompt)
             storage.set_setting("analysis_guide", analysis_guide)
             storage.set_setting("generation_count", str(count))
             storage.set_setting("difficulty", difficulty)
-            version_id = storage.save_prompt_version(system_prompt, analysis_guide, int(count), difficulty)
+            version_id = storage.save_prompt_version(
+                system_prompt,
+                analysis_guide,
+                int(count),
+                difficulty,
+                type_id,
+                prompt_mode,
+            )
             st.success(f"프롬프트 버전 #{version_id}로 저장했습니다.")
 
     versions = storage.list_prompt_versions()
@@ -481,19 +935,45 @@ elif stage == "3. 프롬프트 작업실":
                     storage.set_setting("analysis_guide", version["analysis_guide"])
                     storage.set_setting("generation_count", str(version["generation_count"]))
                     storage.set_setting("difficulty", version["difficulty"])
+                    storage.set_setting("question_type", selected_type_id)
+                    storage.set_setting("prompt_mode", version["prompt_mode"])
                     st.success(f"버전 #{version['id']}을 복원했습니다.")
                     st.rerun()
+
+    st.subheader("모델별 실행 지침")
+    instruction_provider = st.selectbox(
+        "조정할 모델",
+        active_providers,
+        format_func=provider_label,
+        key=f"provider-instruction-model-{selected_type_id}",
+    )
+    instruction_value = st.text_area(
+        "추가 지침",
+        provider_instruction(instruction_provider),
+        height=110,
+        key=f"provider-instruction-{instruction_provider}",
+    )
+    instruction_col1, instruction_col2 = st.columns(2)
+    if instruction_col1.button("모델 지침 저장", use_container_width=True):
+        storage.set_setting(f"provider_instruction_{instruction_provider}", instruction_value.strip())
+        st.success(f"{provider_label(instruction_provider)} 지침을 저장했습니다.")
+    if instruction_col2.button("기본 지침 복원", use_container_width=True):
+        storage.set_setting(
+            f"provider_instruction_{instruction_provider}",
+            default_instruction_for(instruction_provider),
+        )
+        st.rerun()
 
     st.subheader("모델 ID")
     st.caption("ChatKHU 계정에서 동기화된 모델 ID입니다. 조직의 허용 목록이 바뀌면 여기에서 수정할 수 있습니다.")
     with st.form("model-settings"):
         model_values = {}
         cols = st.columns(2)
-        for index, (provider, config) in enumerate(DEFAULT_PROVIDERS.items()):
-            model_values[provider] = cols[index % 2].text_input(config.label, model_for(provider))
+        for index, provider in enumerate(active_providers):
+            model_values[provider] = cols[index % 2].text_input(provider_label(provider), model_for(provider))
         if st.form_submit_button("모델 ID 저장"):
             for provider, value in model_values.items():
-                storage.set_setting(f"model_{provider}", value.strip() or DEFAULT_PROVIDERS[provider].model)
+                storage.set_setting(f"model_{provider}", value.strip() or model_for(provider))
             st.success("저장했습니다.")
 
     st.subheader("ChatKHU Gateway")
@@ -526,7 +1006,13 @@ elif stage == "3. 프롬프트 작업실":
         st.info("Gateway 자동 호출은 선택 사항입니다. 키 없이도 ChatKHU 웹 복사·붙여넣기 방식으로 전체 기능을 사용할 수 있습니다.")
         st.link_button("ChatKHU 웹 열기", CHATKHU_WEB_URL)
 
-    preview_system, preview_user = prompts_for("generation")
+    preview_provider = st.selectbox(
+        "최종 프롬프트 미리보기 모델",
+        active_providers,
+        format_func=provider_label,
+        key=f"workshop-preview-provider-{selected_type_id}",
+    )
+    preview_system, preview_user = prompts_for("generation", preview_provider)
     with st.expander("최종 생성 프롬프트 미리보기", expanded=True):
         st.text_area("System prompt", preview_system, height=160, disabled=True)
         st.text_area("User prompt", preview_user, height=420, disabled=True)
@@ -535,9 +1021,15 @@ elif stage == "3. 프롬프트 작업실":
 elif stage == "4. 문제 생성":
     st.title("문제 생성")
     examples = storage.list_examples(approved_only=True)
-    expected_count = int(storage.get_setting("generation_count", "10"))
+    expected_count = int(storage.get_setting("generation_count", "2"))
     st.caption(f"승인 예시 {len(examples)}개로 모델별 {expected_count}개를 생성합니다. Gateway 실행 버튼을 누를 때만 크레딧을 사용합니다.")
-    system_prompt, user_prompt = prompts_for("generation")
+    preview_provider = st.selectbox(
+        "프롬프트·웹 응답 모델",
+        active_providers,
+        format_func=provider_label,
+        key=f"generation-preview-provider-{selected_type_id}",
+    )
+    system_prompt, user_prompt = prompts_for("generation", preview_provider)
     with st.expander("이번 실행 프롬프트"):
         st.text_area("System", system_prompt, height=130, disabled=True)
         st.text_area("User", user_prompt, height=420, disabled=True)
@@ -546,7 +1038,12 @@ elif stage == "4. 문제 생성":
     st.info("권장 무료 흐름: 프롬프트를 복사하고 ChatKHU에서 비교할 모델을 각각 선택해 실행한 뒤 응답을 가져오세요.")
     st.link_button("ChatKHU에서 문제 생성하기", CHATKHU_WEB_URL)
 
-    selected_providers = st.multiselect("ChatKHU Gateway로 자동 생성할 모델", list(DEFAULT_PROVIDERS), default=[p for p in DEFAULT_PROVIDERS if can_gateway_call(p)], format_func=provider_label)
+    selected_providers = st.multiselect(
+        "ChatKHU Gateway로 자동 생성할 모델",
+        active_providers,
+        default=[provider for provider in active_providers if can_gateway_call(provider)],
+        format_func=provider_label,
+    )
     st.caption(f"선택 모델 {len(selected_providers)}개 · 예상 Gateway 요청 {sum(can_gateway_call(p) for p in selected_providers)}회")
     if st.button("선택한 Gateway 모델로 생성", type="primary", disabled=not examples or not selected_providers):
         callable_providers = [provider for provider in selected_providers if can_gateway_call(provider)]
@@ -556,21 +1053,32 @@ elif stage == "4. 문제 생성":
         if callable_providers:
             with st.spinner("모델별 문제를 생성하고 있습니다..."):
                 with ThreadPoolExecutor(max_workers=len(callable_providers)) as executor:
-                    futures = {
-                        executor.submit(call_provider, provider, model_for(provider), "generation", system_prompt, user_prompt): provider
-                        for provider in callable_providers
-                    }
+                    futures = {}
+                    for provider in callable_providers:
+                        provider_system, provider_user = prompts_for("generation", provider)
+                        future = executor.submit(
+                            call_provider,
+                            provider,
+                            model_for(provider),
+                            "generation",
+                            provider_system,
+                            provider_user,
+                        )
+                        futures[future] = (provider, provider_system, provider_user)
                     for future in as_completed(futures):
                         result = future.result()
-                        ok, message = save_provider_result(result, system_prompt, user_prompt)
+                        _, provider_system, provider_user = futures[future]
+                        ok, message = save_provider_result(result, provider_system, provider_user)
                         (st.success if ok else st.error)(f"{provider_label(result.provider)}: {message}")
 
     st.subheader("ChatKHU 웹 응답 가져오기")
-    manual_provider = st.selectbox("ChatKHU에서 선택한 모델", list(DEFAULT_PROVIDERS), format_func=provider_label, key="generation-manual-provider")
+    manual_provider = preview_provider
+    st.caption(f"응답 모델 · {provider_label(manual_provider)}")
+    manual_system, manual_user = prompts_for("generation", manual_provider)
     raw_generation = st.text_area("ChatKHU의 JSON 응답", height=230, key="generation-manual-raw")
     if st.button("생성 응답 검증·저장", disabled=not raw_generation.strip() or not examples):
         result = manual_result(manual_provider, model_for(manual_provider), "generation", raw_generation)
-        ok, message = save_provider_result(result, system_prompt, user_prompt)
+        ok, message = save_provider_result(result, manual_system, manual_user)
         (st.success if ok else st.error)(message)
         if ok:
             st.rerun()
@@ -590,6 +1098,8 @@ elif stage == "4. 문제 생성":
 
 elif stage == "5. 검수·비교":
     st.title("검수·비교")
+    if "generated_review_message" in st.session_state:
+        st.success(st.session_state.pop("generated_review_message"))
     items = storage.list_generated()
     if not items:
         st.info("아직 생성된 문제가 없습니다.")
@@ -598,7 +1108,23 @@ elif stage == "5. 검수·비교":
         selected_provider = st.selectbox("모델 필터", ["전체", *providers_present], format_func=lambda p: "전체" if p == "전체" else provider_label(p))
         filtered = items if selected_provider == "전체" else [item for item in items if item["provider"] == selected_provider]
         labels = {item["id"]: f"#{item['id']} · {provider_label(item['provider'])} · {item['question']['stem']}" for item in filtered}
-        selected_id = st.selectbox("검수할 문제", list(labels), format_func=labels.get)
+        generated_ids = list(labels)
+        generated_selector_key = f"generated-review-selection-{selected_type_id}"
+        pending_generated_id = st.session_state.pop(
+            f"pending-generated-review-selection-{selected_type_id}",
+            None,
+        )
+        if pending_generated_id in generated_ids:
+            st.session_state[generated_selector_key] = pending_generated_id
+        elif st.session_state.get(generated_selector_key) not in generated_ids:
+            st.session_state[generated_selector_key] = generated_ids[0]
+        selected_id = st.selectbox(
+            "검수할 문제",
+            generated_ids,
+            format_func=labels.get,
+            key=generated_selector_key,
+        )
+        st.caption(f"검수 위치 · {generated_ids.index(selected_id) + 1} / {len(generated_ids)}")
         item = next(item for item in filtered if item["id"] == selected_id)
         question = GeneratedQuestion.model_validate(item["question"])
 
@@ -608,9 +1134,42 @@ elif stage == "5. 검수·비교":
         else:
             st.success("자동 형식 검사 통과")
 
+        if selected_type_id == "similar_expression" and question.highlight_text:
+            st.markdown(
+                f"**밑줄 미리보기**  \n{highlighted_html(question.stem, question.highlight_text)}",
+                unsafe_allow_html=True,
+            )
+
         with st.form(f"edit-question-{item['id']}"):
-            type_slot = st.selectbox("유형", [1, 2], index=question.type_slot - 1)
-            stem = st.text_input("문장", question.stem)
+            slot_options = list(selected_type_profile.question_numbers)
+            type_slot = st.selectbox(
+                "문제 번호 슬롯",
+                slot_options,
+                index=slot_options.index(question.type_slot) if question.type_slot in slot_options else 0,
+            )
+            passage = question.passage
+            question_prompt = question.question_prompt
+            auxiliary_text = question.auxiliary_text
+            set_id = question.set_id
+            if selected_type_profile.content_mode == "single_sentence":
+                stem = st.text_input("문장", question.stem)
+            else:
+                if selected_type_profile.shared_passage:
+                    set_id = st.text_input("공통 지문 세트 ID", question.set_id)
+                    st.caption("같은 실행 기록과 세트 ID를 가진 문항의 지문은 함께 갱신됩니다.")
+                if selected_type_profile.content_mode == "sentence_insertion":
+                    auxiliary_text = st.text_area("주어진 문장", question.auxiliary_text, height=80)
+                content_label = {
+                    "short_text": "짧은 글·안내문·도표",
+                    "sentence_order": "(가)~(라) 문장",
+                    "headline": "신문 기사 제목",
+                }.get(selected_type_profile.content_mode, "지문·자료")
+                passage = st.text_area(content_label, question.passage or question.stem, height=260)
+                question_prompt = st.text_input("문항 질문", question.question_prompt)
+                stem = compose_structured_stem(passage, question_prompt, auxiliary_text)
+            generated_highlight = question.highlight_text
+            if selected_type_id == "similar_expression":
+                generated_highlight = st.text_input("밑줄 대상 표현", question.highlight_text)
             cols = st.columns(2)
             choices = [cols[index % 2].text_input(f"보기 {index + 1}", choice) for index, choice in enumerate(question.choices)]
             answer = st.selectbox("정답", [1, 2, 3, 4], index=question.answer - 1)
@@ -621,6 +1180,12 @@ elif stage == "5. 검수·비교":
                 edited = GeneratedQuestion(
                     type_slot=type_slot,
                     stem=stem,
+                    question_type=selected_type_id,
+                    highlight_text=generated_highlight,
+                    passage=passage,
+                    question_prompt=question_prompt,
+                    auxiliary_text=auxiliary_text,
+                    set_id=set_id,
                     choices=choices,
                     answer=answer,
                     target_grammar=target_grammar,
@@ -630,8 +1195,12 @@ elif stage == "5. 검수·비교":
                 other_stems = [current["question"]["stem"] for current in items if current["id"] != item["id"]]
                 issues = validate_question(edited, storage.list_examples(approved_only=True), other_stems)
                 storage.save_generated_edit(item["id"], edited.model_dump())
+                sibling_ids = []
+                if selected_type_profile.shared_passage:
+                    sibling_ids = storage.sync_generated_set_passage(item["id"], set_id, passage)
                 storage.save_validation(item["id"], [issue.model_dump() for issue in issues])
-                st.success("수정 내용과 재검사 결과를 저장했습니다.")
+                suffix = f" 공통 지문 문항 {len(sibling_ids)}개도 동기화했습니다." if sibling_ids else ""
+                st.success(f"수정 내용과 재검사 결과를 저장했습니다.{suffix}")
                 st.rerun()
 
         review = Review.model_validate(item["review"])
@@ -644,7 +1213,7 @@ elif stage == "5. 검수·비교":
             topik_fit = cols[3].slider("TOPIK 적합성", 1, 5, review.topik_fit)
             notes = st.text_area("검수 메모", review.notes)
             approved = st.checkbox("최종 승인", review.approved)
-            if st.form_submit_button("평가 저장", type="primary"):
+            if st.form_submit_button("평가 저장하고 다음 문제", type="primary"):
                 storage.save_review(
                     item["id"],
                     Review(
@@ -656,7 +1225,18 @@ elif stage == "5. 검수·비교":
                         approved=approved,
                     ),
                 )
-                st.success("평가를 저장했습니다.")
+                next_id = next_sequence_item(generated_ids, selected_id)
+                if next_id is not None:
+                    st.session_state[
+                        f"pending-generated-review-selection-{selected_type_id}"
+                    ] = next_id
+                    st.session_state["generated_review_message"] = (
+                        "평가를 저장했습니다. 다음 문제로 이동했습니다."
+                    )
+                else:
+                    st.session_state["generated_review_message"] = (
+                        "평가를 저장했습니다. 마지막 문제입니다."
+                    )
                 st.rerun()
 
         st.subheader("모델 비교")

@@ -12,6 +12,8 @@ OUTPUT_DIR = ROOT / "extracted_text"
 
 
 QUESTION_RE = re.compile(r"^([1-9]|[1-4][0-9]|50)(?:\.\s*(.*)|)$")
+SECTION_RANGE_RE = re.compile(r"\[(\d+)\s*[~～-]\s*(\d+)\]")
+CHOICE_PREFIX_RE = re.compile(r"^[①②③④]")
 
 
 def clean_line(text: str) -> str:
@@ -76,10 +78,10 @@ def split_questions(blocks: list[str]) -> list[dict[str, object]]:
             line = clean_line(raw_line)
             if not line:
                 continue
-            if line == "7LC20":
+            if line.startswith("7LC"):
                 continue
 
-            if line.startswith("※"):
+            if line.startswith("※") or SECTION_RANGE_RE.match(line):
                 if current:
                     questions.append(current)
                     current = None
@@ -88,6 +90,56 @@ def split_questions(blocks: list[str]) -> list[dict[str, object]]:
                 continue
 
             match = QUESTION_RE.match(line)
+            number = int(match.group(1)) if match else None
+            section_range = SECTION_RANGE_RE.search(section_instruction)
+
+            # If a completed question is followed directly by more passage
+            # text within the same numbered section, the intervening printed
+            # question number was lost during HTML conversion. Start the
+            # expected question at that text.
+            current_lines = current["lines"] if current else []
+            current_has_choices = current is not None and all(
+                any(value.startswith(symbol) for value in current_lines)
+                for symbol in "①②③④"
+            )
+            can_start_inferred = (
+                match is None
+                and current_has_choices
+                and section_range is not None
+                and int(section_range.group(1)) <= expected <= int(section_range.group(2))
+            )
+            if can_start_inferred:
+                questions.append(current)
+                current = {
+                    "number": expected,
+                    "lines": [section_instruction, line],
+                }
+                expected += 1
+                continue
+
+            # Some converted HTML files lose exactly one printed question
+            # number while retaining its passage and choices. When the next
+            # explicit number arrives, recover the missing question from the
+            # accumulated section prelude instead of abandoning the rest of
+            # the exam because the expected sequence no longer matches.
+            can_infer_missing = (
+                number == expected + 1
+                and current is None
+                and bool(section_prelude)
+                and section_range is not None
+                and int(section_range.group(1)) <= expected <= int(section_range.group(2))
+                and any(CHOICE_PREFIX_RE.match(value) for value in section_prelude)
+            )
+            if can_infer_missing:
+                questions.append(
+                    {
+                        "number": expected,
+                        "lines": [section_instruction, *section_prelude],
+                    }
+                )
+                expected += 1
+                section_prelude = []
+
             if match and int(match.group(1)) == expected:
                 if current:
                     questions.append(current)

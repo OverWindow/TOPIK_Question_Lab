@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from topik_question_lab.parser import scan_extracted_text
-from topik_question_lab.prompt_profiles import QUESTION_TYPE_PROFILES
+from topik_question_lab.prompt_profiles import QUESTION_TYPE_PROFILES, question_role_label
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,15 +78,16 @@ def test_scans_similar_expression_type_separately():
         ("paragraph_blank_short", 24),
         ("paired_19_20", 16),
         ("paired_21_22", 16),
+        ("paired_23_24", 14),
         ("headline_interpretation", 24),
-        ("paragraph_blank", 28),
-        ("content_match", 21),
-        ("main_topic", 27),
-        ("sentence_insertion", 18),
-        ("paired_42_43", 8),
-        ("paired_44_45", 12),
-        ("paired_46_47", 12),
-        ("paired_48_50", 18),
+        ("paragraph_blank", 32),
+        ("content_match", 24),
+        ("main_topic", 32),
+        ("sentence_insertion", 24),
+        ("paired_42_43", 12),
+        ("paired_44_45", 16),
+        ("paired_46_47", 16),
+        ("paired_48_50", 24),
     ],
 )
 def test_scans_every_supported_type(type_id, expected_count):
@@ -96,7 +97,21 @@ def test_scans_every_supported_type(type_id, expected_count):
     assert len(examples) == expected_count
     assert all(example.question_type == type_id for example in examples)
     assert all(example.question_number in profile.question_numbers for example in examples)
-    assert all(example.question_number not in {23, 24} for example in examples)
+
+
+def test_paired_23_24_collects_disclosed_shared_passages_only():
+    profile = QUESTION_TYPE_PROFILES["paired_23_24"]
+    examples = scan_extracted_text(ROOT / "extracted_text", profile.question_numbers, profile.type_id)
+
+    assert len(examples) == 14
+    assert {example.question_number for example in examples} == {23, 24}
+    assert not any(example.source_exam.startswith("102nd") for example in examples)
+    assert len({example.set_key for example in examples}) == 7
+    for set_key in {example.set_key for example in examples}:
+        siblings = [example for example in examples if example.set_key == set_key]
+        assert len(siblings) == 2
+        assert len({example.passage for example in siblings}) == 1
+        assert all(example.passage for example in siblings)
 
 
 def test_partial_visual_choices_are_kept_for_manual_repair():
@@ -142,3 +157,23 @@ def test_every_shared_set_uses_one_normalized_passage():
         examples = scan_extracted_text(ROOT / "extracted_text", profile.question_numbers, type_id)
         for set_key in {example.set_key for example in examples}:
             assert len({example.passage for example in examples if example.set_key == set_key}) == 1
+
+
+def test_paired_44_45_roles_follow_historical_question_order():
+    profile = QUESTION_TYPE_PROFILES["paired_44_45"]
+    examples = scan_extracted_text(ROOT / "extracted_text", profile.question_numbers, profile.type_id)
+    by_exam_and_number = {
+        (example.source_exam.split("-")[0], example.question_number): question_role_label(
+            example.question_type,
+            example.question_number,
+            example.question_prompt,
+        )
+        for example in examples
+    }
+
+    assert by_exam_and_number[("60th", 44)] == "주제"
+    assert by_exam_and_number[("60th", 45)] == "빈칸"
+    assert by_exam_and_number[("64th", 44)] == "주제"
+    assert by_exam_and_number[("64th", 45)] == "빈칸"
+    assert by_exam_and_number[("96th", 44)] == "빈칸"
+    assert by_exam_and_number[("96th", 45)] == "주제"

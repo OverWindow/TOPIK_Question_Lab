@@ -24,6 +24,7 @@ def test_all_stages_render_without_exception():
     picker = next(widget for widget in app.multiselect if widget.label == "사용할 모델")
     assert "GPT-5.6 Luna" in picker.options
     assert "Gemini 3.5 Flash" in picker.options
+    assert "DeepSeek V4 Pro" in picker.options
     assert any(button.label == "전체 선택" for button in app.button)
     assert any(button.label == "선택 모델 적용" for button in app.button)
 
@@ -53,6 +54,23 @@ def test_similar_expression_database_and_highlight_editor_render():
     assert any(button.label == "저장하고 다음 문제" for button in app.button)
 
 
+def test_enrichment_targets_can_be_selected_for_paired_46_47():
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=15).run()
+    app.sidebar.selectbox[0].set_value("paired_46_47").run()
+
+    assert not app.exception
+    target_picker = next(widget for widget in app.multiselect if widget.label == "AI 보완 대상 문제")
+    assert len(target_picker.options) > 1
+    assert len(target_picker.value) == len(target_picker.options)
+
+    selected_source_key = target_picker.value[0]
+    target_picker.set_value([selected_source_key]).run()
+    assert not app.exception
+    target_picker = next(widget for widget in app.multiselect if widget.label == "AI 보완 대상 문제")
+    assert target_picker.value == [selected_source_key]
+    assert any("선택 1개 / 보완 필요" in caption.value for caption in app.caption)
+
+
 def test_representative_structured_type_editors_render():
     app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=15).run()
 
@@ -68,3 +86,15 @@ def test_representative_structured_type_editors_render():
     app.sidebar.selectbox[0].set_value("paired_48_50").run()
     assert not app.exception
     assert any("paired_48_50.db" in caption.value for caption in app.sidebar.caption)
+
+    app.sidebar.selectbox[0].set_value("paired_23_24").run()
+    assert not app.exception
+    assert any(field.label == "밑줄 대상 표현" for field in app.text_input)
+    assert any("[[밑줄 부분]] 표시 가능" in field.label for field in app.text_area)
+    assert any(metric.label == "밑줄 지정 필요" for metric in app.metric)
+
+    app.sidebar.selectbox[0].set_value("paired_42_43").run()
+    assert not app.exception
+    assert any(field.label == "밑줄 대상 표현" for field in app.text_input)
+    assert any("[[밑줄 부분]] 표시 가능" in field.label for field in app.text_area)
+    assert any(metric.label == "밑줄 지정 필요" for metric in app.metric)

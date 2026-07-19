@@ -25,6 +25,13 @@ def validate_question(
                 message=f"문제 번호 슬롯은 {profile.question_numbers} 중 하나여야 합니다.",
             )
         )
+    if question.type_slot in profile.highlight_numbers:
+        if not question.highlight_text.strip():
+            issues.append(ValidationIssue(code="highlight_missing", message="밑줄 대상 표현이 없습니다."))
+        elif question.stem.count(question.highlight_text) != 1:
+            issues.append(
+                ValidationIssue(code="highlight_match", message="밑줄 대상 표현이 지문에 정확히 한 번 있어야 합니다.")
+            )
     blank_slots = {
         "paragraph_blank_short": {16, 17, 18},
         "paragraph_blank": {28, 29, 30, 31},
@@ -34,12 +41,6 @@ def validate_question(
         "paired_48_50": {49},
     }
     if question.question_type == "similar_expression":
-        if not question.highlight_text.strip():
-            issues.append(ValidationIssue(code="highlight_missing", message="밑줄 대상 표현이 없습니다."))
-        elif question.stem.count(question.highlight_text) != 1:
-            issues.append(
-                ValidationIssue(code="highlight_match", message="밑줄 대상 표현이 문장 안에 정확히 한 번 있어야 합니다.")
-            )
         if "( )" in question.stem:
             issues.append(ValidationIssue(code="unexpected_blank", message="유사 표현 유형에는 빈칸을 사용하지 않습니다."))
     elif question.question_type == "grammar_blank" and question.stem.count("( )") != 1:

@@ -13,6 +13,9 @@ from .models import ProviderName, ProviderResult
 
 CHATKHU_BASE_URL = os.getenv("CHATKHU_BASE_URL", "https://factchat-cloud.mindlogic.ai/v1/gateway").rstrip("/")
 CHATKHU_WEB_URL = os.getenv("CHATKHU_WEB_URL", "https://chat.khu.ac.kr")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_WEB_URL = os.getenv("DEEPSEEK_WEB_URL", "https://chat.deepseek.com")
+DEEPSEEK_API_KEYS_URL = "https://platform.deepseek.com/api_keys"
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class ProviderConfig:
     label: str
     model: str
     gateway_supported: bool = True
+    backend: str = "chatkhu"
 
 
 # These are initial suggestions only. The models enabled for ChatKHU can differ by
@@ -44,6 +48,18 @@ DEFAULT_PROVIDERS = {
     ),
     "gemma": ProviderConfig("gemma", "Gemma 3 27B", "google/gemma-3-27b-it"),
     "gpt_5_4_nano": ProviderConfig("gpt_5_4_nano", "GPT-5.4 Nano", "gpt-5.4-nano"),
+    "deepseek": ProviderConfig(
+        "deepseek",
+        "DeepSeek V4 Flash",
+        "deepseek-v4-flash",
+        backend="deepseek",
+    ),
+    "deepseek_v4_pro": ProviderConfig(
+        "deepseek_v4_pro",
+        "DeepSeek V4 Pro",
+        "deepseek-v4-pro",
+        backend="deepseek",
+    ),
 }
 
 DEFAULT_ACTIVE_PROVIDERS = [
@@ -56,7 +72,6 @@ LEGACY_PROVIDER_LABELS = {
     "gpt_5_1": "GPT 5.1 (기존 기록)",
     "gpt_5_2": "GPT 5.2 (기존 기록)",
     "openai": "GPT (기존 기록)",
-    "deepseek": "DeepSeek (기존 기록)",
 }
 
 
@@ -64,14 +79,25 @@ def has_chatkhu_api_key() -> bool:
     return bool(os.getenv("CHATKHU_API_KEY"))
 
 
+def has_deepseek_api_key() -> bool:
+    return bool(os.getenv("DEEPSEEK_API_KEY"))
+
+
+def provider_backend(provider: str, model: str = "") -> str:
+    config = DEFAULT_PROVIDERS.get(provider)
+    if config:
+        return config.backend
+    candidate = (model or provider).lower()
+    return "deepseek" if candidate.startswith("deepseek-") else "chatkhu"
+
+
 def has_api_key(provider: ProviderName) -> bool:
-    del provider
-    return has_chatkhu_api_key()
+    return has_deepseek_api_key() if provider_backend(provider) == "deepseek" else has_chatkhu_api_key()
 
 
 def can_gateway_call(provider: ProviderName) -> bool:
     config = DEFAULT_PROVIDERS.get(provider)
-    return bool(has_chatkhu_api_key() and (config is None or config.gateway_supported))
+    return bool(has_api_key(provider) and (config is None or config.gateway_supported))
 
 
 def provider_label(provider: str) -> str:
@@ -157,10 +183,18 @@ def call_provider(
         config = DEFAULT_PROVIDERS.get(provider)
         if config and not config.gateway_supported:
             raise ValueError(f"{config.label}은 현재 ChatKHU 웹 수동 모드로만 사용할 수 있습니다.")
-        key = os.getenv("CHATKHU_API_KEY")
+        backend = provider_backend(provider, model)
+        if backend == "deepseek":
+            key = os.getenv("DEEPSEEK_API_KEY")
+            base_url = DEEPSEEK_BASE_URL
+            missing_key_message = "DEEPSEEK_API_KEY가 없습니다. DeepSeek Platform에서 키를 발급해 .env에 입력하세요."
+        else:
+            key = os.getenv("CHATKHU_API_KEY")
+            base_url = CHATKHU_BASE_URL
+            missing_key_message = "CHATKHU_API_KEY가 없습니다. ChatKHU 웹 수동 모드를 사용하세요."
         if not key:
-            raise ValueError("CHATKHU_API_KEY가 없습니다. ChatKHU 웹 수동 모드를 사용하세요.")
-        client = OpenAI(api_key=key, base_url=CHATKHU_BASE_URL)
+            raise ValueError(missing_key_message)
+        client = OpenAI(api_key=key, base_url=base_url)
         response = client.chat.completions.create(
             model=model,
             messages=[

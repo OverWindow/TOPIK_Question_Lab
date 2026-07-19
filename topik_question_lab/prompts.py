@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from .models import QuestionExample
-from .prompt_profiles import question_type_profile
+from .prompt_profiles import question_role_label, question_type_profile
 
 
 DEFAULT_SYSTEM_PROMPT = """당신은 한국어능력시험 TOPIK II 읽기 문항을 설계하는 출제 전문가입니다.
@@ -31,6 +31,11 @@ def examples_json(examples: list[QuestionExample]) -> str:
                 "source": example.source_key,
                 "type_slot": example.question_number,
                 "question_type": example.question_type,
+                "question_role": question_role_label(
+                    example.question_type,
+                    example.question_number,
+                    example.question_prompt,
+                ),
                 "stem": example.stem,
                 "highlight_text": example.highlight_text,
                 "passage": example.passage,
@@ -135,6 +140,12 @@ def build_generation_prompt(
             format_rules += (
                 "\n- 같은 세트의 문항은 동일한 set_id와 완전히 동일한 passage를 사용합니다."
             )
+        if profile.highlight_numbers:
+            highlighted_slots = ", ".join(f"{slot}번" for slot in profile.highlight_numbers)
+            format_rules += (
+                f"\n- {highlighted_slots} 문항의 highlight_text에는 passage 안에 정확히 한 번 등장하는 "
+                "밑줄 대상 표현을 넣습니다. 나머지 문항의 highlight_text는 빈 문자열입니다."
+            )
         sample_questions = []
         sample_slots = slots if profile.shared_passage else slots[:1]
         for slot in sample_slots:
@@ -153,7 +164,17 @@ def build_generation_prompt(
                     "셋째 문장입니다. (③) 마지막 문장입니다. (④)"
                 )
                 choices = ["①", "②", "③", "④"]
-            prompt = f"{slot}번 평가 목표에 맞는 질문"
+            if profile.highlight_numbers:
+                passage = "새로운 일을 앞두고 걱정이 되어 마음이 무거워졌다. 그래도 용기를 내기로 했다."
+            if type_id == "paired_44_45":
+                passage = "시간을 효율적으로 활용하려면 우선순위를 정하고 ( ) 필요가 있다."
+                prompt = (
+                    "( )에 들어갈 말로 가장 알맞은 것을 고르십시오."
+                    if slot == 44
+                    else "윗글의 주제로 가장 알맞은 것을 고르십시오."
+                )
+            else:
+                prompt = f"{slot}번 평가 목표에 맞는 질문"
             question.update(
                 {
                     "type_slot": slot,
@@ -162,6 +183,7 @@ def build_generation_prompt(
                     "question_prompt": prompt,
                     "auxiliary_text": auxiliary,
                     "set_id": "set-1" if profile.shared_passage else "",
+                    "highlight_text": "마음이 무거워졌다" if slot in profile.highlight_numbers else "",
                     "choices": choices,
                 }
             )
@@ -205,6 +227,11 @@ def build_enrichment_prompt(examples: list[QuestionExample], type_id: str = "gra
         {
             "source_key": example.source_key,
             "question_number": example.question_number,
+            "question_role": question_role_label(
+                example.question_type,
+                example.question_number,
+                example.question_prompt,
+            ),
             "stem": example.stem,
             "highlight_text": example.highlight_text,
             "passage": example.passage,

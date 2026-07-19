@@ -11,9 +11,13 @@ def has_valid_highlight(example: QuestionExample) -> bool:
 
 
 def stem_with_highlight_marker(example: QuestionExample) -> str:
-    if not has_valid_highlight(example):
-        return example.stem
-    return example.stem.replace(example.highlight_text, f"[[{example.highlight_text}]]", 1)
+    return text_with_highlight_marker(example.stem, example.highlight_text)
+
+
+def text_with_highlight_marker(text: str, highlight_text: str) -> str:
+    if not highlight_text or text.count(highlight_text) != 1:
+        return text
+    return text.replace(highlight_text, f"[[{highlight_text}]]", 1)
 
 
 def parse_highlight_marker(stem_value: str, highlight_value: str) -> tuple[str, str, str]:

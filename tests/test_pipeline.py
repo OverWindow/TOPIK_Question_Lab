@@ -17,6 +17,7 @@ from topik_question_lab.providers import (
     can_gateway_call,
     extract_json,
     has_api_key,
+    has_deepseek_api_key,
     list_chatkhu_models,
     manual_result,
     provider_label,
@@ -102,7 +103,7 @@ def test_enrichment_prompt_and_response_round_trip():
 
 
 def test_question_type_and_provider_prompt_profiles():
-    assert len(QUESTION_TYPE_PROFILES) == 17
+    assert len(QUESTION_TYPE_PROFILES) == 18
     assert QUESTION_TYPE_PROFILES["grammar_blank"].implemented is True
     assert set(DEFAULT_PROVIDER_INSTRUCTIONS) == set(DEFAULT_PROVIDERS)
 
@@ -120,6 +121,29 @@ def test_generation_prompt_includes_question_type_rules():
 
     assert "1~2번 문법 빈칸" in prompt
     assert "형태가 비슷하지만 의미 기능이 다른" in prompt
+
+
+def test_paired_44_45_generation_uses_current_order_and_labels_source_role():
+    example = QuestionExample(
+        source_exam="60th-sample",
+        question_number=44,
+        instruction="",
+        stem="공통 지문\n위 글의 주제로 알맞은 것을 고르십시오.",
+        passage="공통 지문 ( )",
+        question_prompt="위 글의 주제로 알맞은 것을 고르십시오.",
+        choices=["보기1", "보기2", "보기3", "보기4"],
+        question_type="paired_44_45",
+        set_key="60th-sample:44-45",
+    )
+    prompt = build_generation_prompt([example], "분석서", 2, "고급", "paired_44_45")
+
+    assert '"question_role": "주제"' in prompt
+    assert "회차별 순서 차이를 보존" in prompt
+    assert "44번을 빈칸, 45번을 주제" in prompt
+    assert '"type_slot": 44' in prompt
+    assert '"question_prompt": "( )에 들어갈 말로 가장 알맞은 것을 고르십시오."' in prompt
+    assert '"type_slot": 45' in prompt
+    assert '"question_prompt": "윗글의 주제로 가장 알맞은 것을 고르십시오."' in prompt
 
 
 def test_similar_expression_prompt_and_validation():
@@ -140,6 +164,41 @@ def test_similar_expression_prompt_and_validation():
     assert validate_question(question, []) == []
 
 
+def test_paired_23_24_prompt_and_validation_require_highlight_for_slot_23():
+    prompt = build_generation_prompt([], "분석서", 2, "중급", "paired_23_24")
+    passage = "새로운 일을 앞두고 걱정이 되어 마음이 무거워졌다. 그래도 용기를 냈다."
+    question = GeneratedQuestion(
+        question_type="paired_23_24",
+        type_slot=23,
+        stem=f"{passage}\n밑줄 친 부분에 나타난 심정을 고르십시오.",
+        passage=passage,
+        question_prompt="밑줄 친 부분에 나타난 심정을 고르십시오.",
+        highlight_text="마음이 무거워졌다",
+        set_id="set-1",
+        choices=["걱정스럽다", "자랑스럽다", "반갑다", "만족스럽다"],
+        answer=1,
+        explanation="앞일을 걱정하는 심정이다.",
+        target_grammar="인물의 심정",
+    )
+
+    assert "23번 문항의 highlight_text" in prompt
+    assert validate_question(question, []) == []
+    missing = question.model_copy(update={"highlight_text": ""})
+    assert any(issue.code == "highlight_missing" for issue in validate_question(missing, []))
+
+
+def test_paired_42_43_prompt_requires_highlight_for_slot_42_only():
+    profile = QUESTION_TYPE_PROFILES["paired_42_43"]
+    prompt = build_generation_prompt([], "분석서", 2, "고급", profile.type_id)
+
+    assert profile.highlight_numbers == (42,)
+    assert "42번 문항의 highlight_text" in prompt
+    assert '"type_slot": 42' in prompt
+    assert '"highlight_text": "마음이 무거워졌다"' in prompt
+    assert '"type_slot": 43' in prompt
+    assert '"highlight_text": ""' in prompt
+
+
 def test_manual_highlight_marker_and_preview():
     stem, highlight, error = parse_highlight_marker(
         "아침에 늦게 [[일어나는 바람에]] 기차를 놓쳤다.",
@@ -154,6 +213,7 @@ def test_manual_highlight_marker_and_preview():
 
 def test_chatkhu_without_key_stays_in_manual_mode(monkeypatch):
     monkeypatch.delenv("CHATKHU_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
     assert has_api_key("openai") is False
     result = call_provider("openai", "test-model", "analysis", "system", "user")
@@ -165,6 +225,22 @@ def test_chatkhu_without_key_stays_in_manual_mode(monkeypatch):
         assert "CHATKHU_API_KEY" in str(exc)
     else:
         raise AssertionError("키가 없으면 모델 목록을 요청하면 안 됩니다.")
+
+
+def test_deepseek_uses_its_own_api_key(monkeypatch):
+    monkeypatch.delenv("CHATKHU_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    assert has_deepseek_api_key() is False
+    assert can_gateway_call("deepseek") is False
+    result = call_provider("deepseek", "deepseek-v4-flash", "analysis", "system", "user")
+    assert "DEEPSEEK_API_KEY" in result.error
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    assert has_deepseek_api_key() is True
+    assert has_api_key("deepseek") is True
+    assert can_gateway_call("deepseek") is True
+    assert can_gateway_call("gpt_5_6_luna") is False
 
 
 def test_active_model_comparison_set(monkeypatch):
@@ -181,8 +257,9 @@ def test_active_model_comparison_set(monkeypatch):
         "llama",
         "gemma",
         "gpt_5_4_nano",
+        "deepseek",
+        "deepseek_v4_pro",
     ]
-    assert "deepseek" not in DEFAULT_PROVIDERS
     assert DEFAULT_ACTIVE_PROVIDERS == ["gpt_5_6_luna", "claude", "gemini_3_5_flash"]
     assert DEFAULT_PROVIDERS["gpt_5_6_luna"].model == "gpt-5.6-luna"
     assert DEFAULT_PROVIDERS["gpt_5_3_chat"].model == "gpt-5.3-chat-latest"
@@ -193,10 +270,12 @@ def test_active_model_comparison_set(monkeypatch):
     assert DEFAULT_PROVIDERS["llama"].model == "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
     assert DEFAULT_PROVIDERS["gemma"].model == "google/gemma-3-27b-it"
     assert DEFAULT_PROVIDERS["gpt_5_4_nano"].model == "gpt-5.4-nano"
+    assert DEFAULT_PROVIDERS["deepseek"].model == "deepseek-v4-flash"
+    assert DEFAULT_PROVIDERS["deepseek_v4_pro"].model == "deepseek-v4-pro"
     assert can_gateway_call("k_exaone") is True
     assert can_gateway_call("tenant-specific-model") is True
     assert provider_label("gpt_5_1") == "GPT 5.1 (기존 기록)"
-    assert provider_label("deepseek") == "DeepSeek (기존 기록)"
+    assert provider_label("deepseek") == "DeepSeek V4 Flash"
 
 
 def test_generation_validation_detects_duplicates():

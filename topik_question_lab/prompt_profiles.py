@@ -15,6 +15,7 @@ class QuestionTypeProfile:
     content_mode: str = "passage"
     shared_passage: bool = False
     skip_undisclosed: bool = True
+    highlight_numbers: tuple[int, ...] = ()
 
 
 QUESTION_TYPE_PROFILES = {
@@ -38,6 +39,7 @@ QUESTION_TYPE_PROFILES = {
         implemented=True,
         question_numbers=(3, 4),
         content_mode="single_sentence",
+        highlight_numbers=(3, 4),
     ),
     "short_text_topic": QuestionTypeProfile(
         "short_text_topic", "짧은 글의 소재", "5~8번", "짧은 안내문이나 광고의 핵심 소재를 파악한다.",
@@ -83,6 +85,15 @@ QUESTION_TYPE_PROFILES = {
         content_mode="paired_passage",
         shared_passage=True,
     ),
+    "paired_23_24": QuestionTypeProfile(
+        "paired_23_24", "서사 지문: 심정·내용", "23~24번", "서사 지문 속 인물의 심정과 세부 내용 일치를 각각 판단한다.",
+        ("23번과 24번이 같은 서사 지문을 공유하게 한다.", "심정의 근거와 내용 일치 문항의 근거를 구분한다."),
+        implemented=True,
+        question_numbers=(23, 24),
+        content_mode="paired_passage",
+        shared_passage=True,
+        highlight_numbers=(23,),
+    ),
     "headline_interpretation": QuestionTypeProfile(
         "headline_interpretation", "신문 제목 해석", "25~27번", "압축된 제목의 사건과 변화 방향을 풀어 해석한다.",
         ("제목체의 생략과 비유를 적절히 사용한다.", "주체·방향·정도를 바꾼 오답을 만든다."),
@@ -125,10 +136,16 @@ QUESTION_TYPE_PROFILES = {
         question_numbers=(42, 43),
         content_mode="paired_passage",
         shared_passage=True,
+        highlight_numbers=(42,),
     ),
     "paired_44_45": QuestionTypeProfile(
-        "paired_44_45", "논설 지문: 빈칸·주제", "44~45번", "긴 지문의 빈칸과 주제를 함께 평가한다.",
-        ("44번과 45번이 같은 지문을 공유하게 한다.", "빈칸과 주제 문항의 근거를 일관되게 구성한다."),
+        "paired_44_45", "논설 지문: 빈칸·주제", "44~45번", "회차별 출제 순서를 구분하면서 긴 지문의 빈칸과 주제를 함께 평가한다.",
+        (
+            "44번과 45번이 같은 지문을 공유하게 한다.",
+            "기출은 질문 문구를 기준으로 빈칸·주제 역할을 판별하며 회차별 순서 차이를 보존한다.",
+            "새 문항은 현행 형식에 맞춰 44번을 빈칸, 45번을 주제로 구성한다.",
+            "빈칸과 주제 문항의 근거를 일관되게 구성한다.",
+        ),
         implemented=True,
         question_numbers=(44, 45),
         content_mode="paired_passage",
@@ -164,11 +181,25 @@ DEFAULT_PROVIDER_INSTRUCTIONS = {
     "llama": "요청된 필드 이름과 개수를 문자 그대로 따르고 추가 키나 JSON 바깥의 문장을 출력하지 마십시오.",
     "gemma": "짧고 완전한 JSON을 출력하고 누락 필드, 문항 수, 보기 수를 마지막에 내부 점검하십시오.",
     "gpt_5_4_nano": "설명은 간결하게 유지하되 필수 필드와 정답 근거는 생략하지 말고 JSON 형식을 우선하십시오.",
+    "deepseek": "한국어 문맥과 정답 유일성을 먼저 점검하고 사고 과정 없이 요청된 JSON 객체만 출력하십시오.",
+    "deepseek_v4_pro": "충분히 검토해 정답 유일성과 오답 타당성을 확인하되 사고 과정 없이 최종 JSON 객체만 출력하십시오.",
 }
 
 
 def question_type_profile(type_id: str = "grammar_blank") -> QuestionTypeProfile:
     return QUESTION_TYPE_PROFILES[type_id]
+
+
+def question_role_label(type_id: str, question_number: int, question_prompt: str = "") -> str:
+    """Return the semantic role for types whose slot order changed over time."""
+    if type_id != "paired_44_45":
+        return ""
+    prompt = question_prompt.replace(" ", "")
+    if "주제" in prompt:
+        return "주제"
+    if "들어갈" in prompt or "빈칸" in prompt:
+        return "빈칸"
+    return {44: "빈칸", 45: "주제"}.get(question_number, "")
 
 
 def default_analysis_guide(type_id: str = "grammar_blank") -> str:

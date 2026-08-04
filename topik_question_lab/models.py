@@ -92,7 +92,7 @@ class EnrichmentPayload(BaseModel):
 class ProviderResult(BaseModel):
     provider: ProviderName
     model: str
-    operation: Literal["analysis", "enrichment", "generation"]
+    operation: Literal["analysis", "enrichment", "generation", "transcription"]
     raw_response: str = ""
     parsed_json: dict | list | None = None
     input_tokens: int | None = None

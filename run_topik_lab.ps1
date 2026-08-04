@@ -7,4 +7,4 @@ if (-not (Test-Path $Python)) {
 }
 
 Set-Location $Root
-& $Python -m streamlit run topik_question_lab\app.py
+& $Python -m streamlit run topik_question_lab\main.py

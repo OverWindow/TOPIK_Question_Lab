@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import base64
+import mimetypes
 import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -172,6 +175,7 @@ def call_provider(
     operation: str,
     system_prompt: str,
     user_prompt: str,
+    image_paths: list[Path] | None = None,
 ) -> ProviderResult:
     started = time.perf_counter()
     raw = ""
@@ -195,11 +199,26 @@ def call_provider(
         if not key:
             raise ValueError(missing_key_message)
         client = OpenAI(api_key=key, base_url=base_url)
+        if image_paths:
+            if backend == "deepseek":
+                raise ValueError("DeepSeek 텍스트 모델은 PDF 이미지 전사에 사용할 수 없습니다.")
+            user_content: str | list[dict] = [{"type": "text", "text": user_prompt}]
+            for image_path in image_paths:
+                mime = mimetypes.guess_type(image_path.name)[0] or "image/png"
+                encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                    }
+                )
+        else:
+            user_content = user_prompt
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
         )
         raw = response.choices[0].message.content or ""

@@ -10,4 +10,4 @@ if [ ! -x "$PYTHON" ]; then
 fi
 
 cd "$ROOT"
-exec "$PYTHON" -m streamlit run topik_question_lab/app.py
+exec "$PYTHON" -m streamlit run topik_question_lab/main.py

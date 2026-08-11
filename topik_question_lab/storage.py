@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .models import ProviderResult, QuestionExample, Review
+from .validation import discard_resolved_validation_issues, normalize_question_blank_markers
 
 
 SCHEMA = """
@@ -269,8 +270,12 @@ class Storage:
         result = []
         for row in rows:
             item = dict(row)
-            item["question"] = json.loads(item["edited_json"] or item["data_json"])
-            item["validation"] = json.loads(item["validation_json"])
+            item["question"] = normalize_question_blank_markers(
+                json.loads(item["edited_json"] or item["data_json"])
+            )
+            item["validation"] = discard_resolved_validation_issues(
+                item["question"], json.loads(item["validation_json"])
+            )
             item["reviewed"] = bool(item["review_json"])
             item["review"] = json.loads(item["review_json"]) if item["review_json"] else Review().model_dump()
             result.append(item)

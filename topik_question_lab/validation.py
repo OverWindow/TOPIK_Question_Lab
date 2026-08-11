@@ -3,12 +3,56 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
-from .models import GeneratedQuestion, QuestionExample, ValidationIssue
+from .models import GeneratedQuestion, QuestionExample, ValidationIssue, normalize_blank_marker
 from .prompt_profiles import question_type_profile
 
 
+CIRCLED_NUMBER_TRANSLATION = str.maketrans(
+    {"①": "1", "②": "2", "③": "3", "④": "4"}
+)
+BLANK_SLOTS = {
+    "paragraph_blank_short": {16, 17, 18},
+    "paragraph_blank": {28, 29, 30, 31},
+    "paired_19_20": {19},
+    "paired_21_22": {21},
+    "paired_44_45": {44},
+    "paired_48_50": {49},
+}
+
+
 def normalize_text(text: str) -> str:
-    return re.sub(r"[^0-9A-Za-z가-힣]", "", text).lower()
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", text.translate(CIRCLED_NUMBER_TRANSLATION)).lower()
+
+
+def choices_are_distinct(choices: list[str]) -> bool:
+    return len(choices) == 4 and len({normalize_text(choice) for choice in choices}) == 4
+
+
+def discard_resolved_validation_issues(question: dict, issues: list[dict]) -> list[dict]:
+    """Hide legacy duplicate-choice errors that the current validator resolves."""
+    choices = [str(choice) for choice in question.get("choices", [])]
+    resolved_codes: set[str] = set()
+    if choices_are_distinct(choices):
+        resolved_codes.add("duplicate_choices")
+    question_type = str(question.get("question_type", ""))
+    slot = int(question.get("type_slot", 0) or 0)
+    if question_type == "grammar_blank" and normalize_blank_marker(str(question.get("stem", ""))).count("( )") == 1:
+        resolved_codes.add("blank_count")
+    elif slot in BLANK_SLOTS.get(question_type, set()) and normalize_blank_marker(str(question.get("passage", ""))).count("( )") == 1:
+        resolved_codes.add("blank_count")
+    return [issue for issue in issues if issue.get("code") not in resolved_codes]
+
+
+def normalize_question_blank_markers(question: dict) -> dict:
+    normalized = dict(question)
+    question_type = str(normalized.get("question_type", ""))
+    slot = int(normalized.get("type_slot", 0) or 0)
+    if question_type == "grammar_blank":
+        normalized["stem"] = normalize_blank_marker(str(normalized.get("stem", "")))
+    elif slot in BLANK_SLOTS.get(question_type, set()):
+        normalized["passage"] = normalize_blank_marker(str(normalized.get("passage", "")))
+        normalized["stem"] = normalize_blank_marker(str(normalized.get("stem", "")))
+    return normalized
 
 
 def validate_question(
@@ -32,24 +76,16 @@ def validate_question(
             issues.append(
                 ValidationIssue(code="highlight_match", message="밑줄 대상 표현이 지문에 정확히 한 번 있어야 합니다.")
             )
-    blank_slots = {
-        "paragraph_blank_short": {16, 17, 18},
-        "paragraph_blank": {28, 29, 30, 31},
-        "paired_19_20": {19},
-        "paired_21_22": {21},
-        "paired_44_45": {44},
-        "paired_48_50": {49},
-    }
     if question.question_type == "similar_expression":
         if "( )" in question.stem:
             issues.append(ValidationIssue(code="unexpected_blank", message="유사 표현 유형에는 빈칸을 사용하지 않습니다."))
-    elif question.question_type == "grammar_blank" and question.stem.count("( )") != 1:
+    elif question.question_type == "grammar_blank" and normalize_blank_marker(question.stem).count("( )") != 1:
         issues.append(ValidationIssue(code="blank_count", message="빈칸 '( )'이 정확히 한 개가 아닙니다."))
     elif question.question_type not in {"grammar_blank", "similar_expression"}:
         if not question.passage.strip():
             issues.append(ValidationIssue(code="passage", message="지문·자료가 없습니다."))
-        if question.type_slot in blank_slots.get(question.question_type, set()):
-            if question.passage.count("( )") != 1:
+        if question.type_slot in BLANK_SLOTS.get(question.question_type, set()):
+            if normalize_blank_marker(question.passage).count("( )") != 1:
                 issues.append(
                     ValidationIssue(code="blank_count", message="이 문항의 지문에는 빈칸 '( )'이 정확히 하나 필요합니다.")
                 )
@@ -75,7 +111,7 @@ def validate_question(
         issues.append(ValidationIssue(code="answer", message="정답 번호는 1~4여야 합니다."))
     if not question.explanation.strip():
         issues.append(ValidationIssue(code="explanation", message="정답 해설이 없습니다."))
-    if len(set(normalize_text(choice) for choice in question.choices)) != 4:
+    if not choices_are_distinct(question.choices):
         issues.append(ValidationIssue(code="duplicate_choices", message="서로 같은 보기가 있습니다."))
 
     candidates = [(example.passage or example.stem) for example in examples] + (other_stems or [])

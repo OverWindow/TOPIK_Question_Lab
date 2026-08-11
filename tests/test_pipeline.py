@@ -23,7 +23,7 @@ from topik_question_lab.providers import (
     provider_label,
 )
 from topik_question_lab.storage import Storage
-from topik_question_lab.validation import validate_generation_payload, validate_question
+from topik_question_lab.validation import normalize_text, validate_generation_payload, validate_question
 
 
 def sample_question(stem: str = "비가 그친 후에 공원에 ( ).") -> dict:
@@ -291,6 +291,37 @@ def test_generation_validation_detects_duplicates():
     issues = validate_question(question, [example])
 
     assert any(issue.code == "exact_duplicate" for issue in issues)
+
+
+def test_sentence_insertion_circled_number_choices_are_distinct():
+    question = GeneratedQuestion(
+        question_type="sentence_insertion",
+        type_slot=39,
+        stem="주어진 문장\n지문\n질문",
+        passage="문장 하나. (①) 문장 둘. (②) 문장 셋. (③) 문장 넷. (④)",
+        auxiliary_text="삽입할 문장입니다.",
+        question_prompt="주어진 문장이 들어갈 곳을 고르십시오.",
+        choices=["①", "②", "③", "④"],
+        answer=2,
+        explanation="두 번째 위치가 자연스럽다.",
+        target_grammar="문장 삽입",
+    )
+
+    issues = validate_question(question, [])
+
+    assert normalize_text("①") == "1"
+    assert normalize_text("②") == "2"
+    assert not any(issue.code == "duplicate_choices" for issue in issues)
+
+
+def test_grammar_blank_normalizes_any_blank_spacing():
+    stems = ["문장 ().", "문장 ( ).", "문장 (  ).", "문장 (   ).", "문장 （   ）."]
+
+    for stem in stems:
+        question = GeneratedQuestion.model_validate(sample_question(stem))
+        issues = validate_question(question, [])
+        assert question.stem == "문장 ( )."
+        assert not any(issue.code == "blank_count" for issue in issues)
 
 
 def test_payload_and_storage_round_trip(tmp_path):

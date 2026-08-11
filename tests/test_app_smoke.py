@@ -29,6 +29,19 @@ def test_all_stages_render_without_exception():
     assert any(button.label == "선택 모델 적용" for button in app.button)
 
 
+def test_postgres_publication_page_renders_without_database_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    app = AppTest.from_file(
+        str(ROOT / "topik_question_lab" / "postgres_publish_app.py"), default_timeout=20
+    ).run()
+
+    assert not app.exception
+    assert any(title.value == "PostgreSQL 문항 은행 발행" for title in app.title)
+    assert [tab.label for tab in app.tabs] == ["문항 동기화", "50문항 세트", "이관 현황", "발행 이력"]
+    publish = next(button for button in app.button if button.label == "PostgreSQL에 50문항 발행")
+    assert publish.disabled
+
+
 def test_database_delete_dialog_requires_confirmation():
     app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=10).run()
     database_button = next(button for button in app.sidebar.button if button.label == "유형 DB 관리")

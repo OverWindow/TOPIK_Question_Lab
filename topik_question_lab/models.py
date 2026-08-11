@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -7,6 +8,11 @@ from pydantic import BaseModel, Field, field_validator
 
 
 ProviderName = str
+BLANK_MARKER_PATTERN = re.compile(r"(?:\(\s*\)|（\s*）)")
+
+
+def normalize_blank_marker(value: str) -> str:
+    return BLANK_MARKER_PATTERN.sub("( )", value).strip()
 
 
 def utc_now() -> str:
@@ -66,7 +72,7 @@ class GeneratedQuestion(BaseModel):
     @field_validator("stem")
     @classmethod
     def normalize_blank(cls, value: str) -> str:
-        return value.replace("（ ）", "( )").replace("(  )", "( )").strip()
+        return normalize_blank_marker(value)
 
 
 class GenerationPayload(BaseModel):

@@ -36,6 +36,8 @@ class PublicationCandidate:
     prompt_user: str
     created_at: str
     source_db: str
+    generation_preset: str | None = None
+    request_parameters: dict[str, object] = field(default_factory=dict)
 
     @property
     def slot(self) -> int:
@@ -131,7 +133,15 @@ class PublicationSetDraft:
 
     @property
     def set_id(self) -> uuid.UUID:
+        """Legacy sequence-1 set ID retained for backward compatibility."""
+        return self.set_id_for_sequence(1)
+
+    def set_id_for_sequence(self, set_sequence: int) -> uuid.UUID:
+        if set_sequence < 1:
+            raise ValueError("set_sequence는 1 이상이어야 합니다.")
         identity = f"set:{self.section}:{self.backend}:{self.provider_key}:{self.model_id}"
+        if set_sequence > 1:
+            identity = f"{identity}:sequence:{set_sequence}"
         return uuid.uuid5(PUBLICATION_NAMESPACE, identity)
 
 
@@ -158,6 +168,17 @@ def group_by_slot(candidates: Iterable[PublicationCandidate]) -> dict[int, list[
     for values in grouped.values():
         values.sort(key=lambda value: (value.created_at, value.generated_id), reverse=True)
     return grouped
+
+
+def unused_set_candidates(
+    candidates: Iterable[PublicationCandidate],
+    used_source_keys: set[str],
+) -> tuple[list[PublicationCandidate], list[PublicationCandidate]]:
+    unused: list[PublicationCandidate] = []
+    used: list[PublicationCandidate] = []
+    for candidate in candidates:
+        (used if candidate.source_key in used_source_keys else unused).append(candidate)
+    return unused, used
 
 
 def validate_complete_selection(candidates: Iterable[PublicationCandidate]) -> tuple[PublicationCandidate, ...]:
@@ -375,7 +396,7 @@ def _collect_database(path: Path, root: Path, section: Section, catalog: Candida
             rows = connection.execute(
                 """SELECT g.id, g.run_id, g.provider, g.model, g.data_json, g.edited_json,
                           g.validation_json, g.created_at, rv.data_json AS review_json,
-                          run.prompt_system, run.prompt_user
+                          run.prompt_system, run.prompt_user, run.result_json
                    FROM generated_questions g
                    JOIN runs run ON run.id = g.run_id
                    LEFT JOIN reviews rv ON rv.generated_question_id = g.id
@@ -401,6 +422,11 @@ def _collect_database(path: Path, root: Path, section: Section, catalog: Candida
             reason = "자동 검사 오류가 남아 있습니다."
         provider_key = str(row["provider"])
         model_id = str(row["model"])
+        run_result = _json_object(row["result_json"])
+        generation_preset = run_result.get("generation_preset")
+        request_parameters = run_result.get("request_parameters", {})
+        if not isinstance(request_parameters, dict):
+            request_parameters = {}
         candidate = PublicationCandidate(
             section=section,
             question_type=question_type,
@@ -416,6 +442,8 @@ def _collect_database(path: Path, root: Path, section: Section, catalog: Candida
             prompt_user=str(row["prompt_user"]),
             created_at=str(row["created_at"]),
             source_db=str(path.relative_to(root)).replace("\\", "/"),
+            generation_preset=str(generation_preset) if generation_preset else None,
+            request_parameters=request_parameters,
         )
         catalog.records.append(LocalPublicationRecord(candidate, not reason, reason))
         if reason:

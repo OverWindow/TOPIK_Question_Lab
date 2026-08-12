@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 from topik_question_lab.exports import to_csv, to_json, to_txt
 from topik_question_lab.highlights import highlighted_html, parse_highlight_marker
-from topik_question_lab.models import EnrichmentPayload, GeneratedQuestion, QuestionExample, Review
+from topik_question_lab.listening_storage import ListeningStorage
+from topik_question_lab.models import EnrichmentPayload, GeneratedQuestion, ProviderResult, QuestionExample, Review
 from topik_question_lab.navigation import next_sequence_item
 from topik_question_lab.prompt_profiles import (
     DEFAULT_PROVIDER_INSTRUCTIONS,
@@ -13,14 +15,21 @@ from topik_question_lab.prompts import build_enrichment_prompt, build_generation
 from topik_question_lab.providers import (
     DEFAULT_ACTIVE_PROVIDERS,
     DEFAULT_PROVIDERS,
+    GENERATION_PRESETS,
     call_provider,
     can_gateway_call,
     extract_json,
     has_api_key,
     has_deepseek_api_key,
+    dump_generation_presets,
+    generation_parameter_family,
+    generation_preset_prompt,
+    generation_request_parameters,
     list_chatkhu_models,
     manual_result,
+    parse_generation_presets,
     provider_label,
+    resolve_generation_preset,
 )
 from topik_question_lab.storage import Storage
 from topik_question_lab.validation import normalize_text, validate_generation_payload, validate_question
@@ -55,6 +64,182 @@ def test_manual_invalid_json_preserves_raw_response():
     assert result.raw_response == "not-json"
     assert result.parsed_json is None
     assert result.error
+
+
+def test_legacy_provider_result_loads_without_preset_fields():
+    result = ProviderResult.model_validate(
+        {
+            "provider": "claude",
+            "model": "claude-test",
+            "operation": "generation",
+            "raw_response": "{}",
+        }
+    )
+
+    assert result.generation_preset is None
+    assert result.request_parameters == {}
+
+
+def test_generation_preset_parameter_mapping_is_model_safe():
+    precise_deepseek = generation_request_parameters(
+        "deepseek_v4_pro", "deepseek-v4-pro", "precise_generation"
+    )
+    fast_deepseek = generation_request_parameters(
+        "deepseek", "deepseek-v4-flash", "fast_draft"
+    )
+    diverse_deepseek = generation_request_parameters(
+        "deepseek", "deepseek-v4-flash", "diverse_draft"
+    )
+    gpt = generation_request_parameters("gpt_5_6_luna", "gpt-5.6-luna", "precise_generation")
+
+    assert precise_deepseek["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert precise_deepseek["reasoning_effort"] == "high"
+    assert "temperature" not in precise_deepseek and "top_p" not in precise_deepseek
+    assert fast_deepseek["temperature"] == 0.3
+    assert diverse_deepseek["temperature"] == 0.75
+    assert fast_deepseek["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert gpt["reasoning_effort"] == "high"
+    assert gpt["max_completion_tokens"] == 32_768
+    assert gpt["response_format"] == {"type": "json_object"}
+    assert "temperature" not in gpt and "top_p" not in gpt and "max_tokens" not in gpt
+    assert generation_request_parameters("claude", "claude-haiku", "precise_generation") == {}
+
+
+def test_generation_preset_capability_and_prompt_instruction():
+    assert generation_parameter_family("deepseek", "deepseek-v4-flash") == "deepseek"
+    assert generation_parameter_family("tenant-model", "gpt-5.6-custom") == "gpt"
+    assert generation_parameter_family("gemini", "gemini-3.5-flash") is None
+    prompt = generation_preset_prompt("system", "format_repair")
+    assert GENERATION_PRESETS["format_repair"].label in prompt
+    assert "JSON 객체" in prompt
+
+
+def test_generation_preset_settings_are_type_and_model_independent(tmp_path):
+    reading_one = Storage(tmp_path / "reading-one.db")
+    reading_two = Storage(tmp_path / "reading-two.db")
+    listening = ListeningStorage(tmp_path / "listening.db")
+    reading_one.set_setting(
+        "generation_presets",
+        dump_generation_presets({"gpt_5_6_luna": "fast_draft", "deepseek": "format_repair"}),
+    )
+    reading_two.set_setting("generation_presets", dump_generation_presets({"gpt_5_6_luna": "diverse_draft"}))
+    listening.set_setting("generation_presets", dump_generation_presets({"gpt_5_6_luna": "precise_generation"}))
+
+    reading_one_reopened = Storage(tmp_path / "reading-one.db")
+    listening_reopened = ListeningStorage(tmp_path / "listening.db")
+    assert parse_generation_presets(reading_one_reopened.get_setting("generation_presets"))["deepseek"] == "format_repair"
+    assert resolve_generation_preset(
+        reading_one_reopened.get_setting("generation_presets"), "gpt_5_6_luna", "gpt-5.6-luna"
+    ) == "fast_draft"
+    assert resolve_generation_preset(
+        reading_two.get_setting("generation_presets"), "gpt_5_6_luna", "gpt-5.6-luna"
+    ) == "diverse_draft"
+    assert resolve_generation_preset(
+        listening_reopened.get_setting("generation_presets"), "gpt_5_6_luna", "gpt-5.6-luna"
+    ) == "precise_generation"
+    assert resolve_generation_preset("{}", "gpt_5_6_luna", "gpt-5.6-luna") == "precise_generation"
+
+
+def test_manual_generation_records_preset_without_api_parameters():
+    result = manual_result(
+        "gpt_5_6_luna",
+        "gpt-5.6-luna",
+        "generation",
+        '{"questions": []}',
+        "fast_draft",
+    )
+
+    assert result.generation_preset == "fast_draft"
+    assert result.request_parameters == {"api_parameters_applied": False, "mode": "web_manual"}
+
+
+def test_provider_generation_sends_only_family_parameters(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            message = SimpleNamespace(content='{"questions": []}')
+            usage = SimpleNamespace(prompt_tokens=1, completion_tokens=2)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("CHATKHU_API_KEY", "test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+
+    deepseek = call_provider(
+        "deepseek", "deepseek-v4-flash", "generation", "system", "user", generation_preset="format_repair"
+    )
+    gpt = call_provider(
+        "gpt_5_6_luna", "gpt-5.6-luna", "generation", "system", "user", generation_preset="fast_draft"
+    )
+    unsupported = call_provider(
+        "claude", "claude-haiku-4-5", "generation", "system", "user", generation_preset="precise_generation"
+    )
+
+    assert calls[0]["temperature"] == 0.1
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0]["max_tokens"] == 32_768
+    assert calls[1]["reasoning_effort"] == "low"
+    assert calls[1]["max_completion_tokens"] == 32_768
+    assert "temperature" not in calls[1] and "top_p" not in calls[1]
+    assert set(calls[2]) == {"model", "messages"}
+    assert deepseek.request_parameters["api_parameters_applied"] is True
+    assert gpt.generation_preset == "fast_draft"
+    assert unsupported.generation_preset is None
+    assert unsupported.request_parameters == {}
+
+
+def test_generation_api_error_keeps_attempted_parameter_record(monkeypatch):
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RuntimeError("400 invalid parameter")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FailingCompletions())
+
+    monkeypatch.setenv("CHATKHU_API_KEY", "test")
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    result = call_provider(
+        "gpt_5_6_luna", "gpt-5.6-luna", "generation", "system", "user", generation_preset="precise_generation"
+    )
+
+    assert "400 invalid parameter" in result.error
+    assert result.generation_preset == "precise_generation"
+    assert result.request_parameters["reasoning_effort"] == "high"
+
+
+def test_empty_and_truncated_generation_responses_keep_existing_error_flow(monkeypatch):
+    responses = iter(["", '{"questions": ['])
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            message = SimpleNamespace(content=next(responses))
+            usage = SimpleNamespace(prompt_tokens=1, completion_tokens=2)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("CHATKHU_API_KEY", "test")
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    empty = call_provider(
+        "gpt_5_6_luna", "gpt-5.6-luna", "generation", "system", "user", generation_preset="fast_draft"
+    )
+    truncated = call_provider(
+        "gpt_5_6_luna", "gpt-5.6-luna", "generation", "system", "user", generation_preset="fast_draft"
+    )
+
+    assert empty.parsed_json is None and empty.error
+    assert truncated.parsed_json is None and truncated.error
+    assert empty.request_parameters["response_format"] == {"type": "json_object"}
+    assert truncated.generation_preset == "fast_draft"
 
 
 def test_storage_can_delete_database_and_sidecar_files(tmp_path):

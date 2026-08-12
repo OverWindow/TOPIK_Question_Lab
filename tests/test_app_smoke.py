@@ -30,16 +30,27 @@ def test_all_stages_render_without_exception():
 
 
 def test_postgres_publication_page_renders_without_database_url(monkeypatch):
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("PRODUCTION_DATABASE_URL", "")
     app = AppTest.from_file(
         str(ROOT / "topik_question_lab" / "postgres_publish_app.py"), default_timeout=20
     ).run()
 
     assert not app.exception
     assert any(title.value == "PostgreSQL 문항 은행 발행" for title in app.title)
-    assert [tab.label for tab in app.tabs] == ["문항 동기화", "50문항 세트", "이관 현황", "발행 이력"]
-    publish = next(button for button in app.button if button.label == "PostgreSQL에 50문항 발행")
+    assert [tab.label for tab in app.tabs] == [
+        "문항 동기화", "50문항 세트", "이관 현황", "발행 이력", "운영 Supabase 배포"
+    ]
+    publish = next(
+        button
+        for button in app.button
+        if button.label == "PostgreSQL에 새 50문항 세트 발행"
+    )
     assert publish.disabled
+    production_status = next(
+        button for button in app.button if button.label == "원본·운영 연결 및 연동 상태 확인"
+    )
+    assert production_status.disabled
 
 
 def test_database_delete_dialog_requires_confirmation():

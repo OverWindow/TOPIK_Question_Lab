@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from topik_question_lab.models import ProviderResult, Review
-from topik_question_lab.postgres_storage import _insert_set_items, _safe_error
+from topik_question_lab.postgres_storage import (
+    _insert_set_items,
+    _resolve_set_membership,
+    _safe_error,
+    _source_provenance,
+)
 from topik_question_lab.publication import (
     CandidateCatalog,
     LocalPublicationRecord,
@@ -16,6 +21,7 @@ from topik_question_lab.publication import (
     display_stem,
     group_by_slot,
     reconcile_catalog,
+    unused_set_candidates,
     validate_complete_selection,
 )
 from topik_question_lab.storage import Storage
@@ -84,6 +90,27 @@ def test_set_draft_derives_metadata_length_and_stable_hashes():
     assert first.items[0].stem_length == len("1번 문항 ( ).")
     assert first.items[0].choice_count == 4
     assert first.items[0].metadata.primary_skill == "조건 표현"
+    assert first.set_id_for_sequence(1) == first.set_id
+    assert first.set_id_for_sequence(2) != first.set_id
+    assert first.set_id_for_sequence(2) == second.set_id_for_sequence(2)
+
+
+def test_used_source_keys_are_excluded_even_when_candidate_content_changes():
+    original = candidate(1)
+    revised = PublicationCandidate(
+        **{
+            **original.__dict__,
+            "question": {**original.question, "stem": "수정된 1번 문항 ( )."},
+        }
+    )
+    available = candidate(2)
+
+    unused, used = unused_set_candidates(
+        [revised, available], {original.source_key}
+    )
+
+    assert unused == [available]
+    assert used == [revised]
 
 
 def test_independent_item_drafts_do_not_require_a_complete_set():
@@ -111,7 +138,17 @@ def test_listening_display_uses_dialogue_and_visual_descriptions():
 def test_collector_keeps_only_approved_valid_canonical_slots(tmp_path: Path):
     db_path = tmp_path / "data" / "types" / "grammar_blank.db"
     storage = Storage(db_path)
-    result = ProviderResult(provider="model-key", model="exact-model", operation="generation")
+    result = ProviderResult(
+        provider="model-key",
+        model="exact-model",
+        operation="generation",
+        generation_preset="fast_draft",
+        request_parameters={
+            "api_parameters_applied": True,
+            "reasoning_effort": "low",
+            "max_completion_tokens": 32768,
+        },
+    )
     run_id = storage.save_run(result, "system", "user", "grammar_blank")
     base = {
         "question_type": "grammar_blank",
@@ -135,12 +172,35 @@ def test_collector_keeps_only_approved_valid_canonical_slots(tmp_path: Path):
     grouped = group_by_slot(catalog.candidates)
 
     assert len(catalog.candidates) == 1
+    assert catalog.candidates[0].generation_preset == "fast_draft"
+    assert catalog.candidates[0].request_parameters["reasoning_effort"] == "low"
     assert len(grouped[1]) == 1
     assert len(catalog.exclusions) == 2
     assert {value.reason for value in catalog.exclusions} == {
         "자동 검사 오류가 남아 있습니다.",
         "grammar_blank 유형의 담당 번호 [1, 2]와 문항 번호 3이 일치하지 않습니다.",
     }
+
+
+def test_postgres_source_provenance_includes_generation_preset():
+    value = candidate(1)
+    value = PublicationCandidate(
+        **{
+            **value.__dict__,
+            "generation_preset": "precise_generation",
+            "request_parameters": {
+                "api_parameters_applied": True,
+                "reasoning_effort": "high",
+                "max_completion_tokens": 32768,
+            },
+        }
+    )
+
+    provenance = _source_provenance(value)
+
+    assert provenance["generation_preset"] == "precise_generation"
+    assert provenance["request_parameters"]["api_parameters_applied"] is True
+    assert "api_key" not in provenance["request_parameters"]
 
 
 def test_collector_discards_legacy_circled_choice_duplicate_error(tmp_path: Path):
@@ -231,6 +291,16 @@ def test_migration_declares_required_item_bank_fields():
     assert "type_slot" in second
     assert "topik_bank.current_items" in second
     assert "topik_bank.current_set_contents" in second
+
+    third = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "003_multi_question_sets.sql").read_text(encoding="utf-8")
+    assert "set_sequence" in third
+    assert "question_sets_identity_sequence_key" in third
+    assert "DROP CONSTRAINT IF EXISTS question_sets_section_generator_provider_generator_model_ge_key" in third
+
+    fourth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "004_postgres_deployments.sql").read_text(encoding="utf-8")
+    assert "topik_bank.deployment_runs" in fourth
+    assert "topik_bank.deployment_run_sets" in fourth
+    assert "outcome_unknown" in fourth
 
 
 def test_reconciliation_reports_all_local_and_postgres_states():
@@ -345,3 +415,56 @@ def test_set_item_batch_insert_uses_cursor_executemany():
     assert len(connection.value.calls) == 1
     assert "question_set_items" in connection.value.calls[0][0]
     assert connection.value.calls[0][1] == rows
+
+
+def test_set_membership_retry_is_idempotent_and_partial_overlap_conflicts():
+    identity = ("reading", "chatkhu", "gpt_5_6_luna", "gpt-5.6-luna")
+    requested = {slot: f"reading:type:{slot}" for slot in range(1, 51)}
+    rows = [
+        {
+            "set_id": "set-one",
+            "set_sequence": 1,
+            "set_version": 1,
+            "section": identity[0],
+            "generator_provider": identity[1],
+            "generator_model": identity[2],
+            "generator_version": identity[3],
+            "position": slot,
+            "source_key": source_key,
+        }
+        for slot, source_key in requested.items()
+    ]
+
+    existing, conflicts = _resolve_set_membership(rows, requested, identity)
+    assert existing == ("set-one", 1, 1)
+    assert conflicts == []
+
+    existing, conflicts = _resolve_set_membership(rows[:1], requested, identity)
+    assert existing is None
+    assert conflicts == ["reading:type:1"]
+
+
+def test_set_membership_from_other_identity_is_always_a_conflict():
+    requested = {1: "reading:type:1"}
+    rows = [
+        {
+            "set_id": "other-set",
+            "set_sequence": 1,
+            "set_version": 1,
+            "section": "reading",
+            "generator_provider": "other",
+            "generator_model": "other",
+            "generator_version": "other",
+            "position": 1,
+            "source_key": "reading:type:1",
+        }
+    ]
+
+    existing, conflicts = _resolve_set_membership(
+        rows,
+        requested,
+        ("reading", "chatkhu", "gpt_5_6_luna", "gpt-5.6-luna"),
+    )
+
+    assert existing is None
+    assert conflicts == ["reading:type:1"]

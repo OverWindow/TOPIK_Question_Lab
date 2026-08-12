@@ -30,6 +30,44 @@ class ProviderConfig:
     backend: str = "chatkhu"
 
 
+@dataclass(frozen=True)
+class GenerationPreset:
+    preset_id: str
+    label: str
+    description: str
+    prompt_instruction: str
+
+
+GENERATION_PRESETS = {
+    "fast_draft": GenerationPreset(
+        "fast_draft",
+        "빠른 초안",
+        "짧은 추론으로 빠르게 초안을 만들되 필수 형식을 지킵니다.",
+        "빠르게 생성하되 요청된 문항 수, JSON 스키마, 정답의 유일성을 모두 지키십시오.",
+    ),
+    "diverse_draft": GenerationPreset(
+        "diverse_draft",
+        "다양한 초안",
+        "예시와 겹치지 않는 다양한 소재의 초안을 만듭니다.",
+        "기존 예시와 겹치지 않도록 소재, 상황, 인물을 다양화하고 요청된 JSON 스키마를 지키십시오.",
+    ),
+    "precise_generation": GenerationPreset(
+        "precise_generation",
+        "정밀 생성",
+        "충분히 추론한 뒤 TOPIK 적합성과 문항 품질을 검토합니다.",
+        "정답 유일성, 오답의 타당성, 목표 TOPIK 수준 적합성을 최종 검토한 뒤 JSON 객체만 출력하십시오.",
+    ),
+    "format_repair": GenerationPreset(
+        "format_repair",
+        "형식 오류 수정",
+        "출력 형식 복구에 집중하고 임의 설명을 억제합니다.",
+        "설명이나 코드 펜스를 덧붙이지 말고 요청된 구조와 필드를 정확히 갖춘 JSON 객체만 출력하십시오.",
+    ),
+}
+DEFAULT_GENERATION_PRESET = "precise_generation"
+GENERATION_OUTPUT_TOKEN_LIMIT = 32_768
+
+
 # These are initial suggestions only. The models enabled for ChatKHU can differ by
 # account, so the UI can fetch and display the tenant's actual model list.
 DEFAULT_PROVIDERS = {
@@ -94,6 +132,100 @@ def provider_backend(provider: str, model: str = "") -> str:
     return "deepseek" if candidate.startswith("deepseek-") else "chatkhu"
 
 
+def generation_parameter_family(provider: str, model: str) -> str | None:
+    """Return the generation-preset API family supported by this model."""
+    if provider_backend(provider, model) == "deepseek":
+        return "deepseek"
+    normalized_model = model.strip().lower().rsplit("/", 1)[-1]
+    if normalized_model.startswith("gpt-"):
+        return "gpt"
+    return None
+
+
+def supports_generation_presets(provider: str, model: str) -> bool:
+    return generation_parameter_family(provider, model) is not None
+
+
+def parse_generation_presets(raw: str | None) -> dict[str, str]:
+    try:
+        value = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(provider): str(preset_id)
+        for provider, preset_id in value.items()
+        if str(preset_id) in GENERATION_PRESETS
+    }
+
+
+def dump_generation_presets(values: dict[str, str]) -> str:
+    validated = {
+        str(provider): str(preset_id)
+        for provider, preset_id in values.items()
+        if str(preset_id) in GENERATION_PRESETS
+    }
+    return json.dumps(validated, ensure_ascii=False, sort_keys=True)
+
+
+def resolve_generation_preset(raw_settings: str | None, provider: str, model: str) -> str | None:
+    if not supports_generation_presets(provider, model):
+        return None
+    return parse_generation_presets(raw_settings).get(provider, DEFAULT_GENERATION_PRESET)
+
+
+def generation_preset_prompt(system_prompt: str, preset_id: str | None) -> str:
+    if not preset_id:
+        return system_prompt
+    preset = GENERATION_PRESETS.get(preset_id, GENERATION_PRESETS[DEFAULT_GENERATION_PRESET])
+    suffix = (
+        "\n\n[문제 생성 프리셋]\n"
+        f"- 이름: {preset.label}\n"
+        f"- 지침: {preset.prompt_instruction}\n"
+        "- 출력: 최상위 값이 JSON 객체인 유효한 JSON만 반환하십시오."
+    )
+    return system_prompt.rstrip() + suffix
+
+
+def generation_request_parameters(provider: str, model: str, preset_id: str | None) -> dict[str, object]:
+    family = generation_parameter_family(provider, model)
+    if family is None:
+        return {}
+    selected = preset_id if preset_id in GENERATION_PRESETS else DEFAULT_GENERATION_PRESET
+    if family == "gpt":
+        effort = "high" if selected == "precise_generation" else "low"
+        return {
+            "reasoning_effort": effort,
+            "max_completion_tokens": GENERATION_OUTPUT_TOKEN_LIMIT,
+            "response_format": {"type": "json_object"},
+        }
+
+    parameters: dict[str, object] = {
+        "max_tokens": GENERATION_OUTPUT_TOKEN_LIMIT,
+        "response_format": {"type": "json_object"},
+    }
+    if selected == "precise_generation":
+        parameters["reasoning_effort"] = "high"
+        parameters["extra_body"] = {"thinking": {"type": "enabled"}}
+    else:
+        temperatures = {
+            "fast_draft": 0.3,
+            "diverse_draft": 0.75,
+            "format_repair": 0.1,
+        }
+        parameters["temperature"] = temperatures[selected]
+        parameters["extra_body"] = {"thinking": {"type": "disabled"}}
+    return parameters
+
+
+def generation_parameter_preview(provider: str, model: str, preset_id: str | None) -> dict[str, object]:
+    parameters = generation_request_parameters(provider, model, preset_id)
+    if not parameters:
+        return {"api_parameters_applied": False, "mode": "기본 API 설정"}
+    return {"api_parameters_applied": True, **parameters}
+
+
 def has_api_key(provider: ProviderName) -> bool:
     return has_deepseek_api_key() if provider_backend(provider) == "deepseek" else has_chatkhu_api_key()
 
@@ -150,7 +282,13 @@ def extract_json(raw: str) -> dict:
     return value
 
 
-def manual_result(provider: ProviderName, model: str, operation: str, raw: str) -> ProviderResult:
+def manual_result(
+    provider: ProviderName,
+    model: str,
+    operation: str,
+    raw: str,
+    generation_preset: str | None = None,
+) -> ProviderResult:
     started = time.perf_counter()
     try:
         parsed = extract_json(raw)
@@ -158,6 +296,12 @@ def manual_result(provider: ProviderName, model: str, operation: str, raw: str) 
     except Exception as exc:
         parsed = None
         error = str(exc)
+    applied_preset = None
+    request_parameters: dict[str, object] = {}
+    if operation == "generation":
+        request_parameters = {"api_parameters_applied": False, "mode": "web_manual"}
+        if supports_generation_presets(provider, model):
+            applied_preset = generation_preset if generation_preset in GENERATION_PRESETS else DEFAULT_GENERATION_PRESET
     return ProviderResult(
         provider=provider,
         model=model,
@@ -166,6 +310,8 @@ def manual_result(provider: ProviderName, model: str, operation: str, raw: str) 
         parsed_json=parsed,
         duration_seconds=time.perf_counter() - started,
         error=error,
+        generation_preset=applied_preset,
+        request_parameters=request_parameters,
     )
 
 
@@ -176,11 +322,14 @@ def call_provider(
     system_prompt: str,
     user_prompt: str,
     image_paths: list[Path] | None = None,
+    generation_preset: str | None = None,
 ) -> ProviderResult:
     started = time.perf_counter()
     raw = ""
     input_tokens = None
     output_tokens = None
+    applied_preset = None
+    request_parameters: dict[str, object] = {}
     try:
         from openai import OpenAI
 
@@ -214,12 +363,22 @@ def call_provider(
                 )
         else:
             user_content = user_prompt
+        api_parameters: dict[str, object] = {}
+        if operation == "generation" and supports_generation_presets(provider, model):
+            applied_preset = (
+                generation_preset
+                if generation_preset in GENERATION_PRESETS
+                else DEFAULT_GENERATION_PRESET
+            )
+            api_parameters = generation_request_parameters(provider, model, applied_preset)
+            request_parameters = {"api_parameters_applied": True, **api_parameters}
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            **api_parameters,
         )
         raw = response.choices[0].message.content or ""
         input_tokens = getattr(response.usage, "prompt_tokens", None)
@@ -240,4 +399,6 @@ def call_provider(
         output_tokens=output_tokens,
         duration_seconds=time.perf_counter() - started,
         error=error,
+        generation_preset=applied_preset,
+        request_parameters=request_parameters,
     )

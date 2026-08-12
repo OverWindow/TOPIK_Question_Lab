@@ -1,8 +1,8 @@
 # TOPIK PostgreSQL 문항 은행 — 구조·운영·인수인계 문서
 
-> 최종 확인일: 2026-08-10 (미국 동부 시간) / 2026-08-11 (한국 시간)
+> 최종 확인일: 2026-08-11 (미국 동부 시간) / 2026-08-12 (한국 시간)
 >
-> 이 문서는 다음 작업 세션에서 PostgreSQL 구조와 현재 이관 상태를 빠르게 복원하기 위한 기준 문서다. 실제 접속 주소와 비밀번호는 보안상 적지 않는다. 접속 정보는 프로젝트 루트의 `.env`에 있는 `DATABASE_URL`을 사용한다.
+> 이 문서는 다음 작업 세션에서 PostgreSQL 구조와 현재 이관 상태를 빠르게 복원하기 위한 기준 문서다. 실제 접속 주소와 비밀번호는 보안상 적지 않는다. 로컬 원본은 `.env`의 `DATABASE_URL`, 운영 Supabase는 `PRODUCTION_DATABASE_URL`을 사용한다.
 
 ## 1. 가장 먼저 알아야 할 결론
 
@@ -10,7 +10,7 @@
 - SQL은 데이터를 조회·변경하는 언어이고 PostgreSQL은 데이터베이스다. 따라서 “문항이 SQL에 저장되었다”보다 “문항이 PostgreSQL 테이블에 저장되었다”가 정확하다.
 - 로컬 SQLite는 문제 생성·수정·검수용 원본(authoring source)으로 계속 사용한다.
 - PostgreSQL은 검수가 끝난 문항과 발행 세트를 서비스에서 읽기 위한 문항 은행(production/read model)이다.
-- 현재 흐름은 **SQLite → PostgreSQL 단방향 수동 동기화**다. PostgreSQL에서 SQLite로 되돌리는 자동 역동기화는 없다.
+- 현재 흐름은 **SQLite → 로컬 PostgreSQL → 운영 Supabase PostgreSQL 단방향 수동 동기화**다. 반대 방향 자동 역동기화는 없다.
 - 문항 자체와 문항 버전, 모델 정보, 원본 추적 정보, 세트 및 세트 버전이 모두 PostgreSQL에 보존된다.
 - 동일 문항을 수정한 뒤 다시 동기화하면 기존 문항을 덮어쓰지 않고 `item_version`이 증가한다.
 - 세트는 포함된 정확한 `(item_id, item_version)` 조합을 저장하므로, 문항이 나중에 수정되어도 과거 세트 내용은 재현할 수 있다.
@@ -25,13 +25,13 @@
 
 | 객체 | 현재 행 수 | 의미 |
 | --- | ---: | --- |
-| `topik_bank.items` | 286 | 논리 문항 ID 수 |
-| `topik_bank.item_versions` | 286 | 저장된 전체 문항 버전 수 |
-| `topik_bank.question_sets` | 4 | 모델·영역 조합으로 만든 논리 세트 수 |
-| `topik_bank.question_set_versions` | 4 | 저장된 전체 세트 버전 수 |
-| `topik_bank.question_set_items` | 200 | 세트에 고정된 문항 버전 연결 수(4세트 × 50문항) |
-| `topik_bank.current_items` | 286 | 논리 문항별 최신 버전 수 |
-| `topik_bank.current_set_contents` | 200 | 논리 세트별 최신 버전의 문항 수 |
+| `topik_bank.items` | 386 | 논리 문항 ID 수 |
+| `topik_bank.item_versions` | 386 | 저장된 전체 문항 버전 수 |
+| `topik_bank.question_sets` | 6 | 모델·영역·세트 번호로 만든 논리 세트 수 |
+| `topik_bank.question_set_versions` | 6 | 저장된 전체 세트 버전 수 |
+| `topik_bank.question_set_items` | 300 | 세트에 고정된 문항 버전 연결 수(6세트 × 50문항) |
+| `topik_bank.current_items` | 386 | 논리 문항별 최신 버전 수 |
+| `topik_bank.current_set_contents` | 300 | 논리 세트별 최신 버전의 문항 수 |
 
 적용된 마이그레이션:
 
@@ -39,6 +39,10 @@
 | --- | --- | --- |
 | `001_question_bank` | `2026-08-11 03:31:53.851261+09:00` | 문항·세트·버전 테이블과 기본 인덱스 생성 |
 | `002_complete_item_bank` | `2026-08-11 04:21:08.703536+09:00` | `type_slot`, 추가 인덱스, 최신 문항/세트 뷰 추가 |
+| `003_multi_question_sets` | `2026-08-12 06:33:11.951543+09:00` | 모델·영역별 독립 세트 번호와 다중 세트 제약 추가 |
+
+`004_postgres_deployments`는 코드에 추가되어 있으나 마지막 데이터 확인 시 로컬 DB에는 아직
+적용하지 않았다. 앱의 `원본·운영 배포 스키마 준비`를 명시적으로 눌렀을 때 양쪽 DB에 적용된다.
 
 현재 최신 문항의 모델·영역별 분포:
 
@@ -48,24 +52,26 @@
 | 듣기 | `gpt-5.6-luna` | 50 |
 | 읽기 | `claude-haiku-4-5-20251001` | 26 |
 | 읽기 | `deepseek-v4-flash` | 26 |
-| 읽기 | `deepseek-v4-pro` | 54 |
+| 읽기 | `deepseek-v4-pro` | 104 |
 | 읽기 | `gemini-3.5-flash` | 26 |
-| 읽기 | `gpt-5.6-luna` | 54 |
+| 읽기 | `gpt-5.6-luna` | 104 |
 
 현재 완성된 최신 50문항 세트:
 
-| 영역 | 모델 | 문항 수 |
-| --- | --- | ---: |
-| 듣기 | DeepSeek Pro (`deepseek-v4-pro`) | 50 |
-| 듣기 | GPT Luna (`gpt-5.6-luna`) | 50 |
-| 읽기 | DeepSeek Pro (`deepseek-v4-pro`) | 50 |
-| 읽기 | GPT Luna (`gpt-5.6-luna`) | 50 |
+| 영역 | 모델 | 세트 번호 | 문항 수 |
+| --- | --- | ---: | ---: |
+| 듣기 | DeepSeek Pro (`deepseek-v4-pro`) | 1 | 50 |
+| 듣기 | GPT Luna (`gpt-5.6-luna`) | 1 | 50 |
+| 읽기 | DeepSeek Pro (`deepseek-v4-pro`) | 1 | 50 |
+| 읽기 | DeepSeek Pro (`deepseek-v4-pro`) | 2 | 50 |
+| 읽기 | GPT Luna (`gpt-5.6-luna`) | 1 | 50 |
+| 읽기 | GPT Luna (`gpt-5.6-luna`) | 2 | 50 |
 
 마지막 이관 대조 결과:
 
-- 최신: 286개
+- 최신: 386개
 - 발행 제외: 9개
-- 최신 세트에 포함: 200개
+- 과거·현재 세트에 포함: 300개
 - 승인되었지만 미동기화된 문항: 0개
 
 “발행 제외”는 PostgreSQL 저장 실패가 아니다. 로컬 문항이 승인 조건 또는 유효성 조건을 충족하지 않아 발행 후보에서 제외되었고 PostgreSQL에도 아직 없는 상태다.
@@ -78,11 +84,13 @@ flowchart LR
     B --> C["검수 및 유효성 검사"]
     C --> D["문항 동기화"]
     C --> E["1~50번 세트 선택"]
-    D --> F["PostgreSQL topik_bank"]
+    D --> F["로컬 PostgreSQL topik_bank"]
     E --> G["50문항 세트 발행"]
     G --> F
-    F --> H["current_items"]
-    F --> I["current_set_contents"]
+    F --> K["운영 Supabase 원자적 배포"]
+    K --> L["운영 topik_bank"]
+    L --> H["current_items"]
+    L --> I["current_set_contents"]
     H --> J["프로덕션 서비스"]
     I --> J
 ```
@@ -150,6 +158,8 @@ erDiagram
 4. `topik_bank.question_sets`
 5. `topik_bank.question_set_versions`
 6. `topik_bank.question_set_items`
+7. `topik_bank.deployment_runs`
+8. `topik_bank.deployment_run_sets`
 
 뷰:
 
@@ -260,11 +270,18 @@ listening:dialogue_response:42
   "source_db": "data/types/content_match.db",
   "generated_question_id": 1,
   "run_id": 12,
-  "created_at": "로컬 생성 시각"
+  "created_at": "로컬 생성 시각",
+  "generation_preset": "precise_generation",
+  "request_parameters": {
+    "api_parameters_applied": true,
+    "reasoning_effort": "high",
+    "max_completion_tokens": 32768,
+    "response_format": {"type": "json_object"}
+  }
 }
 ```
 
-이 값으로 PostgreSQL 문항이 어느 SQLite 파일의 어느 생성 행에서 왔는지 추적한다.
+이 값으로 PostgreSQL 문항이 어느 SQLite 파일의 어느 생성 행에서 왔는지, 어떤 생성 프리셋과 실제 비밀값 없는 요청 파라미터를 사용했는지 추적한다. 과거 실행은 두 새 필드가 `null` 또는 빈 객체일 수 있다. 웹 수동 생성은 `request_parameters.api_parameters_applied=false`다. API 키는 provenance에 포함하지 않는다.
 
 #### `content_hash`에 포함되는 의미 정보
 
@@ -300,9 +317,10 @@ listening:dialogue_response:42
 | `generator_provider` | `TEXT` | 불가 |  | 실제 백엔드 |
 | `generator_model` | `TEXT` | 불가 |  | 앱 내부 모델 키 |
 | `generator_version` | `TEXT` | 불가 |  | 정확한 모델 버전 |
+| `set_sequence` | `INTEGER` | 불가 | 1 이상 | 같은 모델·영역 안의 독립 세트 번호 |
 | `created_at` | `TIMESTAMPTZ` | 불가 | `CURRENT_TIMESTAMP` | 논리 세트 최초 생성 시각 |
 
-유일 제약은 `(section, generator_provider, generator_model, generator_version)`이다.
+유일 제약은 `(section, generator_provider, generator_model, generator_version, set_sequence)`이다.
 
 `set_id`도 고정 네임스페이스에 다음 문자열을 넣은 UUIDv5로 생성한다.
 
@@ -310,7 +328,13 @@ listening:dialogue_response:42
 set:{section}:{backend}:{provider_key}:{model_id}
 ```
 
-같은 모델·영역 조합을 다시 발행하면 기존 `set_id` 아래에서 세트 버전을 관리한다.
+위 형식은 기존 호환성을 위해 세트 #1에 그대로 사용한다. 세트 #2 이상은 다음 형식이다.
+
+```text
+set:{section}:{backend}:{provider_key}:{model_id}:sequence:{set_sequence}
+```
+
+미사용 1~50번이 다시 완성되면 같은 모델·영역 안에서 `set_sequence`를 증가시키고 별도 `set_id`를 만든다. 기존 세트를 덮어쓰지 않는다.
 
 ### 5.5 `question_set_versions`
 
@@ -333,7 +357,7 @@ set:{section}:{backend}:{provider_key}:{model_id}
 - 세트 기본 예상 난이도
 - 세트 검수 상태(`reviewed`)
 
-같은 구성을 다시 발행하면 기존 세트 버전을 재사용한다. 문항 버전, 순서, 기본 메타데이터 중 하나라도 바뀌면 다음 `set_version`이 생긴다.
+현재 새 세트 발행 UI는 독립 세트를 `set_version=1`로 만든다. 정확히 같은 50문항·순서의 네트워크 재시도는 기존 세트 버전을 반환한다. 버전 테이블은 기존 데이터 호환성과 향후 세트 수정 이력을 위해 유지한다.
 
 ### 5.6 `question_set_items`
 
@@ -350,6 +374,31 @@ set:{section}:{backend}:{provider_key}:{model_id}
 기본 키는 `(set_id, set_version, position)`, 추가 유일 제약은 `(set_id, set_version, item_id)`이다. 한 위치에는 한 문항만 올 수 있고 동일 논리 문항이 같은 세트에 두 번 들어갈 수도 없다.
 
 DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하지 못한다. 정확히 1~50번이 하나씩 존재하는지는 앱의 `validate_complete_selection()`이 트랜잭션 전에 검사한다.
+
+### 5.7 운영 배포 감사 테이블
+
+`deployment_runs`는 로컬 PostgreSQL에서 운영 Supabase로 실행한 배포 한 번을 기록한다.
+`deployment_run_sets`는 그 실행에 포함된 논리 세트와 원본 스냅샷 해시를 기록한다. 구조
+일관성을 위해 두 DB 모두 테이블을 갖지만 앱은 로컬 원본 DB에만 이력을 쓴다.
+
+| 테이블 | 필드 | 설명 |
+| --- | --- | --- |
+| `deployment_runs` | `run_id` | 배포 실행 UUID |
+|  | `target_fingerprint` | 비밀번호를 제외한 대상 연결 식별 해시 |
+|  | `target_label` | 비밀번호 없는 호스트/DB 표시 |
+|  | `source_snapshot_hash` | 선택한 모든 세트의 원본 의미상 해시 |
+|  | `status` | `running`, `succeeded`, `rolled_back`, `outcome_unknown` |
+|  | `requested_set_count` | 사용자가 선택한 세트 수 |
+|  | `transferred_set_count` / `reused_set_count` | 신규 반영/이미 동일한 세트 수 |
+|  | `created_row_count` / `reused_row_count` | 전체 의존성 행 처리 수 |
+|  | `error_message` | 접속 비밀을 제거한 오류 또는 재확인 메시지 |
+| `deployment_run_sets` | `set_id`, `set_sequence` | 실행에 포함된 논리 세트 |
+|  | `source_snapshot_hash` | 해당 세트만의 의미상 해시 |
+|  | `status`, `detail` | 세트 단위 감사 상태와 설명 |
+
+성공한 운영 데이터를 삭제하는 수동 롤백은 제공하지 않는다. 실패 시 대상 트랜잭션을
+자동 롤백하고, 네트워크 단절로 커밋 결과가 불분명한 경우 재조회 결과에 따라 상태를
+결정한다.
 
 ## 6. 뷰 상세
 
@@ -372,7 +421,7 @@ DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하
 
 주요 컬럼:
 
-- 세트: `set_id`, `set_version`, `set_section`
+- 세트: `set_id`, `set_sequence`, `set_version`, `set_section`
 - 모델: `set_generator_provider`, `set_generator_model`, `set_generator_version`
 - 상태/기본값: `set_review_status`, `default_target_level`, `default_predicted_difficulty`, `published_at`
 - 연결: `position`, `source_key`, `item_id`, `item_version`
@@ -404,19 +453,20 @@ DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하
 3. 해당 문항의 `MAX(item_version) + 1`로 새 버전을 추가한다.
 4. 과거 문항 버전과 과거 세트 연결은 삭제하거나 덮어쓰지 않는다.
 
-### 세트 재발행
+### 새 세트 발행
 
-1. 모델·영역 조합으로 같은 `set_id`를 얻는다.
-2. 50개 문항 각각을 위 규칙으로 생성 또는 재사용한다.
-3. 정확한 순서의 `(item_id, item_version)` 50개와 세트 기본값으로 `set_fingerprint`를 만든다.
-4. 같은 fingerprint가 있으면 기존 `set_version`을 반환한다.
-5. 다르면 `MAX(set_version) + 1`을 만들고 50개 연결 행을 삽입한다.
+1. 선택한 50개 `source_key`를 모든 과거 세트 버전과 대조한다.
+2. 정확히 같은 50문항·순서의 재시도면 기존 세트 영수증을 반환한다.
+3. 일부라도 이미 사용됐다면 전체 작업을 거부하고 롤백한다.
+4. 겹침이 없으면 문항 버전을 생성 또는 재사용한다.
+5. 모델·영역의 `MAX(set_sequence) + 1`과 결정적 UUIDv5로 별도 세트를 만들고 `set_version=1`로 연결한다.
 
 ## 8. 트랜잭션과 동시성
 
 - `publish_items()`와 `publish_set()`은 각각 하나의 연결/트랜잭션 안에서 전체 작업을 처리한다.
 - 중간 오류 시 전체 트랜잭션이 롤백되어 일부만 저장되는 상황을 방지한다.
 - 문항 일괄 동기화는 `topik_bank:item_sync` advisory transaction lock을 사용한다.
+- 새 세트 발행은 전체 `source_key` 중복 검사를 직렬화하는 `topik_bank:set_membership` advisory transaction lock을 사용한다.
 - 세트 발행은 영역·백엔드·provider key·model ID 조합의 advisory transaction lock을 사용한다.
 - 같은 대상을 동시에 발행할 때 버전 번호 충돌 가능성을 줄인다.
 - 세트 연결 대량 삽입은 psycopg 3의 `connection`이 아니라 `cursor.executemany()`로 수행한다.
@@ -443,9 +493,12 @@ DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하
 ### 9.3 `50문항 세트`
 
 - 동일 영역·동일 모델의 문항만 한 세트에 포함한다.
+- 모든 과거 세트에 한 번이라도 포함된 `source_key`는 수정 여부와 관계없이 후보에서 제외한다.
+- 개별 문항 동기화만 된 문항은 계속 새 세트 후보로 사용할 수 있다.
 - 슬롯 1~50이 각각 정확히 하나여야 발행할 수 있다.
 - 세트 발행 시 개별 문항도 함께 생성/재사용한다.
-- 성공 시 `set_id`, `set_version`, 생성/재사용 문항 버전 수를 반환한다.
+- 같은 모델·영역의 다음 `set_sequence`를 자동으로 사용하며 기존 세트와 별도 `set_id`를 만든다.
+- 성공 시 `set_id`, `set_sequence`, `set_version`, 생성/재사용 문항 버전 수를 반환한다.
 
 ### 9.4 `이관 현황`
 
@@ -460,7 +513,7 @@ DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하
 | `로컬 없음` | PostgreSQL에는 있지만 해당 로컬 원본을 찾을 수 없음 | 삭제하지 말고 원본 이동/삭제 조사 |
 | `발행 제외` | 로컬에 있으나 승인/유효성 미충족이고 PG에도 없음 | 로컬 검수/오류 수정 |
 
-`in_set` 값으로 해당 최신 문항이 최신 세트 중 하나에 포함되어 있는지도 확인한다.
+`in_set` 값으로 해당 `source_key`가 최신·과거를 포함한 어떤 세트 버전에든 포함된 적이 있는지 확인한다.
 
 주의: 대조에서 “최신”은 현재 로컬 문제 JSON과 PostgreSQL `content_json`을 비교한다. 메타데이터만 달라진 경우 정확한 버전 판단은 `content_hash` 및 동기화 결과도 함께 확인한다.
 
@@ -468,6 +521,32 @@ DB의 `position BETWEEN 1 AND 50`만으로는 “정확히 50행”을 강제하
 
 - 최근 세트 버전, 발행 시각, 상태, 문항 수를 보여 준다.
 - 과거 세트 버전도 테이블에 남아 있으므로 직접 SQL로 이력을 조회할 수 있다.
+
+### 9.6 `운영 Supabase 배포`
+
+1. `DATABASE_URL`과 `PRODUCTION_DATABASE_URL`의 연결·마이그레이션·행 수를 별도로 확인한다.
+2. 양쪽 DB의 모든 논리 세트와 정확한 의존성을 의미상 비교한다.
+3. `운영 미반영` 또는 충돌 없는 `부분 연동` 세트만 선택한다.
+4. 사전 검증에서 신규/재사용 행 수와 원본 스냅샷 해시를 확인한다.
+5. 확인 문구 `운영 배포`를 입력한 뒤 선택 세트를 한 트랜잭션으로 전송한다.
+
+| 상태 | 의미 | 배포 가능 |
+| --- | --- | --- |
+| `연동 완료` | 세트, 모든 버전, 문항 버전, 1~50번 순서가 동일 | 불필요 |
+| `운영 미반영` | 운영에 논리 세트 행이 없음 | 예 |
+| `부분 연동` | 운영에 있는 행은 동일하고 일부 의존성만 없음 | 예 |
+| `충돌` | 동일 키/identity에 다른 내용·버전·순서가 존재 | 아니요 |
+| `운영에만 존재` | 로컬 원본에 없는 세트가 운영에 존재 | 아니요 |
+
+비교는 생성·발행 시각을 제외한다. ID, `source_key`, 전체 문항 메타데이터와 JSON,
+`content_hash`, 세트 fingerprint, 버전과 위치는 모두 비교한다. 동일 키의 다른 데이터는
+자동 덮어쓰지 않는다.
+
+실제 배포는 원본의 읽기 전용 `REPEATABLE READ` 스냅샷과 대상의
+`topik_bank:production_deployment` advisory transaction lock을 사용한다. 대상 삽입 순서는
+`items → item_versions → question_sets → question_set_versions → question_set_items`이며,
+커밋 전에 원본과 다시 비교한다. 선택 세트 하나라도 검증에 실패하면 전체 대상 트랜잭션이
+롤백된다.
 
 ## 10. 자주 사용하는 검증 SQL
 
@@ -520,10 +599,27 @@ SELECT source_key,
        content_json -> 'choices' AS original_choices,
        choices AS display_choices,
        source_provenance ->> 'source_db' AS source_db,
-       source_provenance ->> 'generated_question_id' AS generated_question_id
+       source_provenance ->> 'generated_question_id' AS generated_question_id,
+       source_provenance ->> 'generation_preset' AS generation_preset,
+       source_provenance -> 'request_parameters' AS request_parameters
 FROM topik_bank.current_items
 WHERE source_key = 'reading:content_match:1';
 ```
+
+### 10.4.1 프리셋별 발행 문항과 API 적용 여부
+
+```sql
+SELECT section,
+       generator_version,
+       source_provenance ->> 'generation_preset' AS generation_preset,
+       source_provenance -> 'request_parameters' ->> 'api_parameters_applied' AS api_parameters_applied,
+       COUNT(*) AS item_count
+FROM topik_bank.current_items
+GROUP BY section, generator_version, generation_preset, api_parameters_applied
+ORDER BY section, generator_version, generation_preset;
+```
+
+로컬 실행 원장은 읽기 `data/types/<type>.db`, 듣기 `data/listening/types/<type>.db`에 있다. 각 DB의 `settings.generation_presets`는 provider ID를 프리셋 ID에 매핑하고, `runs.result_json.generation_preset`과 `runs.result_json.request_parameters`는 실행 당시 확정값을 보존한다. 기본값은 `precise_generation`이다. DeepSeek thinking 프리셋은 temperature/top_p를 생략하고, GPT 계열은 temperature/top_p 없이 `reasoning_effort`와 `max_completion_tokens`를 사용한다. Claude·Gemini 등 미지원 모델은 기존 기본 API 요청을 유지한다.
 
 ### 10.5 특정 문항 전체 버전 이력
 
@@ -544,7 +640,7 @@ WITH latest AS (
     FROM topik_bank.question_set_versions
     GROUP BY set_id
 )
-SELECT s.set_id, s.section, s.generator_provider, s.generator_model,
+SELECT s.set_id, s.set_sequence, s.section, s.generator_provider, s.generator_model,
        s.generator_version, l.set_version, v.review_status,
        v.published_at, COUNT(si.position) AS item_count
 FROM topik_bank.question_sets s
@@ -553,9 +649,9 @@ JOIN topik_bank.question_set_versions v
   ON v.set_id = l.set_id AND v.set_version = l.set_version
 LEFT JOIN topik_bank.question_set_items si
   ON si.set_id = l.set_id AND si.set_version = l.set_version
-GROUP BY s.set_id, s.section, s.generator_provider, s.generator_model,
+GROUP BY s.set_id, s.set_sequence, s.section, s.generator_provider, s.generator_model,
          s.generator_version, l.set_version, v.review_status, v.published_at
-ORDER BY s.section, s.generator_version;
+ORDER BY s.section, s.generator_version, s.set_sequence;
 ```
 
 ### 10.7 특정 모델의 최신 세트 1~50번
@@ -566,6 +662,7 @@ SELECT position, source_key, item_id, item_version, type_slot,
 FROM topik_bank.current_set_contents
 WHERE set_section = 'reading'
   AND set_generator_version = 'gpt-5.6-luna'
+  AND set_sequence = 2
 ORDER BY position;
 ```
 
@@ -615,6 +712,26 @@ ORDER BY section, generator_version;
 SELECT version, applied_at
 FROM topik_bank.schema_migrations
 ORDER BY version;
+```
+
+### 10.12 운영 배포와 롤백 이력
+
+```sql
+SELECT run_id, target_label, status,
+       requested_set_count, transferred_set_count, reused_set_count,
+       created_row_count, reused_row_count,
+       started_at, completed_at, error_message
+FROM topik_bank.deployment_runs
+ORDER BY started_at DESC;
+```
+
+특정 실행에 포함된 세트:
+
+```sql
+SELECT run_id, set_id, set_sequence, source_snapshot_hash, status, detail
+FROM topik_bank.deployment_run_sets
+WHERE run_id = '배포 실행 UUID'
+ORDER BY set_sequence, set_id;
 ```
 
 ## 11. 프로덕션 권장 조회
@@ -682,7 +799,9 @@ ORDER BY position;
 ```text
 topik_question_lab/migrations/
 ├── 001_question_bank.sql
-└── 002_complete_item_bank.sql
+├── 002_complete_item_bank.sql
+├── 003_multi_question_sets.sql
+└── 004_postgres_deployments.sql
 ```
 
 새 구조 변경 절차:
@@ -703,7 +822,13 @@ topik_question_lab/migrations/
 
 ```dotenv
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DATABASE
+PRODUCTION_DATABASE_URL=postgresql://USER:PASSWORD@SUPABASE_HOST:PORT/DATABASE
 ```
+
+- `DATABASE_URL`: SQLite에서 발행한 6세트가 있는 로컬 원본 PostgreSQL
+- `PRODUCTION_DATABASE_URL`: 실제 서비스가 읽는 운영 Supabase PostgreSQL
+- 앱은 비밀번호를 제외한 host/port/database/user 해시로 동일 연결을 감지하고 같은 연결이면 배포를 막는다.
+- Supabase 직접 연결 또는 session pooler 연결을 사용할 수 있다. 실제 배포 프로세스처럼 지속 연결이 가능한 주소를 우선한다.
 
 실제 값은 문서·커밋·화면 캡처에 넣지 않는다.
 
@@ -751,11 +876,20 @@ $env:TEST_DATABASE_URL = "postgresql://.../test_database"
 .\.venv\Scripts\python.exe -m pytest tests\test_postgres_integration.py -q
 ```
 
+운영 배포 통합 테스트는 서로 다른 두 테스트 DB를 요구한다.
+
+```powershell
+$env:TEST_SOURCE_DATABASE_URL = "postgresql://.../source_test"
+$env:TEST_TARGET_DATABASE_URL = "postgresql://.../target_test"
+.\.venv\Scripts\python.exe -m pytest tests\test_postgres_deployment_integration.py -q
+```
+
 마지막 검증 결과:
 
-- 전체: 97 passed, 1 skipped
-- 실제 PostgreSQL 통합: 1 passed
-- 마지막 PostgreSQL/UI 대상 테스트: 12 passed
+- 전체: 116 passed, 2 skipped
+- 로컬 실제 스키마 읽기 검증: 6세트, 300개 연결, 자기 비교 6세트 모두 `연동 완료`
+- `004_postgres_deployments.sql`: 로컬 PostgreSQL 트랜잭션 안에서 생성 검증 후 롤백 완료
+- 두 DB 배포 통합 테스트는 `TEST_SOURCE_DATABASE_URL`, `TEST_TARGET_DATABASE_URL` 미설정으로 skip
 
 문서 변경 검증:
 
@@ -769,12 +903,17 @@ git diff --check
 | --- | --- |
 | `topik_question_lab/migrations/001_question_bank.sql` | 최초 문항/세트 스키마 |
 | `topik_question_lab/migrations/002_complete_item_bank.sql` | `type_slot`, 인덱스, 최신 조회 뷰 |
+| `topik_question_lab/migrations/003_multi_question_sets.sql` | 독립 세트 번호, 다중 세트 유일 제약, 세트 조회 뷰 |
+| `topik_question_lab/migrations/004_postgres_deployments.sql` | 운영 배포 실행·세트 감사 테이블 |
 | `topik_question_lab/publication.py` | SQLite 후보 수집, stem/보기 구성, ID/hash/fingerprint, 50문항 검증, 이관 대조 |
 | `topik_question_lab/postgres_storage.py` | 연결, 마이그레이션, 트랜잭션, 문항/세트 upsert, 조회 |
-| `topik_question_lab/postgres_publish_app.py` | Streamlit 문항 동기화/세트 발행/이관 현황/발행 이력 UI |
+| `topik_question_lab/postgres_deployment.py` | 양쪽 DB 상태, 세트 비교, 원자적 복사, 결과 재확인, 감사 이력 |
+| `topik_question_lab/postgres_publish_app.py` | 문항/세트 발행, 이관 현황, 운영 Supabase 배포 UI |
 | `topik_question_lab/main.py` | 메인 앱에서 PostgreSQL 화면 연결 |
 | `tests/test_publication.py` | 후보/검증/payload/대조 테스트 |
 | `tests/test_postgres_integration.py` | 실제 PostgreSQL 통합 테스트 |
+| `tests/test_postgres_deployment.py` | 연동 상태·충돌·연결 식별 단위 테스트 |
+| `tests/test_postgres_deployment_integration.py` | 두 PostgreSQL 간 전체 롤백·재시도 통합 테스트 |
 | `tests/test_app_smoke.py` | 앱 로딩 스모크 테스트 |
 
 ## 19. 이전에 해결한 주요 오류
@@ -861,12 +1000,13 @@ DB 제약은 `writing`을 허용하지만 후보 수집은 현재 읽기와 듣�
 4. 앱 또는 `PostgresQuestionBank.check_connection()`으로 연결을 확인한다.
 5. `schema_migrations`로 적용 버전을 확인한다.
 6. 10.1 행 수와 10.2 모델 분포 쿼리를 실행한다.
-7. `current_set_contents`에서 최신 세트마다 50행인지 확인한다.
-8. 앱 `이관 현황`에서 문제 상태를 확인한다.
-9. 구조 변경 전 관련 코드와 마이그레이션을 읽는다.
-10. 새 구조는 다음 번호 마이그레이션으로 추가한다.
-11. 단위 테스트와 별도 테스트 DB 통합 테스트를 실행한다.
-12. 프로덕션 변경 전 백업/복원 가능성을 확인한다.
+7. 10.4.1 쿼리로 프리셋과 API 적용 여부가 provenance에 들어왔는지 확인한다.
+8. `current_set_contents`에서 최신 세트마다 50행인지 확인한다.
+9. 앱 `이관 현황`에서 문제 상태를 확인한다.
+10. 구조 변경 전 관련 코드와 마이그레이션을 읽는다.
+11. 새 구조는 다음 번호 마이그레이션으로 추가한다.
+12. 단위 테스트와 별도 테스트 DB 통합 테스트를 실행한다.
+13. 프로덕션 변경 전 백업/복원 가능성을 확인한다.
 
 현재 작업 트리가 깨끗하다고 가정하지 않는다. 특히 기존 사용자 데이터인 `data/types/grammar_blank.db`와 `TOPIK자료화면/` 관련 파일은 임의로 되돌리거나 삭제하지 않는다.
 
@@ -888,7 +1028,8 @@ DB 제약은 `writing`을 허용하지만 후보 수집은 현재 읽기와 듣�
 4. 앱 `이관 현황` 확인
 5. `source_key`로 `current_items` 직접 조회
 6. `source_provenance.source_db`와 로컬 SQLite 확인
-7. 수정 후 미동기면 재동기화
+7. `source_provenance.generation_preset`과 `request_parameters` 확인
+8. 수정 후 미동기면 재동기화
 
 ### 문항은 있지만 세트에 없음
 
@@ -922,4 +1063,3 @@ DB 제약은 `writing`을 허용하지만 후보 수집은 현재 읽기와 듣�
 - **프로덕션은 SQLite가 아니라 PostgreSQL 뷰를 읽는다.**
 - **스키마 변경은 순차 마이그레이션으로만 진행한다.**
 - **비밀번호와 실제 접속 문자열은 문서·로그·커밋에 남기지 않는다.**
-

@@ -105,6 +105,8 @@ class ProviderResult(BaseModel):
     output_tokens: int | None = None
     duration_seconds: float = 0.0
     error: str = ""
+    generation_preset: str | None = None
+    request_parameters: dict[str, object] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
 
 

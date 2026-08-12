@@ -54,14 +54,20 @@ from topik_question_lab.prompt_profiles import DEFAULT_PROVIDER_INSTRUCTIONS, ap
 from topik_question_lab.providers import (
     DEFAULT_ACTIVE_PROVIDERS,
     DEFAULT_PROVIDERS,
+    GENERATION_PRESETS,
     call_provider,
     can_gateway_call,
     has_chatkhu_api_key,
     has_deepseek_api_key,
+    generation_parameter_preview,
+    generation_preset_prompt,
     list_chatkhu_models,
     manual_result,
+    parse_generation_presets,
     provider_backend,
     provider_label,
+    resolve_generation_preset,
+    dump_generation_presets,
 )
 
 
@@ -107,6 +113,14 @@ def active_providers(storage: ListeningStorage) -> list[str]:
     return [str(value) for value in values if str(value).strip()]
 
 
+def generation_preset_for(storage: ListeningStorage, provider: str) -> str | None:
+    return resolve_generation_preset(
+        storage.get_setting("generation_presets", "{}"),
+        provider,
+        model_for(provider),
+    )
+
+
 def provider_display(provider: str) -> str:
     label = provider_label(provider)
     backend = "DeepSeek" if provider_backend(provider, model_for(provider)) == "deepseek" else "ChatKHU"
@@ -117,6 +131,12 @@ def optimized_prompts(storage: ListeningStorage, system: str, user: str, provide
     mode = storage.get_setting("prompt_mode", "optimized")
     instruction = storage.get_setting(f"instruction_{provider}", DEFAULT_PROVIDER_INSTRUCTIONS.get(provider, ""))
     return apply_provider_instruction(system, user, provider, mode == "optimized", instruction)
+
+
+def generation_prompts(storage: ListeningStorage, system: str, user: str, provider: str) -> tuple[str, str]:
+    optimized_system, optimized_user = optimized_prompts(storage, system, user, provider)
+    preset_id = generation_preset_for(storage, provider)
+    return generation_preset_prompt(optimized_system, preset_id), optimized_user
 
 
 def parse_dialogue(text: str) -> list[DialogueTurn]:
@@ -608,9 +628,43 @@ elif stage == "3. 프롬프트 작업실":
         storage.set_setting("difficulty", difficulty)
         storage.set_setting("prompt_mode", mode)
         st.success("저장했습니다.")
+    st.subheader("모델별 생성 프리셋")
+    st.caption(
+        "이 듣기 유형과 모델별로 저장되며 문제 생성에만 적용됩니다. "
+        "웹 수동 생성은 지침만 복사되고 API 파라미터는 적용되지 않습니다."
+    )
+    saved_presets = parse_generation_presets(storage.get_setting("generation_presets", "{}"))
+    preset_values = {}
+    with st.form(f"listening-generation-presets-{type_id}"):
+        for provider in provider_values:
+            model_id = model_for(provider)
+            selected_preset = generation_preset_for(storage, provider)
+            st.markdown(f"**{provider_label(provider)}** · `{model_id}`")
+            if selected_preset is None:
+                st.caption("프리셋 미지원 · 기본 API 설정")
+                st.json(generation_parameter_preview(provider, model_id, None))
+                continue
+            preset_ids = list(GENERATION_PRESETS)
+            preset_values[provider] = st.selectbox(
+                "생성 프리셋",
+                preset_ids,
+                index=preset_ids.index(selected_preset),
+                format_func=lambda value: GENERATION_PRESETS[value].label,
+                key=f"listening-generation-preset-{type_id}-{provider}",
+            )
+            preset = GENERATION_PRESETS[preset_values[provider]]
+            st.caption(preset.description)
+            st.json(generation_parameter_preview(provider, model_id, preset_values[provider]))
+        if st.form_submit_button("모델별 프리셋 저장", type="primary"):
+            saved_presets.update(preset_values)
+            storage.set_setting("generation_presets", dump_generation_presets(saved_presets))
+            st.success("이 듣기 유형의 모델별 생성 프리셋을 저장했습니다.")
     approved = storage.list_examples(approved_only=True)
     preview = build_listening_generation_prompt(approved, guide, count, difficulty, type_id)
-    st.text_area("최종 사용자 프롬프트 미리보기", preview, height=430)
+    preview_provider = st.selectbox("최종 프롬프트 미리보기 모델", provider_values, format_func=provider_display)
+    preview_system, preview_user = generation_prompts(storage, system, preview, preview_provider)
+    st.text_area("최종 시스템 프롬프트 미리보기", preview_system, height=190)
+    st.text_area("최종 사용자 프롬프트 미리보기", preview_user, height=430)
 
 
 elif stage == "4. 문제 생성":
@@ -622,12 +676,26 @@ elif stage == "4. 문제 생성":
     base_prompt = build_listening_generation_prompt(approved, guide, count, difficulty, type_id)
     st.caption(f"승인 기출 {len(approved)}개 · 선택 모델 {len(provider_values)}개")
     run_targets = st.multiselect("이번 실행 모델", provider_values, default=provider_values, format_func=provider_display)
+    for provider in run_targets:
+        preset_id = generation_preset_for(storage, provider)
+        if preset_id:
+            st.caption(f"{provider_label(provider)} · {GENERATION_PRESETS[preset_id].label}")
+        else:
+            st.caption(f"{provider_label(provider)} · 프리셋 미지원 · 기본 API 설정")
     if st.button("선택 모델 병행 생성", type="primary", disabled=not approved or not run_targets):
         status = st.status("모델별 생성을 실행하고 있습니다.", expanded=True)
         successes, failures = 0, []
         for provider in run_targets:
-            system, user = optimized_prompts(storage, storage.get_setting("system_prompt"), base_prompt, provider)
-            result = call_provider(provider, model_for(provider), "generation", system, user)
+            system, user = generation_prompts(storage, storage.get_setting("system_prompt"), base_prompt, provider)
+            preset_id = generation_preset_for(storage, provider)
+            result = call_provider(
+                provider,
+                model_for(provider),
+                "generation",
+                system,
+                user,
+                generation_preset=preset_id,
+            )
             run_id = storage.save_run(result, system, user, type_id, storage.get_setting("prompt_mode"))
             if result.error or not result.parsed_json:
                 failures.append(f"{provider_label(provider)}: {result.error or 'JSON 없음'}")
@@ -653,11 +721,22 @@ elif stage == "4. 문제 생성":
 
     st.divider()
     manual_provider = st.selectbox("웹 수동 응답 모델", provider_values, format_func=provider_display)
-    manual_system, manual_prompt = optimized_prompts(storage, storage.get_setting("system_prompt"), base_prompt, manual_provider)
-    st.text_area("복사용 생성 프롬프트", manual_prompt, height=280)
+    manual_system, manual_prompt = generation_prompts(storage, storage.get_setting("system_prompt"), base_prompt, manual_provider)
+    st.text_area(
+        "복사용 생성 프롬프트",
+        f"SYSTEM\n{manual_system}\n\nUSER\n{manual_prompt}",
+        height=340,
+    )
+    st.caption("웹 수동 생성에는 API 파라미터가 적용되지 않으며 위 프리셋 지침만 복사됩니다.")
     manual_response = st.text_area("모델 JSON 응답", height=220)
     if st.button("수동 생성 결과 저장", disabled=not manual_response.strip()):
-        result = manual_result(manual_provider, model_for(manual_provider), "generation", manual_response)
+        result = manual_result(
+            manual_provider,
+            model_for(manual_provider),
+            "generation",
+            manual_response,
+            generation_preset_for(storage, manual_provider),
+        )
         run_id = storage.save_run(result, manual_system, manual_prompt, type_id, storage.get_setting("prompt_mode"))
         if result.error or not result.parsed_json:
             st.error(result.error)

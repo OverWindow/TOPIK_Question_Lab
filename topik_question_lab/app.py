@@ -59,15 +59,21 @@ from topik_question_lab.providers import (
     DEEPSEEK_WEB_URL,
     DEFAULT_ACTIVE_PROVIDERS,
     DEFAULT_PROVIDERS,
+    GENERATION_PRESETS,
     can_gateway_call,
     call_provider,
     get_chatkhu_credits,
+    generation_parameter_preview,
+    generation_preset_prompt,
     has_chatkhu_api_key,
     has_deepseek_api_key,
     list_chatkhu_models,
     manual_result,
+    parse_generation_presets,
     provider_backend,
     provider_label,
+    resolve_generation_preset,
+    dump_generation_presets,
 )
 from topik_question_lab.storage import Storage
 from topik_question_lab.validation import validate_generation_payload, validate_question
@@ -187,6 +193,14 @@ def model_for(provider: str) -> str:
     return saved_model or default_model
 
 
+def generation_preset_for(provider: str) -> str | None:
+    return resolve_generation_preset(
+        storage.get_setting("generation_presets", "{}"),
+        provider,
+        model_for(provider),
+    )
+
+
 def provider_service_name(provider: str) -> str:
     return "DeepSeek 공식 API" if provider_backend(provider, model_for(provider)) == "deepseek" else "ChatKHU"
 
@@ -248,6 +262,11 @@ def prompts_for(operation: str, provider: str | None = None) -> tuple[str, str]:
             type_id,
         )
     return optimize_prompts(system_prompt, user_prompt, provider)
+
+
+def generation_prompts_for(provider: str) -> tuple[str, str]:
+    system_prompt, user_prompt = prompts_for("generation", provider)
+    return generation_preset_prompt(system_prompt, generation_preset_for(provider)), user_prompt
 
 
 def enrichment_prompts_for(examples: list[QuestionExample], provider: str) -> tuple[str, str]:
@@ -1065,6 +1084,38 @@ elif stage == "3. 프롬프트 작업실":
                 storage.set_setting(f"model_{provider}", value.strip() or model_for(provider))
             st.success("저장했습니다.")
 
+    st.subheader("모델별 생성 프리셋")
+    st.caption(
+        "읽기 유형과 모델별로 저장되며 문제 생성에만 적용됩니다. "
+        "웹 수동 생성은 지침만 복사되고 API 파라미터는 적용되지 않습니다."
+    )
+    saved_presets = parse_generation_presets(storage.get_setting("generation_presets", "{}"))
+    preset_values = {}
+    with st.form(f"generation-preset-settings-{selected_type_id}"):
+        for provider in active_providers:
+            model_id = model_for(provider)
+            selected_preset = generation_preset_for(provider)
+            st.markdown(f"**{provider_label(provider)}** · `{model_id}`")
+            if selected_preset is None:
+                st.caption("프리셋 미지원 · 기본 API 설정")
+                st.json(generation_parameter_preview(provider, model_id, None))
+                continue
+            preset_ids = list(GENERATION_PRESETS)
+            preset_values[provider] = st.selectbox(
+                "생성 프리셋",
+                preset_ids,
+                index=preset_ids.index(selected_preset),
+                format_func=lambda value: GENERATION_PRESETS[value].label,
+                key=f"generation-preset-{selected_type_id}-{provider}",
+            )
+            preset = GENERATION_PRESETS[preset_values[provider]]
+            st.caption(preset.description)
+            st.json(generation_parameter_preview(provider, model_id, preset_values[provider]))
+        if st.form_submit_button("모델별 프리셋 저장", type="primary"):
+            saved_presets.update(preset_values)
+            storage.set_setting("generation_presets", dump_generation_presets(saved_presets))
+            st.success("이 읽기 유형의 모델별 생성 프리셋을 저장했습니다.")
+
     st.subheader("ChatKHU Gateway")
     st.code(CHATKHU_BASE_URL, language=None)
     if has_chatkhu_api_key():
@@ -1109,7 +1160,7 @@ elif stage == "3. 프롬프트 작업실":
         format_func=provider_label,
         key=f"workshop-preview-provider-{selected_type_id}",
     )
-    preview_system, preview_user = prompts_for("generation", preview_provider)
+    preview_system, preview_user = generation_prompts_for(preview_provider)
     with st.expander("최종 생성 프롬프트 미리보기", expanded=True):
         st.text_area("System prompt", preview_system, height=160, disabled=True)
         st.text_area("User prompt", preview_user, height=420, disabled=True)
@@ -1126,7 +1177,7 @@ elif stage == "4. 문제 생성":
         format_func=provider_label,
         key=f"generation-preview-provider-{selected_type_id}",
     )
-    system_prompt, user_prompt = prompts_for("generation", preview_provider)
+    system_prompt, user_prompt = generation_prompts_for(preview_provider)
     with st.expander("이번 실행 프롬프트"):
         st.text_area("System", system_prompt, height=130, disabled=True)
         st.text_area("User", user_prompt, height=420, disabled=True)
@@ -1141,6 +1192,12 @@ elif stage == "4. 문제 생성":
         default=[provider for provider in active_providers if can_gateway_call(provider)],
         format_func=provider_label,
     )
+    for provider in selected_providers:
+        preset_id = generation_preset_for(provider)
+        if preset_id:
+            st.caption(f"{provider_label(provider)} · {GENERATION_PRESETS[preset_id].label}")
+        else:
+            st.caption(f"{provider_label(provider)} · 프리셋 미지원 · 기본 API 설정")
     st.caption(f"선택 모델 {len(selected_providers)}개 · 예상 API 요청 {sum(can_gateway_call(p) for p in selected_providers)}회")
     if st.button("선택한 API 모델로 생성", type="primary", disabled=not examples or not selected_providers):
         callable_providers = [provider for provider in selected_providers if can_gateway_call(provider)]
@@ -1152,7 +1209,8 @@ elif stage == "4. 문제 생성":
                 with ThreadPoolExecutor(max_workers=len(callable_providers)) as executor:
                     futures = {}
                     for provider in callable_providers:
-                        provider_system, provider_user = prompts_for("generation", provider)
+                        provider_system, provider_user = generation_prompts_for(provider)
+                        provider_preset = generation_preset_for(provider)
                         future = executor.submit(
                             call_provider,
                             provider,
@@ -1160,6 +1218,8 @@ elif stage == "4. 문제 생성":
                             "generation",
                             provider_system,
                             provider_user,
+                            None,
+                            provider_preset,
                         )
                         futures[future] = (provider, provider_system, provider_user)
                     for future in as_completed(futures):
@@ -1171,10 +1231,16 @@ elif stage == "4. 문제 생성":
     st.subheader("웹 응답 가져오기")
     manual_provider = preview_provider
     st.caption(f"응답 모델 · {provider_label(manual_provider)}")
-    manual_system, manual_user = prompts_for("generation", manual_provider)
+    manual_system, manual_user = generation_prompts_for(manual_provider)
     raw_generation = st.text_area("모델의 JSON 응답", height=230, key="generation-manual-raw")
     if st.button("생성 응답 검증·저장", disabled=not raw_generation.strip() or not examples):
-        result = manual_result(manual_provider, model_for(manual_provider), "generation", raw_generation)
+        result = manual_result(
+            manual_provider,
+            model_for(manual_provider),
+            "generation",
+            raw_generation,
+            generation_preset_for(manual_provider),
+        )
         ok, message = save_provider_result(result, manual_system, manual_user)
         (st.success if ok else st.error)(message)
         if ok:
@@ -1190,6 +1256,11 @@ elif stage == "4. 문제 생성":
         cols[3].write(f"{result.input_tokens or '-'} / {result.output_tokens or '-'}")
         cols[4].write(result.error or "저장 완료")
         with st.expander(f"실행 #{run['id']} 원본 응답"):
+            if result.generation_preset:
+                preset = GENERATION_PRESETS.get(result.generation_preset)
+                st.write(f"생성 프리셋 · {preset.label if preset else result.generation_preset}")
+            if result.request_parameters:
+                st.json(result.request_parameters)
             st.code(result.raw_response or "(빈 응답)", language="json")
 
 

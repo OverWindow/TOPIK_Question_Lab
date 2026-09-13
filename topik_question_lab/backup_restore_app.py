@@ -25,14 +25,16 @@ if "backup_notice" in st.session_state:
 
 reading_databases = list((ROOT / "data" / "types").glob("*.db"))
 listening_databases = list((ROOT / "data" / "listening" / "types").glob("*.db"))
+topic_database = ROOT / "data" / "topic_bank.db"
 recognized_reading = list((ROOT / "extracted_text").glob("**/*")) if (ROOT / "extracted_text").exists() else []
 recognized_listening = list((ROOT / "data" / "listening" / "imports").glob("*/questions.json"))
 
-metrics = st.columns(4)
+metrics = st.columns(5)
 metrics[0].metric("읽기 유형 DB", len(reading_databases))
 metrics[1].metric("듣기 유형 DB", len(listening_databases))
-metrics[2].metric("읽기 인식 파일", sum(path.is_file() for path in recognized_reading))
-metrics[3].metric("듣기 인식 회차", len(recognized_listening))
+metrics[2].metric("소재 DB", "있음" if topic_database.exists() else "없음")
+metrics[3].metric("읽기 인식 파일", sum(path.is_file() for path in recognized_reading))
+metrics[4].metric("듣기 인식 회차", len(recognized_listening))
 
 st.subheader("백업 만들기")
 include_sources = st.checkbox(
@@ -105,4 +107,3 @@ if st.button("검증된 백업 복원", type="primary", disabled=not restore_ena
         st.rerun()
     except Exception as exc:
         st.error(str(exc))
-

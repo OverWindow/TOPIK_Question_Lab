@@ -20,7 +20,10 @@ from topik_question_lab.listening_importer import (
 from topik_question_lab.listening_exports import to_csv as listening_to_csv, to_txt as listening_to_txt
 from topik_question_lab.listening_models import DialogueTurn, GeneratedListeningQuestion, VisualOption
 from topik_question_lab.listening_profiles import LISTENING_TYPE_PROFILES
-from topik_question_lab.listening_prompts import build_listening_enrichment_prompt
+from topik_question_lab.listening_prompts import (
+    build_listening_enrichment_prompt,
+    build_listening_generation_prompt,
+)
 from topik_question_lab.listening_storage import ListeningStorage
 from topik_question_lab.listening_validation import validate_listening_payload, validate_listening_question
 from topik_question_lab.listening_visuals import render_chart, suggest_visual_prompt
@@ -161,6 +164,66 @@ def test_listening_validation_and_shared_script_rules():
     payload = {"questions": [{**common, "type_slot": 21, "question_prompt": "중심 생각은?"}]}
     _, issues = validate_listening_payload(payload, [], "paired_21_22")
     assert any(issue.code == "set_slots" for group in issues for issue in group)
+
+
+def _content_match_generated(slot: int) -> dict:
+    return {
+        "type_slot": slot,
+        "dialogue_turns": [{"speaker": "여자", "text": f"{slot}번의 서로 다른 안내입니다."}],
+        "question_prompt": "들은 내용과 같은 것을 고르십시오.",
+        "choices": ["가", "나", "다", "라"],
+        "answer": 1,
+        "explanation": "대본의 명시 정보와 일치한다.",
+        "target_skill": "내용 일치",
+        "repeat_count": 1,
+    }
+
+
+def test_independent_listening_prompt_requires_every_slot_distribution():
+    prompt = build_listening_generation_prompt(
+        [],
+        "분석서",
+        4,
+        "TOPIK II 듣기",
+        "content_match_once",
+    )
+
+    assert "type_slot별 생성 수는 정확히 13번 1개, 14번 1개, 15번 1개, 16번 1개" in prompt
+    for slot in (13, 14, 15, 16):
+        assert f'"type_slot": {slot}' in prompt
+
+
+def test_independent_listening_validation_rejects_missing_or_duplicate_slots():
+    incomplete = {"questions": [_content_match_generated(14), _content_match_generated(15)]}
+    _, issues = validate_listening_payload(
+        incomplete,
+        [],
+        "content_match_once",
+        expected_count=4,
+    )
+    distribution = [
+        issue
+        for group in issues
+        for issue in group
+        if issue.code == "batch_distribution"
+    ]
+    assert distribution
+    assert "13번 1개" in distribution[0].message
+    assert "생성: 14번 1개, 15번 1개" in distribution[0].message
+
+    complete = {"questions": [_content_match_generated(slot) for slot in (13, 14, 15, 16)]}
+    _, complete_issues = validate_listening_payload(
+        complete,
+        [],
+        "content_match_once",
+        expected_count=4,
+    )
+    assert not [
+        issue
+        for group in complete_issues
+        for issue in group
+        if issue.code == "batch_distribution"
+    ]
 
 
 def test_visual_questions_can_pass_without_assets_or_chart_specs():

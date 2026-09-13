@@ -19,6 +19,11 @@ def to_txt(items: list[dict]) -> str:
         parts.append(f"## 문제 {index} [{item['provider']} / {item['model']}]")
         if question.get("set_id"):
             parts.append(f"세트: {question['set_id']}")
+        if question.get("topic_id"):
+            parts.append(
+                f"소재: {question.get('topic_domain', '')} / {question.get('topic_title', '')}"
+                f" · {question.get('topic_angle', '')}"
+            )
         auxiliary = question.get("auxiliary_text", "")
         if auxiliary:
             parts.append(f"주어진 문장: {auxiliary}")
@@ -57,8 +62,9 @@ def to_csv(items: list[dict]) -> str:
         "provider", "model", "question_type", "type_slot", "set_id", "stem",
         "highlight_text", "passage", "question_prompt", "auxiliary_text",
         "choice_1", "choice_2", "choice_3", "choice_4", "answer", "explanation",
-        "target_grammar", "difficulty", "naturalness", "difficulty_fit",
-        "distractor_quality", "topik_fit", "notes",
+        "target_grammar", "difficulty", "topic_id", "topic_domain", "topic_title",
+        "topic_angle", "naturalness", "difficulty_fit", "distractor_quality",
+        "topik_fit", "topic_fit", "notes",
     ]
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
@@ -82,7 +88,11 @@ def to_csv(items: list[dict]) -> str:
                 "explanation": question["explanation"],
                 "target_grammar": question["target_grammar"],
                 "difficulty": question.get("difficulty", ""),
-                **{key: review.get(key) for key in ["naturalness", "difficulty_fit", "distractor_quality", "topik_fit", "notes"]},
+                "topic_id": question.get("topic_id", ""),
+                "topic_domain": question.get("topic_domain", ""),
+                "topic_title": question.get("topic_title", ""),
+                "topic_angle": question.get("topic_angle", ""),
+                **{key: review.get(key) for key in ["naturalness", "difficulty_fit", "distractor_quality", "topik_fit", "topic_fit", "notes"]},
             }
         )
     return output.getvalue()

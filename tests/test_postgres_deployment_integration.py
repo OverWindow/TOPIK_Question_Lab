@@ -84,10 +84,12 @@ def test_multi_set_deployment_rolls_back_as_one_transaction_then_retries():
             connection.execute(
                 """INSERT INTO topik_bank.question_sets(
                        set_id, section, generator_provider, generator_model,
-                       generator_version, set_sequence
+                       generator_version, set_sequence, review_status,
+                       default_target_level, default_predicted_difficulty,
+                       set_fingerprint
                    ) VALUES (%s, 'reading', 'test', 'codex_deployment',
-                             'codex-deployment-model', 2)""",
-                (dummy_set_id,),
+                             'codex-deployment-model', 2, 'reviewed', 4, 0.0, %s)""",
+                (dummy_set_id, "d" * 64),
             )
 
         service = PostgresDeploymentService(SOURCE_URL, TARGET_URL)
@@ -151,10 +153,6 @@ def _cleanup(psycopg, url: str, set_ids: list[str] | None = None, dummy_set_id: 
                 )
             connection.execute(
                 "DELETE FROM topik_bank.question_set_items WHERE set_id = ANY(%s)",
-                (known_set_uuids,),
-            )
-            connection.execute(
-                "DELETE FROM topik_bank.question_set_versions WHERE set_id = ANY(%s)",
                 (known_set_uuids,),
             )
             connection.execute(

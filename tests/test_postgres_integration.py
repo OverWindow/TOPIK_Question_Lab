@@ -62,15 +62,14 @@ def test_postgres_migration_publish_and_idempotency():
         assert item_receipt.total_items == 50
         first = bank.publish_set(first_draft)
         retry = bank.publish_set(first_draft)
-        assert first.created_set_version
+        assert first.created_set
         assert first.set_sequence == 1
-        assert not retry.created_set_version
+        assert not retry.created_set
         assert first.set_id == retry.set_id
-        assert first.set_version == retry.set_version
         assert retry.set_sequence == 1
 
         second = bank.publish_set(second_draft)
-        assert second.created_set_version
+        assert second.created_set
         assert second.set_sequence == 2
         assert second.set_id != first.set_id
         assert second.set_id == str(second_draft.set_id_for_sequence(2))
@@ -116,7 +115,6 @@ def _cleanup_integration_data(psycopg):
         ]
         for set_id in set_ids:
             connection.execute("DELETE FROM topik_bank.question_set_items WHERE set_id = %s", (set_id,))
-            connection.execute("DELETE FROM topik_bank.question_set_versions WHERE set_id = %s", (set_id,))
             connection.execute("DELETE FROM topik_bank.question_sets WHERE set_id = %s", (set_id,))
         connection.execute(
             "DELETE FROM topik_bank.item_versions WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE source_key LIKE 'reading:integration_test:%')"

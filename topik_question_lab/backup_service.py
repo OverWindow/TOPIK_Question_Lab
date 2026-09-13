@@ -47,6 +47,8 @@ def _category(relative: Path) -> str:
         return "listening_database"
     if value.startswith("data/types/") or value == "data/topik_lab.db":
         return "reading_database"
+    if value == "data/topic_bank.db":
+        return "topic_database"
     if value.startswith("data/listening/assets/"):
         return "listening_asset"
     if value.startswith("data/listening/imports/"):
@@ -65,6 +67,7 @@ def _collect_files(root: Path, options: BackupOptions) -> list[Path]:
     patterns = [
         "data/types/*.db",
         "data/topik_lab.db",
+        "data/topic_bank.db",
         "data/listening/types/*.db",
         "data/listening/assets/**/*",
         "data/listening/imports/*/manifest.json",

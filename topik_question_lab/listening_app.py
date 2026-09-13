@@ -48,7 +48,7 @@ from topik_question_lab.listening_prompts import (
 from topik_question_lab.listening_storage import ListeningStorage
 from topik_question_lab.listening_validation import validate_listening_payload, validate_listening_question
 from topik_question_lab.listening_visuals import render_chart, save_uploaded_asset, suggest_visual_prompt
-from topik_question_lab.models import AnalysisPayload, Review
+from topik_question_lab.models import AnalysisPayload, Review, ValidationIssue
 from topik_question_lab.navigation import next_sequence_item
 from topik_question_lab.prompt_profiles import DEFAULT_PROVIDER_INSTRUCTIONS, apply_provider_instruction
 from topik_question_lab.providers import (
@@ -69,6 +69,15 @@ from topik_question_lab.providers import (
     resolve_generation_preset,
     dump_generation_presets,
 )
+from topik_question_lab.topic_bank import (
+    TOPIC_METADATA_FIELDS,
+    TOPIC_STORE_SCHEMA_VERSION,
+    TopicBrief,
+    TopicStore,
+    apply_topic_plan,
+    uses_topic_bank,
+)
+from topik_question_lab.topic_ui import invalidate_topic_planner, render_topic_planner
 
 
 SOURCE_DIR = ROOT / "TOPIK-II-Listening-Script"
@@ -77,6 +86,7 @@ IMPORT_ROOT = ROOT / "data" / "listening" / "imports"
 ANSWER_IMPORT_ROOT = ROOT / "data" / "listening" / "answer_imports"
 TYPE_DB_DIR = ROOT / "data" / "listening" / "types"
 ASSET_ROOT = ROOT / "data" / "listening" / "assets"
+TOPIC_DB_PATH = ROOT / "data" / "topic_bank.db"
 
 
 st.set_page_config(page_title="TOPIK II 듣기 문제 생성 Lab", page_icon="🎧", layout="wide")
@@ -97,6 +107,12 @@ st.markdown(
 @st.cache_resource
 def get_storage(db_path: str) -> ListeningStorage:
     return ListeningStorage(Path(db_path))
+
+
+@st.cache_resource
+def get_topic_store(schema_version: int) -> TopicStore:
+    del schema_version  # The argument versions Streamlit's resource cache.
+    return TopicStore(TOPIC_DB_PATH)
 
 
 def model_for(provider: str) -> str:
@@ -156,6 +172,82 @@ def dialogue_text(turns: list[DialogueTurn]) -> str:
     return "\n".join(f"{turn.speaker}: {turn.text}" for turn in turns)
 
 
+def save_listening_generation(
+    result,
+    system_prompt: str,
+    user_prompt: str,
+    topic_briefs: list[TopicBrief] | None = None,
+) -> tuple[bool, str]:
+    run_id = storage.save_run(
+        result,
+        system_prompt,
+        user_prompt,
+        type_id,
+        storage.get_setting("prompt_mode"),
+    )
+    if result.error or not result.parsed_json:
+        return False, result.error or "JSON 응답이 없습니다."
+    try:
+        topic_application = apply_topic_plan(
+            result.parsed_json,
+            topic_briefs or [],
+            shared=profile.shared_script,
+        )
+        existing_scripts = [
+            GeneratedListeningQuestion.model_validate(item["question"]).script_text
+            for item in storage.list_generated()
+        ]
+        questions, issue_groups = validate_listening_payload(
+            topic_application.payload,
+            storage.list_examples(approved_only=True),
+            type_id,
+            existing_scripts=existing_scripts,
+            expected_count=int(
+                storage.get_setting("generation_count", str(len(profile.question_numbers)))
+            ),
+        )
+        for index, messages in enumerate(topic_application.issue_messages):
+            if index >= len(issue_groups):
+                break
+            issue_groups[index].extend(
+                ValidationIssue(code="topic_plan", message=message)
+                for message in messages
+            )
+        distribution_errors = [
+            issue.message
+            for group in issue_groups
+            for issue in group
+            if issue.code == "batch_distribution" and issue.severity == "error"
+        ]
+        if distribution_errors:
+            return False, distribution_errors[0]
+        storage.add_generated_questions(
+            run_id,
+            result.provider,
+            result.model,
+            [question.model_dump(mode="json") for question in questions],
+            [[issue.model_dump() for issue in group] for group in issue_groups],
+        )
+        if topic_application.applied_briefs:
+            try:
+                topic_store.record_usages(
+                    topic_application.applied_briefs,
+                    section="listening",
+                    question_type=type_id,
+                    provider=result.provider,
+                    model=result.model,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                return True, f"문항은 저장했지만 소재 사용 이력을 기록하지 못했습니다: {exc}"
+        expected = int(storage.get_setting("generation_count", str(len(profile.question_numbers))))
+        if len(questions) != expected:
+            return True, f"저장했지만 요청한 {expected}개 대신 {len(questions)}개가 생성되었습니다."
+        return True, f"{len(questions)}문항을 저장했습니다."
+    except Exception as exc:
+        return False, str(exc)
+
+
 st.sidebar.title("TOPIK II 듣기 Lab")
 type_id = st.sidebar.selectbox(
     "듣기 문제 유형",
@@ -164,6 +256,7 @@ type_id = st.sidebar.selectbox(
 )
 profile = listening_type_profile(type_id)
 storage = get_storage(str(TYPE_DB_DIR / f"{type_id}.db"))
+topic_store = get_topic_store(TOPIC_STORE_SCHEMA_VERSION)
 if not storage.get_setting("analysis_guide"):
     storage.set_setting("analysis_guide", profile.analysis_focus)
 if not storage.get_setting("system_prompt"):
@@ -673,19 +766,53 @@ elif stage == "4. 문제 생성":
     count = int(storage.get_setting("generation_count", str(len(profile.question_numbers))))
     guide = storage.get_setting("analysis_guide", profile.analysis_focus)
     difficulty = storage.get_setting("difficulty", "TOPIK II 듣기")
-    base_prompt = build_listening_generation_prompt(approved, guide, count, difficulty, type_id)
     st.caption(f"승인 기출 {len(approved)}개 · 선택 모델 {len(provider_values)}개")
     run_targets = st.multiselect("이번 실행 모델", provider_values, default=provider_values, format_func=provider_display)
+    manual_provider = st.selectbox("웹 수동 응답 모델", provider_values, format_func=provider_display)
     for provider in run_targets:
         preset_id = generation_preset_for(storage, provider)
         if preset_id:
             st.caption(f"{provider_label(provider)} · {GENERATION_PRESETS[preset_id].label}")
         else:
             st.caption(f"{provider_label(provider)} · 프리셋 미지원 · 기본 API 설정")
-    if st.button("선택 모델 병행 생성", type="primary", disabled=not approved or not run_targets):
+    topic_planner_key = f"listening-{type_id}"
+    topic_plan_providers = list(dict.fromkeys([manual_provider, *run_targets]))
+    if uses_topic_bank("listening", type_id) or topic_store.has_active_slot_pool(
+        "listening", profile.question_numbers
+    ):
+        topic_plans, topic_plan_error = render_topic_planner(
+            topic_store,
+            section="listening",
+            question_type=type_id,
+            providers=topic_plan_providers,
+            question_numbers=profile.question_numbers,
+            count=count,
+            shared=profile.shared_script,
+            key_prefix=topic_planner_key,
+            provider_label=provider_label,
+        )
+    else:
+        invalidate_topic_planner(topic_planner_key)
+        topic_plans = {provider: [] for provider in topic_plan_providers}
+        topic_plan_error = ""
+        st.info("이 유형은 번호별 지정 풀이 없어서 별도 소재 은행을 사용하지 않습니다.")
+    if st.button(
+        "선택 모델 병행 생성",
+        type="primary",
+        disabled=not approved or not run_targets or bool(topic_plan_error),
+    ):
         status = st.status("모델별 생성을 실행하고 있습니다.", expanded=True)
         successes, failures = 0, []
         for provider in run_targets:
+            provider_topics = topic_plans.get(provider, [])
+            base_prompt = build_listening_generation_prompt(
+                approved,
+                guide,
+                count,
+                difficulty,
+                type_id,
+                provider_topics,
+            )
             system, user = generation_prompts(storage, storage.get_setting("system_prompt"), base_prompt, provider)
             preset_id = generation_preset_for(storage, provider)
             result = call_provider(
@@ -696,32 +823,30 @@ elif stage == "4. 문제 생성":
                 user,
                 generation_preset=preset_id,
             )
-            run_id = storage.save_run(result, system, user, type_id, storage.get_setting("prompt_mode"))
-            if result.error or not result.parsed_json:
-                failures.append(f"{provider_label(provider)}: {result.error or 'JSON 없음'}")
-                status.write(f"❌ {provider_label(provider)}")
-                continue
-            try:
-                questions, issue_groups = validate_listening_payload(result.parsed_json, approved, type_id)
-                storage.add_generated_questions(
-                    run_id,
-                    provider,
-                    model_for(provider),
-                    [question.model_dump(mode="json") for question in questions],
-                    [[issue.model_dump() for issue in group] for group in issue_groups],
-                )
+            ok, message = save_listening_generation(result, system, user, provider_topics)
+            if ok:
                 successes += 1
-                status.write(f"✅ {provider_label(provider)} · {len(questions)}문항")
-            except Exception as exc:
-                failures.append(f"{provider_label(provider)}: {exc}")
-                status.write(f"❌ {provider_label(provider)} · {exc}")
+                status.write(f"✅ {provider_label(provider)} · {message}")
+            else:
+                failures.append(f"{provider_label(provider)}: {message}")
+                status.write(f"❌ {provider_label(provider)} · {message}")
         status.update(label=f"완료 · 성공 {successes}, 실패 {len(failures)}", state="complete" if successes else "error")
         for failure in failures:
             st.error(failure)
+        if successes:
+            invalidate_topic_planner(topic_planner_key)
 
     st.divider()
-    manual_provider = st.selectbox("웹 수동 응답 모델", provider_values, format_func=provider_display)
-    manual_system, manual_prompt = generation_prompts(storage, storage.get_setting("system_prompt"), base_prompt, manual_provider)
+    manual_topics = topic_plans.get(manual_provider, [])
+    manual_base_prompt = build_listening_generation_prompt(
+        approved,
+        guide,
+        count,
+        difficulty,
+        type_id,
+        manual_topics,
+    )
+    manual_system, manual_prompt = generation_prompts(storage, storage.get_setting("system_prompt"), manual_base_prompt, manual_provider)
     st.text_area(
         "복사용 생성 프롬프트",
         f"SYSTEM\n{manual_system}\n\nUSER\n{manual_prompt}",
@@ -729,7 +854,10 @@ elif stage == "4. 문제 생성":
     )
     st.caption("웹 수동 생성에는 API 파라미터가 적용되지 않으며 위 프리셋 지침만 복사됩니다.")
     manual_response = st.text_area("모델 JSON 응답", height=220)
-    if st.button("수동 생성 결과 저장", disabled=not manual_response.strip()):
+    if st.button(
+        "수동 생성 결과 저장",
+        disabled=not manual_response.strip() or bool(topic_plan_error),
+    ):
         result = manual_result(
             manual_provider,
             model_for(manual_provider),
@@ -737,16 +865,11 @@ elif stage == "4. 문제 생성":
             manual_response,
             generation_preset_for(storage, manual_provider),
         )
-        run_id = storage.save_run(result, manual_system, manual_prompt, type_id, storage.get_setting("prompt_mode"))
-        if result.error or not result.parsed_json:
-            st.error(result.error)
-        else:
-            try:
-                questions, issue_groups = validate_listening_payload(result.parsed_json, approved, type_id)
-                storage.add_generated_questions(run_id, manual_provider, model_for(manual_provider), [q.model_dump(mode="json") for q in questions], [[i.model_dump() for i in group] for group in issue_groups])
-                st.success(f"{len(questions)}문항을 저장했습니다.")
-            except Exception as exc:
-                st.error(str(exc))
+        ok, message = save_listening_generation(result, manual_system, manual_prompt, manual_topics)
+        (st.success if ok else st.error)(message)
+        if ok:
+            invalidate_topic_planner(topic_planner_key)
+            st.rerun()
 
 
 elif stage == "5. 검수·비교":
@@ -775,6 +898,20 @@ elif stage == "5. 검수·비교":
         st.caption(f"검수 위치 · {item_ids.index(selected_id) + 1} / {len(item_ids)}")
         item = next(value for value in items if value["id"] == selected_id)
         question = GeneratedListeningQuestion.model_validate(item["question"])
+        topic_values = [getattr(question, field) for field in TOPIC_METADATA_FIELDS]
+        slot_uses_topics = uses_topic_bank("listening", type_id) or topic_store.has_active_slot_pool(
+            "listening", [question.type_slot]
+        )
+        if any(topic_values) and not all(value.strip() for value in topic_values) and not slot_uses_topics:
+            question = question.model_copy(
+                update={field: "" for field in TOPIC_METADATA_FIELDS}
+            )
+            st.info("소재 배정 대상이 아닌 문항의 불완전한 소재 메타데이터를 자동으로 정리했습니다.")
+        if question.topic_id:
+            st.info(
+                f"배정 소재 · {question.topic_domain} / {question.topic_title} · "
+                f"접근 관점: {question.topic_angle}"
+            )
         generated_widget_prefix = f"generated-field-{type_id}-{selected_id}"
         left, right = st.columns([1.15, 0.85])
         with left:
@@ -846,6 +983,7 @@ elif stage == "5. 검수·비교":
             difficulty_fit = st.slider("난이도 적합성", 1, 5, current_review.difficulty_fit, key=f"{generated_widget_prefix}-difficulty-fit")
             distractor_quality = st.slider("오답 품질", 1, 5, current_review.distractor_quality, key=f"{generated_widget_prefix}-distractor-quality")
             topik_fit = st.slider("TOPIK 적합성", 1, 5, current_review.topik_fit, key=f"{generated_widget_prefix}-topik-fit")
+            topic_fit = st.slider("소재 준수", 1, 5, current_review.topic_fit, key=f"{generated_widget_prefix}-topic-fit")
             notes = st.text_area("검수 메모", current_review.notes, key=f"{generated_widget_prefix}-notes")
             approved = st.checkbox("최종 승인", current_review.approved, key=f"{generated_widget_prefix}-approved")
             if st.button("수정·평가 저장하고 다음 문항", type="primary"):
@@ -854,7 +992,7 @@ elif stage == "5. 검수·비교":
                 else:
                     storage.save_generated_edit(selected_id, candidate.model_dump(mode="json"))
                     storage.save_validation(selected_id, [issue.model_dump() for issue in issues])
-                    storage.save_review(selected_id, Review(naturalness=naturalness, difficulty_fit=difficulty_fit, distractor_quality=distractor_quality, topik_fit=topik_fit, notes=notes, approved=approved))
+                    storage.save_review(selected_id, Review(naturalness=naturalness, difficulty_fit=difficulty_fit, distractor_quality=distractor_quality, topik_fit=topik_fit, topic_fit=topic_fit, notes=notes, approved=approved))
                     next_id = next_sequence_item(item_ids, selected_id)
                     if next_id is not None:
                         st.session_state[

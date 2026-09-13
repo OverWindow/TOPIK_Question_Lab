@@ -9,7 +9,12 @@ from decimal import Decimal
 from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
 
-from .postgres_storage import MIGRATION_DIR, PostgresUnavailableError, _psycopg
+from .postgres_storage import (
+    MIGRATION_DIR,
+    PostgresUnavailableError,
+    _psycopg,
+    _uses_item_only_set_schema,
+)
 
 
 SYNCED = "연동 완료"
@@ -22,8 +27,7 @@ REQUIRED_MIGRATIONS = tuple(path.stem for path in sorted(MIGRATION_DIR.glob("*.s
 TIMESTAMP_COLUMNS = {
     "items": {"created_at"},
     "item_versions": {"created_at"},
-    "question_sets": {"created_at"},
-    "question_set_versions": {"published_at"},
+    "question_sets": {"created_at", "published_at"},
 }
 
 
@@ -37,8 +41,9 @@ class DatabaseStatus:
     item_count: int = 0
     item_version_count: int = 0
     set_count: int = 0
-    set_version_count: int = 0
     ready: bool = False
+    deployment_ready: bool = False
+    schema_model: str = ""
     message: str = ""
 
 
@@ -51,8 +56,6 @@ class SetSyncStatus:
     generator_version: str
     set_sequence: int
     status: str
-    source_set_versions: int
-    target_set_versions: int
     expected_memberships: int
     exact_memberships: int
     missing_rows: int
@@ -101,10 +104,8 @@ class DeploymentError(RuntimeError):
 class _DatabaseSnapshot:
     sets: dict[str, dict]
     set_id_by_identity: dict[tuple[str, str, str, str, int], str]
-    set_versions: dict[tuple[str, int], dict]
-    set_version_by_fingerprint: dict[tuple[str, str], int]
-    memberships: dict[tuple[str, int, int], dict]
-    membership_position_by_item: dict[tuple[str, int, str], int]
+    memberships: dict[tuple[str, int], dict]
+    membership_position_by_item: dict[tuple[str, str], int]
     items: dict[str, dict]
     item_id_by_source: dict[str, str]
     item_versions: dict[tuple[str, int], dict]
@@ -173,15 +174,25 @@ def inspect_database(database_url: str) -> DatabaseStatus:
             ) if has_migrations else ()
             counts = {
                 table: _table_count(connection, table)
-                for table in ("items", "item_versions", "question_sets", "question_set_versions")
+                for table in ("items", "item_versions", "question_sets")
             }
-            missing = [value for value in REQUIRED_MIGRATIONS if value not in migrations]
+            effective_migrations = set(migrations)
+            current_schema = _uses_item_only_set_schema(connection)
+            legacy_schema = _uses_legacy_set_schema(connection)
+            if current_schema:
+                effective_migrations.add("005_item_only_question_versions")
+            missing = [value for value in REQUIRED_MIGRATIONS if value not in effective_migrations]
             structure_problems = _required_structure_problems(connection)
             readiness_messages = []
-            if missing:
+            if missing and not legacy_schema:
                 readiness_messages.append(f"미적용 마이그레이션: {', '.join(missing)}")
-            if structure_problems:
+            if structure_problems and not legacy_schema:
                 readiness_messages.append("구조 확인 필요: " + ", ".join(structure_problems))
+            if legacy_schema:
+                readiness_messages.append(
+                    "구 세트 버전 구조입니다. 운영 배포 원본으로는 사용할 수 있지만 "
+                    "새 세트 발행 전에는 Unigate-Web 016 마이그레이션을 적용해야 합니다."
+                )
             return DatabaseStatus(
                 configured=True,
                 reachable=True,
@@ -191,8 +202,9 @@ def inspect_database(database_url: str) -> DatabaseStatus:
                 item_count=counts["items"],
                 item_version_count=counts["item_versions"],
                 set_count=counts["question_sets"],
-                set_version_count=counts["question_set_versions"],
-                ready=not missing and not structure_problems,
+                ready=current_schema and not missing and not structure_problems,
+                deployment_ready=current_schema or legacy_schema,
+                schema_model="item_only" if current_schema else "legacy" if legacy_schema else "unknown",
                 message=(" / ".join(readiness_messages) if readiness_messages else "스키마가 최신입니다."),
             )
     except Exception as exc:
@@ -236,10 +248,12 @@ class PostgresDeploymentService:
                 source_connection.execute(
                     "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
                 )
+                _require_deployment_source_schema(source_connection)
                 source = _load_snapshot(source_connection)
             with psycopg.connect(
                 self.target_url, prepare_threshold=None
             ) as target_connection:
+                _require_current_target_schema(target_connection)
                 target = _load_snapshot(target_connection)
             initial_plan = _build_plan(source, target, selected)
             run_id = self._start_audit(source, initial_plan)
@@ -365,10 +379,12 @@ class PostgresDeploymentService:
         psycopg, _ = _psycopg()
         try:
             with psycopg.connect(self.source_url) as source_connection:
+                _require_deployment_source_schema(source_connection)
                 source = _load_snapshot(source_connection)
             with psycopg.connect(
                 self.target_url, prepare_threshold=None
             ) as target_connection:
+                _require_current_target_schema(target_connection)
                 target = _load_snapshot(target_connection)
             return source, target
         except Exception as exc:
@@ -443,7 +459,6 @@ def compare_snapshots(source: _DatabaseSnapshot, target: _DatabaseSnapshot) -> l
     for set_id, row in target.sets.items():
         if set_id in source.sets:
             continue
-        versions = [key for key in target.set_versions if key[0] == set_id]
         memberships = [key for key in target.memberships if key[0] == set_id]
         statuses.append(
             SetSyncStatus(
@@ -454,8 +469,6 @@ def compare_snapshots(source: _DatabaseSnapshot, target: _DatabaseSnapshot) -> l
                 generator_version=str(row["generator_version"]),
                 set_sequence=int(row["set_sequence"]),
                 status=TARGET_ONLY,
-                source_set_versions=0,
-                target_set_versions=len(versions),
                 expected_memberships=len(memberships),
                 exact_memberships=len(memberships),
                 missing_rows=0,
@@ -520,54 +533,33 @@ def _compare_set(source: _DatabaseSnapshot, target: _DatabaseSnapshot, set_id: s
         else:
             conflicts.append(f"item_version {key[0]} v{key[1]} 내용이 다릅니다.")
 
-    for row in expected_rows["question_set_versions"]:
-        key = (str(row["set_id"]), int(row["set_version"]))
-        actual = target.set_versions.get(key)
-        if actual is None:
-            other = target.set_version_by_fingerprint.get((key[0], str(row["set_fingerprint"])))
-            if other is not None:
-                conflicts.append(f"세트 {key[0]}의 동일 fingerprint가 버전 {other}에 존재합니다.")
-            else:
-                missing.append(f"set_version {key[0]} v{key[1]}이 없습니다.")
-        elif _rows_equal("question_set_versions", row, actual):
-            exact_rows += 1
-        else:
-            conflicts.append(f"set_version {key[0]} v{key[1]} 내용이 다릅니다.")
-
     exact_memberships = 0
     for row in expected_rows["question_set_items"]:
-        key = (str(row["set_id"]), int(row["set_version"]), int(row["position"]))
+        key = (str(row["set_id"]), int(row["position"]))
         actual = target.memberships.get(key)
         if actual is None:
             other_position = target.membership_position_by_item.get(
-                (key[0], key[1], str(row["item_id"]))
+                (key[0], str(row["item_id"]))
             )
             if other_position is not None:
                 conflicts.append(
-                    f"세트 {key[0]} v{key[1]}의 item {row['item_id']}가 다른 위치 {other_position}에 있습니다."
+                    f"세트 {key[0]}의 item {row['item_id']}가 다른 위치 {other_position}에 있습니다."
                 )
             else:
-                missing.append(f"세트 {key[0]} v{key[1]} {key[2]}번 문항이 없습니다.")
+                missing.append(f"세트 {key[0]} {key[1]}번 문항이 없습니다.")
         elif _rows_equal("question_set_items", row, actual):
             exact_rows += 1
             exact_memberships += 1
         else:
-            conflicts.append(f"세트 {key[0]} v{key[1]} {key[2]}번 문항이 다릅니다.")
+            conflicts.append(f"세트 {key[0]} {key[1]}번 문항이 다릅니다.")
 
-    expected_version_keys = {
-        (str(row["set_id"]), int(row["set_version"]))
-        for row in expected_rows["question_set_versions"]
-    }
-    target_version_keys = {key for key in target.set_versions if key[0] == set_id}
-    for extra in sorted(target_version_keys - expected_version_keys):
-        conflicts.append(f"운영 DB에만 세트 버전 v{extra[1]}이 존재합니다.")
     expected_membership_keys = {
-        (str(row["set_id"]), int(row["set_version"]), int(row["position"]))
+        (str(row["set_id"]), int(row["position"]))
         for row in expected_rows["question_set_items"]
     }
     target_membership_keys = {key for key in target.memberships if key[0] == set_id}
     for extra in sorted(target_membership_keys - expected_membership_keys):
-        conflicts.append(f"운영 DB에만 세트 v{extra[1]} {extra[2]}번 연결이 존재합니다.")
+        conflicts.append(f"운영 DB에만 세트 {extra[1]}번 연결이 존재합니다.")
 
     if conflicts:
         status = CONFLICT
@@ -577,8 +569,6 @@ def _compare_set(source: _DatabaseSnapshot, target: _DatabaseSnapshot, set_id: s
         status = MISSING
     else:
         status = PARTIAL
-    source_versions = len(expected_rows["question_set_versions"])
-    target_versions = len([key for key in target.set_versions if key[0] == set_id])
     return SetSyncStatus(
         set_id=set_id,
         section=str(source_set["section"]),
@@ -587,8 +577,6 @@ def _compare_set(source: _DatabaseSnapshot, target: _DatabaseSnapshot, set_id: s
         generator_version=str(source_set["generator_version"]),
         set_sequence=int(source_set["set_sequence"]),
         status=status,
-        source_set_versions=source_versions,
-        target_set_versions=target_versions,
         expected_memberships=len(expected_rows["question_set_items"]),
         exact_memberships=exact_memberships,
         missing_rows=len(missing),
@@ -618,26 +606,56 @@ def _build_plan(
 
 
 def _load_snapshot(connection) -> _DatabaseSnapshot:
-    sets = _indexed_rows(
-        connection,
-        """SELECT set_id, section, generator_provider, generator_model,
-                  generator_version, set_sequence, created_at
-           FROM topik_bank.question_sets""",
-        lambda row: str(row["set_id"]),
-    )
-    set_versions = _indexed_rows(
-        connection,
-        """SELECT set_id, set_version, review_status, default_target_level,
-                  default_predicted_difficulty, set_fingerprint, published_at
-           FROM topik_bank.question_set_versions""",
-        lambda row: (str(row["set_id"]), int(row["set_version"])),
-    )
-    memberships = _indexed_rows(
-        connection,
-        """SELECT set_id, set_version, position, item_id, item_version
-           FROM topik_bank.question_set_items""",
-        lambda row: (str(row["set_id"]), int(row["set_version"]), int(row["position"])),
-    )
+    if _uses_legacy_set_schema(connection):
+        sets = _indexed_rows(
+            connection,
+            """SELECT s.set_id, s.section, s.generator_provider, s.generator_model,
+                      s.generator_version, s.set_sequence, v.review_status,
+                      v.default_target_level, v.default_predicted_difficulty,
+                      v.set_fingerprint, v.published_at, s.created_at
+               FROM topik_bank.question_sets s
+               JOIN LATERAL (
+                   SELECT review_status, default_target_level,
+                          default_predicted_difficulty, set_fingerprint,
+                          published_at, set_version
+                     FROM topik_bank.question_set_versions
+                    WHERE set_id = s.set_id
+                    ORDER BY set_version DESC
+                    LIMIT 1
+               ) v ON TRUE""",
+            lambda row: str(row["set_id"]),
+        )
+        memberships = _indexed_rows(
+            connection,
+            """WITH latest AS (
+                   SELECT set_id, MAX(set_version) AS set_version
+                     FROM topik_bank.question_set_versions
+                    GROUP BY set_id
+               )
+               SELECT member.set_id, member.position, member.item_id,
+                      member.item_version
+                 FROM topik_bank.question_set_items member
+                 JOIN latest
+                   ON latest.set_id=member.set_id
+                  AND latest.set_version=member.set_version""",
+            lambda row: (str(row["set_id"]), int(row["position"])),
+        )
+    else:
+        sets = _indexed_rows(
+            connection,
+            """SELECT set_id, section, generator_provider, generator_model,
+                      generator_version, set_sequence, review_status,
+                      default_target_level, default_predicted_difficulty,
+                      set_fingerprint, published_at, created_at
+               FROM topik_bank.question_sets""",
+            lambda row: str(row["set_id"]),
+        )
+        memberships = _indexed_rows(
+            connection,
+            """SELECT set_id, position, item_id, item_version
+               FROM topik_bank.question_set_items""",
+            lambda row: (str(row["set_id"]), int(row["position"])),
+        )
     items = _indexed_rows(
         connection,
         "SELECT item_id, source_key, created_at FROM topik_bank.items",
@@ -657,14 +675,9 @@ def _load_snapshot(connection) -> _DatabaseSnapshot:
     return _DatabaseSnapshot(
         sets=sets,
         set_id_by_identity={_set_identity(row): key for key, row in sets.items()},
-        set_versions=set_versions,
-        set_version_by_fingerprint={
-            (key[0], str(row["set_fingerprint"])): key[1]
-            for key, row in set_versions.items()
-        },
         memberships=memberships,
         membership_position_by_item={
-            (key[0], key[1], str(row["item_id"])): key[2]
+            (key[0], str(row["item_id"])): key[1]
             for key, row in memberships.items()
         },
         items=items,
@@ -678,7 +691,6 @@ def _load_snapshot(connection) -> _DatabaseSnapshot:
 
 
 def _rows_for_set(snapshot: _DatabaseSnapshot, set_id: str) -> dict[str, list[dict]]:
-    versions = [row for key, row in snapshot.set_versions.items() if key[0] == set_id]
     memberships = [row for key, row in snapshot.memberships.items() if key[0] == set_id]
     item_version_keys = {
         (str(row["item_id"]), int(row["item_version"])) for row in memberships
@@ -686,9 +698,8 @@ def _rows_for_set(snapshot: _DatabaseSnapshot, set_id: str) -> dict[str, list[di
     item_ids = {key[0] for key in item_version_keys}
     return {
         "question_sets": [snapshot.sets[set_id]],
-        "question_set_versions": sorted(versions, key=lambda row: int(row["set_version"])),
         "question_set_items": sorted(
-            memberships, key=lambda row: (int(row["set_version"]), int(row["position"]))
+            memberships, key=lambda row: int(row["position"])
         ),
         "items": [snapshot.items[item_id] for item_id in sorted(item_ids)],
         "item_versions": [
@@ -743,41 +754,30 @@ def _copy_missing_rows(connection, source, target, set_ids, Jsonb) -> int:
             connection,
             """INSERT INTO topik_bank.question_sets(
                    set_id, section, generator_provider, generator_model,
-                   generator_version, set_sequence, created_at
-               ) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+                   generator_version, set_sequence, review_status,
+                   default_target_level, default_predicted_difficulty,
+                   set_fingerprint, published_at, created_at
+               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT DO NOTHING""",
             (
                 row["set_id"], row["section"], row["generator_provider"],
                 row["generator_model"], row["generator_version"], row["set_sequence"],
-                row["created_at"],
-            ),
-        )
-    for row in rows["question_set_versions"]:
-        key = (str(row["set_id"]), int(row["set_version"]))
-        if key in target.set_versions:
-            continue
-        created += _execute_insert(
-            connection,
-            """INSERT INTO topik_bank.question_set_versions(
-                   set_id, set_version, review_status, default_target_level,
-                   default_predicted_difficulty, set_fingerprint, published_at
-               ) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
-            (
-                row["set_id"], row["set_version"], row["review_status"],
-                row["default_target_level"], row["default_predicted_difficulty"],
-                row["set_fingerprint"], row["published_at"],
+                row["review_status"], row["default_target_level"],
+                row["default_predicted_difficulty"], row["set_fingerprint"],
+                row["published_at"], row["created_at"],
             ),
         )
     for row in rows["question_set_items"]:
-        key = (str(row["set_id"]), int(row["set_version"]), int(row["position"]))
+        key = (str(row["set_id"]), int(row["position"]))
         if key in target.memberships:
             continue
         created += _execute_insert(
             connection,
             """INSERT INTO topik_bank.question_set_items(
-                   set_id, set_version, position, item_id, item_version
-               ) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+                   set_id, position, item_id, item_version
+               ) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             (
-                row["set_id"], row["set_version"], row["position"],
+                row["set_id"], row["position"],
                 row["item_id"], row["item_version"],
             ),
         )
@@ -787,15 +787,14 @@ def _copy_missing_rows(connection, source, target, set_ids, Jsonb) -> int:
 def _merged_rows(snapshot: _DatabaseSnapshot, set_ids: Iterable[str]) -> dict[str, list[dict]]:
     result: dict[str, dict[Any, dict]] = {
         "items": {}, "item_versions": {}, "question_sets": {},
-        "question_set_versions": {}, "question_set_items": {},
+        "question_set_items": {},
     }
     key_functions = {
         "items": lambda row: str(row["item_id"]),
         "item_versions": lambda row: (str(row["item_id"]), int(row["item_version"])),
         "question_sets": lambda row: str(row["set_id"]),
-        "question_set_versions": lambda row: (str(row["set_id"]), int(row["set_version"])),
         "question_set_items": lambda row: (
-            str(row["set_id"]), int(row["set_version"]), int(row["position"])
+            str(row["set_id"]), int(row["position"])
         ),
     }
     for set_id in set_ids:
@@ -834,9 +833,6 @@ def _target_state_digest(source, target, set_ids) -> str:
                 key = _row_key(table, row)
                 actual = _lookup_row(target, table, key)
                 state.append({"table": table, "key": key, "actual": _semantic_row(table, actual) if actual else None})
-        for key, row in target.set_versions.items():
-            if key[0] == set_id and key not in {_row_key("question_set_versions", value) for value in expected["question_set_versions"]}:
-                state.append({"table": "extra_set_version", "key": key, "actual": _semantic_row("question_set_versions", row)})
         for key, row in target.memberships.items():
             if key[0] == set_id and key not in {_row_key("question_set_items", value) for value in expected["question_set_items"]}:
                 state.append({"table": "extra_membership", "key": key, "actual": _semantic_row("question_set_items", row)})
@@ -848,7 +844,6 @@ def _lookup_row(snapshot, table, key):
         "items": snapshot.items,
         "item_versions": snapshot.item_versions,
         "question_sets": snapshot.sets,
-        "question_set_versions": snapshot.set_versions,
         "question_set_items": snapshot.memberships,
     }[table]
     return mapping.get(key)
@@ -861,9 +856,7 @@ def _row_key(table: str, row: dict):
         return str(row["item_id"]), int(row["item_version"])
     if table == "question_sets":
         return str(row["set_id"])
-    if table == "question_set_versions":
-        return str(row["set_id"]), int(row["set_version"])
-    return str(row["set_id"]), int(row["set_version"]), int(row["position"])
+    return str(row["set_id"]), int(row["position"])
 
 
 def _set_identity(row: dict) -> tuple[str, str, str, str, int]:
@@ -937,10 +930,41 @@ def _table_exists(connection, table: str) -> bool:
     )
 
 
+def _uses_legacy_set_schema(connection) -> bool:
+    return bool(
+        connection.execute(
+            """SELECT
+                   to_regclass('topik_bank.question_sets') IS NOT NULL
+                   AND to_regclass('topik_bank.question_set_items') IS NOT NULL
+                   AND to_regclass('topik_bank.question_set_versions') IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1 FROM information_schema.columns
+                       WHERE table_schema='topik_bank' AND table_name='question_set_items'
+                         AND column_name='set_version'
+                   )"""
+        ).fetchone()[0]
+    )
+
+
+def _require_deployment_source_schema(connection) -> None:
+    if _uses_item_only_set_schema(connection) or _uses_legacy_set_schema(connection):
+        return
+    raise ValueError("로컬 원본의 topik_bank 세트 구조를 인식할 수 없습니다.")
+
+
+def _require_current_target_schema(connection) -> None:
+    if _uses_item_only_set_schema(connection):
+        return
+    raise ValueError(
+        "운영 DB가 현재 item-only 세트 구조가 아닙니다. "
+        "Unigate-Web 016 마이그레이션을 먼저 적용하세요."
+    )
+
+
 def _table_count(connection, table: str) -> int:
     if not _table_exists(connection, table):
         return 0
-    allowed = {"items", "item_versions", "question_sets", "question_set_versions"}
+    allowed = {"items", "item_versions", "question_sets"}
     if table not in allowed:
         raise ValueError(f"허용되지 않은 테이블: {table}")
     return int(connection.execute(f"SELECT COUNT(*) FROM topik_bank.{table}").fetchone()[0])
@@ -949,8 +973,8 @@ def _table_count(connection, table: str) -> int:
 def _required_structure_problems(connection) -> list[str]:
     problems: list[str] = []
     required_tables = {
-        "items", "item_versions", "question_sets", "question_set_versions",
-        "question_set_items", "deployment_runs", "deployment_run_sets",
+        "items", "item_versions", "question_sets", "question_set_items",
+        "deployment_runs", "deployment_run_sets",
     }
     existing_tables = {
         str(row[0])
@@ -964,6 +988,11 @@ def _required_structure_problems(connection) -> list[str]:
     required_columns = {
         ("item_versions", "type_slot"),
         ("question_sets", "set_sequence"),
+        ("question_sets", "review_status"),
+        ("question_sets", "default_target_level"),
+        ("question_sets", "default_predicted_difficulty"),
+        ("question_sets", "set_fingerprint"),
+        ("question_sets", "published_at"),
     }
     existing_columns = {
         (str(row[0]), str(row[1]))
@@ -974,6 +1003,10 @@ def _required_structure_problems(connection) -> list[str]:
     }
     for table, column in sorted(required_columns - existing_columns):
         problems.append(f"컬럼 {table}.{column}")
+    if ("question_set_items", "set_version") in existing_columns:
+        problems.append("제거되지 않은 컬럼 question_set_items.set_version")
+    if "question_set_versions" in existing_tables:
+        problems.append("제거되지 않은 테이블 question_set_versions")
     existing_views = {
         str(row[0])
         for row in connection.execute(

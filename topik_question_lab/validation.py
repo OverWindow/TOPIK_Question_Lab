@@ -113,6 +113,9 @@ def validate_question(
         issues.append(ValidationIssue(code="explanation", message="정답 해설이 없습니다."))
     if not choices_are_distinct(question.choices):
         issues.append(ValidationIssue(code="duplicate_choices", message="서로 같은 보기가 있습니다."))
+    topic_values = [question.topic_id, question.topic_domain, question.topic_title, question.topic_angle]
+    if any(topic_values) and not all(value.strip() for value in topic_values):
+        issues.append(ValidationIssue(code="topic_metadata", message="소재 메타데이터가 일부 누락되었습니다."))
 
     candidates = [(example.passage or example.stem) for example in examples] + (other_stems or [])
     question_text = question.passage or question.stem

@@ -19,7 +19,13 @@ def to_txt(items: list[dict]) -> str:
     parts: list[str] = []
     for item in approved_items(items):
         q = item["question"]
-        parts.extend([f"[{q['type_slot']}번형] {q.get('question_role', '')}", _script(q), q.get("question_prompt", "")])
+        parts.append(f"[{q['type_slot']}번형] {q.get('question_role', '')}")
+        if q.get("topic_id"):
+            parts.append(
+                f"소재: {q.get('topic_domain', '')} / {q.get('topic_title', '')}"
+                f" · {q.get('topic_angle', '')}"
+            )
+        parts.extend([_script(q), q.get("question_prompt", "")])
         if q.get("choices"):
             parts.extend(f"{index}. {choice}" for index, choice in enumerate(q["choices"], start=1))
         else:
@@ -48,7 +54,7 @@ def to_json(items: list[dict]) -> str:
 
 def to_csv(items: list[dict]) -> str:
     output = io.StringIO()
-    fields = ["provider", "model", "type_slot", "question_role", "script", "question_prompt", "choices", "visual_prompts", "answer", "explanation", "target_skill", "repeat_count", "visual_kind"]
+    fields = ["provider", "model", "type_slot", "question_role", "script", "question_prompt", "choices", "visual_prompts", "answer", "explanation", "target_skill", "repeat_count", "visual_kind", "topic_id", "topic_domain", "topic_title", "topic_angle", "topic_fit"]
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for item in approved_items(items):
@@ -68,6 +74,11 @@ def to_csv(items: list[dict]) -> str:
                 "target_skill": q.get("target_skill", ""),
                 "repeat_count": q.get("repeat_count", 1),
                 "visual_kind": q.get("visual_kind", "none"),
+                "topic_id": q.get("topic_id", ""),
+                "topic_domain": q.get("topic_domain", ""),
+                "topic_title": q.get("topic_title", ""),
+                "topic_angle": q.get("topic_angle", ""),
+                "topic_fit": item.get("review", {}).get("topic_fit"),
             }
         )
     return output.getvalue()

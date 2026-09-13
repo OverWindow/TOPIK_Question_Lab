@@ -110,6 +110,10 @@ class GeneratedListeningQuestion(BaseModel):
     visual_kind: VisualKind = "none"
     visual_options: list[VisualOption] = Field(default_factory=list)
     answer_source: AnswerSource = "ai_suggested"
+    topic_id: str = ""
+    topic_domain: str = ""
+    topic_title: str = ""
+    topic_angle: str = ""
 
     @property
     def script_text(self) -> str:

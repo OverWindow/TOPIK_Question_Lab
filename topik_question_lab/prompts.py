@@ -4,6 +4,7 @@ import json
 
 from .models import QuestionExample
 from .prompt_profiles import question_role_label, question_type_profile
+from .topic_bank import TopicBrief, topic_plan_prompt
 
 
 DEFAULT_SYSTEM_PROMPT = """당신은 한국어능력시험 TOPIK II 읽기 문항을 설계하는 출제 전문가입니다.
@@ -79,6 +80,7 @@ def build_generation_prompt(
     count: int,
     difficulty: str,
     type_id: str = "grammar_blank",
+    topic_briefs: list[TopicBrief] | None = None,
 ) -> str:
     profile = question_type_profile(type_id)
     slots = profile.question_numbers
@@ -97,6 +99,10 @@ def build_generation_prompt(
         "question_prompt": "",
         "auxiliary_text": "",
         "set_id": "",
+        "topic_id": "",
+        "topic_domain": "",
+        "topic_title": "",
+        "topic_angle": "",
         "choices": ["보기1", "보기2", "보기3", "보기4"],
         "answer": 1,
         "explanation": "정답 및 오답 설명",
@@ -197,6 +203,7 @@ def build_generation_prompt(
             f"세트마다 {len(slots)}개 문항을 모두 포함하십시오."
         )
     output_example = json.dumps({"questions": sample_questions}, ensure_ascii=False, indent=2)
+    topic_section = topic_plan_prompt(topic_briefs or [], shared=profile.shared_passage)
     return f"""아래 승인된 TOPIK II 읽기 {profile.number_range} {profile.label} 기출 예시와 공통 유형 분석서를 바탕으로 새로운 문항 {count}개를 만드십시오.
 문항 배분: {distribution}.{set_rule}
 
@@ -207,6 +214,7 @@ def build_generation_prompt(
 
 승인된 기출 예시:
 {examples_json(examples)}
+{topic_section}
 
 규칙:
 {type_rules}

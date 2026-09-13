@@ -302,6 +302,11 @@ def test_migration_declares_required_item_bank_fields():
     assert "topik_bank.deployment_run_sets" in fourth
     assert "outcome_unknown" in fourth
 
+    fifth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "005_item_only_question_versions.sql").read_text(encoding="utf-8")
+    assert "DROP TABLE topik_bank.question_set_versions" in fifth
+    assert "DROP COLUMN set_version" in fifth
+    assert "CREATE VIEW topik_bank.current_set_contents" in fifth
+
 
 def test_reconciliation_reports_all_local_and_postgres_states():
     latest = candidate(1)
@@ -408,7 +413,7 @@ def test_set_item_batch_insert_uses_cursor_executemany():
             return self.value
 
     connection = FakeConnection()
-    rows = [("set", 1, 1, "item", 1)]
+    rows = [("set", 1, "item", 1)]
 
     _insert_set_items(connection, rows)
 
@@ -424,7 +429,6 @@ def test_set_membership_retry_is_idempotent_and_partial_overlap_conflicts():
         {
             "set_id": "set-one",
             "set_sequence": 1,
-            "set_version": 1,
             "section": identity[0],
             "generator_provider": identity[1],
             "generator_model": identity[2],
@@ -436,7 +440,7 @@ def test_set_membership_retry_is_idempotent_and_partial_overlap_conflicts():
     ]
 
     existing, conflicts = _resolve_set_membership(rows, requested, identity)
-    assert existing == ("set-one", 1, 1)
+    assert existing == ("set-one", 1)
     assert conflicts == []
 
     existing, conflicts = _resolve_set_membership(rows[:1], requested, identity)
@@ -450,7 +454,6 @@ def test_set_membership_from_other_identity_is_always_a_conflict():
         {
             "set_id": "other-set",
             "set_sequence": 1,
-            "set_version": 1,
             "section": "reading",
             "generator_provider": "other",
             "generator_model": "other",

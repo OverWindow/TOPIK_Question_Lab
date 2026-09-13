@@ -4,6 +4,7 @@ import json
 
 from .listening_models import ListeningQuestionExample
 from .listening_profiles import listening_type_profile
+from .topic_bank import TopicBrief, generation_units, topic_plan_prompt
 
 
 LISTENING_SYSTEM_PROMPT = """당신은 한국어능력시험 TOPIK II 듣기 문항 출제 전문가입니다.
@@ -75,6 +76,10 @@ def _sample_question(type_id: str, slot: int, set_id: str = "") -> dict:
         "visual_kind": profile.visual_kind,
         "visual_options": [],
         "answer_source": "ai_suggested",
+        "topic_id": "",
+        "topic_domain": "",
+        "topic_title": "",
+        "topic_angle": "",
     }
     if profile.visual_kind == "scene":
         value["choices"] = []
@@ -97,22 +102,43 @@ def build_listening_generation_prompt(
     count: int,
     difficulty: str,
     type_id: str,
+    topic_briefs: list[TopicBrief] | None = None,
 ) -> str:
     profile = listening_type_profile(type_id)
     if profile.shared_script:
         set_count = max(1, count // len(profile.question_numbers))
         samples = [_sample_question(type_id, slot, "set-1") for slot in profile.question_numbers]
         count = set_count * len(profile.question_numbers)
-        set_rule = f"완전한 세트 {set_count}개를 만들고 각 세트는 동일한 dialogue_turns와 set_id를 공유해야 합니다."
+        distribution = ", ".join(f"{slot}번 {set_count}개" for slot in profile.question_numbers)
+        set_rule = (
+            f"완전한 세트 {set_count}개를 만들고 각 세트는 동일한 dialogue_turns와 set_id를 공유해야 합니다. "
+            f"type_slot별 생성 수는 정확히 {distribution}입니다."
+        )
     else:
-        samples = [_sample_question(type_id, profile.question_numbers[0])]
-        set_rule = "각 문항은 독립된 대본을 사용합니다."
+        units = generation_units(profile.question_numbers, count, False)
+        slot_counts = {
+            slot: sum(slot in unit_slots for _, unit_slots in units)
+            for slot in profile.question_numbers
+        }
+        samples = [
+            _sample_question(type_id, slot)
+            for slot in profile.question_numbers
+            if slot_counts[slot]
+        ]
+        distribution = ", ".join(
+            f"{slot}번 {slot_counts[slot]}개" for slot in profile.question_numbers
+        )
+        set_rule = (
+            "각 문항은 독립된 대본을 사용합니다. "
+            f"type_slot별 생성 수는 정확히 {distribution}이며, 이 배분을 빠짐없이 지킵니다."
+        )
     visual_rule = {
         "scene": "visual_options 네 개에 서로 분명히 다른 장면 설명과 이미지 생성 프롬프트를 작성하고 choices는 빈 배열로 둡니다.",
         "chart": "visual_options 네 개에 서로 구별되는 그래프 설명과 이미지 생성 프롬프트를 반드시 작성하고 choices는 빈 배열로 둡니다. chart_spec은 자동 렌더링이 가능할 때만 작성하며 없어도 됩니다.",
         "none": "choices에 비어 있지 않은 텍스트 보기 네 개를 작성하고 visual_options는 빈 배열로 둡니다.",
     }[profile.visual_kind]
     output = json.dumps({"questions": samples}, ensure_ascii=False, indent=2)
+    topic_section = topic_plan_prompt(topic_briefs or [], shared=profile.shared_script)
     return f"""승인된 TOPIK II 듣기 {profile.number_range}번 {profile.label} 기출과 분석서를 바탕으로 새 문항 {count}개를 만드십시오.
 
 목표 난이도: {difficulty}
@@ -121,6 +147,7 @@ def build_listening_generation_prompt(
 
 승인 기출:
 {examples_json(examples)}
+{topic_section}
 
 규칙:
 - {profile.analysis_focus}

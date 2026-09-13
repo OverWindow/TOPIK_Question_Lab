@@ -33,6 +33,7 @@ from topik_question_lab.models import (
     ProviderResult,
     QuestionExample,
     Review,
+    ValidationIssue,
 )
 from topik_question_lab.navigation import next_sequence_item
 from topik_question_lab.parser import scan_extracted_text
@@ -76,6 +77,15 @@ from topik_question_lab.providers import (
     dump_generation_presets,
 )
 from topik_question_lab.storage import Storage
+from topik_question_lab.topic_bank import (
+    TOPIC_METADATA_FIELDS,
+    TOPIC_STORE_SCHEMA_VERSION,
+    TopicBrief,
+    TopicStore,
+    apply_topic_plan,
+    uses_topic_bank,
+)
+from topik_question_lab.topic_ui import invalidate_topic_planner, render_topic_planner
 from topik_question_lab.validation import validate_generation_payload, validate_question
 
 
@@ -83,6 +93,7 @@ DATA_DIR = ROOT / "data"
 LEGACY_DB_PATH = DATA_DIR / "topik_lab.db"
 TYPE_DB_DIR = DATA_DIR / "types"
 EXTRACTED_DIR = ROOT / "extracted_text"
+TOPIC_DB_PATH = DATA_DIR / "topic_bank.db"
 
 st.set_page_config(page_title="TOPIK Question Lab", page_icon="문", layout="wide")
 st.markdown(
@@ -116,6 +127,12 @@ def get_storage(type_id: str) -> Storage:
     return Storage(type_path)
 
 
+@st.cache_resource
+def get_topic_store(schema_version: int) -> TopicStore:
+    del schema_version  # The argument versions Streamlit's resource cache.
+    return TopicStore(TOPIC_DB_PATH)
+
+
 st.sidebar.title("TOPIK Question Lab")
 implemented_type_ids = [
     type_id for type_id, profile in QUESTION_TYPE_PROFILES.items() if profile.implemented
@@ -133,6 +150,7 @@ selected_type_id = st.sidebar.selectbox(
 )
 selected_type_profile = question_type_profile(selected_type_id)
 storage = get_storage(selected_type_id)
+topic_store = get_topic_store(TOPIC_STORE_SCHEMA_VERSION)
 st.sidebar.caption(f"유형 DB · {selected_type_id}.db")
 if "_database_delete_notice" in st.session_state:
     st.sidebar.success(st.session_state.pop("_database_delete_notice"))
@@ -247,7 +265,11 @@ def optimize_prompts(system_prompt: str, user_prompt: str, provider: str | None)
     )
 
 
-def prompts_for(operation: str, provider: str | None = None) -> tuple[str, str]:
+def prompts_for(
+    operation: str,
+    provider: str | None = None,
+    topic_briefs: list[TopicBrief] | None = None,
+) -> tuple[str, str]:
     examples = storage.list_examples(approved_only=True)
     system_prompt = storage.get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT)
     type_id = storage.get_setting("question_type", "grammar_blank")
@@ -260,12 +282,16 @@ def prompts_for(operation: str, provider: str | None = None) -> tuple[str, str]:
             int(storage.get_setting("generation_count", "2")),
             storage.get_setting("difficulty", "TOPIK II 읽기 초반 수준"),
             type_id,
+            topic_briefs,
         )
     return optimize_prompts(system_prompt, user_prompt, provider)
 
 
-def generation_prompts_for(provider: str) -> tuple[str, str]:
-    system_prompt, user_prompt = prompts_for("generation", provider)
+def generation_prompts_for(
+    provider: str,
+    topic_briefs: list[TopicBrief] | None = None,
+) -> tuple[str, str]:
+    system_prompt, user_prompt = prompts_for("generation", provider, topic_briefs)
     return generation_preset_prompt(system_prompt, generation_preset_for(provider)), user_prompt
 
 
@@ -303,6 +329,7 @@ def save_provider_result(
     system_prompt: str,
     user_prompt: str,
     allowed_enrichment_keys: set[str] | None = None,
+    topic_briefs: list[TopicBrief] | None = None,
 ) -> tuple[bool, str]:
     run_id = storage.save_run(
         result,
@@ -341,13 +368,25 @@ def save_provider_result(
                 updated_count += 1
             return True, f"AI 제안을 {updated_count}개 문제에 채웠습니다. 검토 후 승인하세요."
         else:
+            topic_application = apply_topic_plan(
+                result.parsed_json,
+                topic_briefs or [],
+                shared=selected_type_profile.shared_passage,
+            )
             existing_stems = [item["question"]["stem"] for item in storage.list_generated()]
             questions, issue_groups = validate_generation_payload(
-                result.parsed_json,
+                topic_application.payload,
                 storage.list_examples(approved_only=True),
                 existing_generated_stems=existing_stems,
                 question_type=selected_type_id,
             )
+            for index, messages in enumerate(topic_application.issue_messages):
+                if index >= len(issue_groups):
+                    break
+                issue_groups[index].extend(
+                    ValidationIssue(code="topic_plan", message=message)
+                    for message in messages
+                )
             storage.add_generated_questions(
                 run_id,
                 result.provider,
@@ -355,10 +394,22 @@ def save_provider_result(
                 [question.model_dump() for question in questions],
                 [[issue.model_dump() for issue in issues] for issues in issue_groups],
             )
+            if topic_application.applied_briefs:
+                try:
+                    topic_store.record_usages(
+                        topic_application.applied_briefs,
+                        section="reading",
+                        question_type=selected_type_id,
+                        provider=result.provider,
+                        model=result.model,
+                        run_id=run_id,
+                    )
+                except Exception as exc:
+                    return True, f"문항은 저장했지만 소재 사용 이력을 기록하지 못했습니다: {exc}"
             expected = int(storage.get_setting("generation_count", "2"))
             if len(questions) != expected:
                 return True, f"저장했지만 요청한 {expected}개 대신 {len(questions)}개가 생성되었습니다."
-    except (ValidationError, ValueError, TypeError) as exc:
+    except (ValidationError, ValueError, TypeError, AttributeError) as exc:
         return False, f"응답 구조 검증 실패: {exc}"
     return True, "결과를 저장했습니다."
 
@@ -1177,15 +1228,6 @@ elif stage == "4. 문제 생성":
         format_func=provider_label,
         key=f"generation-preview-provider-{selected_type_id}",
     )
-    system_prompt, user_prompt = generation_prompts_for(preview_provider)
-    with st.expander("이번 실행 프롬프트"):
-        st.text_area("System", system_prompt, height=130, disabled=True)
-        st.text_area("User", user_prompt, height=420, disabled=True)
-        st.code(f"SYSTEM\n{system_prompt}\n\nUSER\n{user_prompt}", language=None)
-
-    st.info("권장 무료 흐름: 프롬프트를 복사하고 선택 모델의 웹 채팅에서 실행한 뒤 응답을 가져오세요. DeepSeek 공식 API 자동 호출은 별도 과금됩니다.")
-    st.link_button(f"{provider_service_name(preview_provider)} 웹에서 문제 생성하기", provider_web_url(preview_provider))
-
     selected_providers = st.multiselect(
         "API로 자동 생성할 모델",
         active_providers,
@@ -1199,7 +1241,42 @@ elif stage == "4. 문제 생성":
         else:
             st.caption(f"{provider_label(provider)} · 프리셋 미지원 · 기본 API 설정")
     st.caption(f"선택 모델 {len(selected_providers)}개 · 예상 API 요청 {sum(can_gateway_call(p) for p in selected_providers)}회")
-    if st.button("선택한 API 모델로 생성", type="primary", disabled=not examples or not selected_providers):
+    topic_planner_key = f"reading-{selected_type_id}"
+    topic_plan_providers = list(dict.fromkeys([preview_provider, *selected_providers]))
+    if uses_topic_bank("reading", selected_type_id) or topic_store.has_active_slot_pool(
+        "reading", selected_type_profile.question_numbers
+    ):
+        topic_plans, topic_plan_error = render_topic_planner(
+            topic_store,
+            section="reading",
+            question_type=selected_type_id,
+            providers=topic_plan_providers,
+            question_numbers=selected_type_profile.question_numbers,
+            count=expected_count,
+            shared=selected_type_profile.shared_passage,
+            key_prefix=topic_planner_key,
+            provider_label=provider_label,
+        )
+    else:
+        invalidate_topic_planner(topic_planner_key)
+        topic_plans = {provider: [] for provider in topic_plan_providers}
+        topic_plan_error = ""
+        st.info("이 유형은 번호별 지정 풀이 없어서 별도 지문 소재를 배정하지 않습니다.")
+    preview_topics = topic_plans.get(preview_provider, [])
+    system_prompt, user_prompt = generation_prompts_for(preview_provider, preview_topics)
+    with st.expander("이번 실행 프롬프트"):
+        st.text_area("System", system_prompt, height=130, disabled=True)
+        st.text_area("User", user_prompt, height=420, disabled=True)
+        st.code(f"SYSTEM\n{system_prompt}\n\nUSER\n{user_prompt}", language=None)
+
+    st.info("권장 무료 흐름: 프롬프트를 복사하고 선택 모델의 웹 채팅에서 실행한 뒤 응답을 가져오세요. DeepSeek 공식 API 자동 호출은 별도 과금됩니다.")
+    st.link_button(f"{provider_service_name(preview_provider)} 웹에서 문제 생성하기", provider_web_url(preview_provider))
+
+    if st.button(
+        "선택한 API 모델로 생성",
+        type="primary",
+        disabled=not examples or not selected_providers or bool(topic_plan_error),
+    ):
         callable_providers = [provider for provider in selected_providers if can_gateway_call(provider)]
         missing = [provider_label(provider) for provider in selected_providers if not can_gateway_call(provider)]
         if missing:
@@ -1209,7 +1286,8 @@ elif stage == "4. 문제 생성":
                 with ThreadPoolExecutor(max_workers=len(callable_providers)) as executor:
                     futures = {}
                     for provider in callable_providers:
-                        provider_system, provider_user = generation_prompts_for(provider)
+                        provider_topics = topic_plans.get(provider, [])
+                        provider_system, provider_user = generation_prompts_for(provider, provider_topics)
                         provider_preset = generation_preset_for(provider)
                         future = executor.submit(
                             call_provider,
@@ -1221,19 +1299,29 @@ elif stage == "4. 문제 생성":
                             None,
                             provider_preset,
                         )
-                        futures[future] = (provider, provider_system, provider_user)
+                        futures[future] = (provider, provider_system, provider_user, provider_topics)
                     for future in as_completed(futures):
                         result = future.result()
-                        _, provider_system, provider_user = futures[future]
-                        ok, message = save_provider_result(result, provider_system, provider_user)
+                        _, provider_system, provider_user, provider_topics = futures[future]
+                        ok, message = save_provider_result(
+                            result,
+                            provider_system,
+                            provider_user,
+                            topic_briefs=provider_topics,
+                        )
                         (st.success if ok else st.error)(f"{provider_label(result.provider)}: {message}")
+                    invalidate_topic_planner(topic_planner_key)
 
     st.subheader("웹 응답 가져오기")
     manual_provider = preview_provider
     st.caption(f"응답 모델 · {provider_label(manual_provider)}")
-    manual_system, manual_user = generation_prompts_for(manual_provider)
+    manual_topics = topic_plans.get(manual_provider, [])
+    manual_system, manual_user = generation_prompts_for(manual_provider, manual_topics)
     raw_generation = st.text_area("모델의 JSON 응답", height=230, key="generation-manual-raw")
-    if st.button("생성 응답 검증·저장", disabled=not raw_generation.strip() or not examples):
+    if st.button(
+        "생성 응답 검증·저장",
+        disabled=not raw_generation.strip() or not examples or bool(topic_plan_error),
+    ):
         result = manual_result(
             manual_provider,
             model_for(manual_provider),
@@ -1241,9 +1329,15 @@ elif stage == "4. 문제 생성":
             raw_generation,
             generation_preset_for(manual_provider),
         )
-        ok, message = save_provider_result(result, manual_system, manual_user)
+        ok, message = save_provider_result(
+            result,
+            manual_system,
+            manual_user,
+            topic_briefs=manual_topics,
+        )
         (st.success if ok else st.error)(message)
         if ok:
+            invalidate_topic_planner(topic_planner_key)
             st.rerun()
 
     st.subheader("최근 실행")
@@ -1306,6 +1400,22 @@ elif stage == "5. 검수·비교":
         st.caption(f"검수 위치 · {generated_ids.index(selected_id) + 1} / {len(generated_ids)}")
         item = next(item for item in filtered if item["id"] == selected_id)
         question = GeneratedQuestion.model_validate(item["question"])
+
+        topic_values = [getattr(question, field) for field in TOPIC_METADATA_FIELDS]
+        slot_uses_topics = uses_topic_bank("reading", selected_type_id) or topic_store.has_active_slot_pool(
+            "reading", [question.type_slot]
+        )
+        if any(topic_values) and not all(value.strip() for value in topic_values) and not slot_uses_topics:
+            question = question.model_copy(
+                update={field: "" for field in TOPIC_METADATA_FIELDS}
+            )
+            st.info("소재 배정 대상이 아닌 문항의 불완전한 소재 메타데이터를 자동으로 정리했습니다.")
+
+        if question.topic_id:
+            st.info(
+                f"배정 소재 · {question.topic_domain} / {question.topic_title} · "
+                f"접근 관점: {question.topic_angle}"
+            )
 
         if item["validation"]:
             for issue in item["validation"]:
@@ -1391,6 +1501,10 @@ elif stage == "5. 검수·비교":
                     target_grammar=target_grammar,
                     explanation=explanation,
                     difficulty=difficulty,
+                    topic_id=question.topic_id,
+                    topic_domain=question.topic_domain,
+                    topic_title=question.topic_title,
+                    topic_angle=question.topic_angle,
                 )
                 other_stems = [current["question"]["stem"] for current in items if current["id"] != item["id"]]
                 issues = validate_question(edited, storage.list_examples(approved_only=True), other_stems)
@@ -1406,11 +1520,12 @@ elif stage == "5. 검수·비교":
         review = Review.model_validate(item["review"])
         st.subheader("사람 평가")
         with st.form(f"review-{item['id']}"):
-            cols = st.columns(4)
+            cols = st.columns(5)
             naturalness = cols[0].slider("자연스러움", 1, 5, review.naturalness)
             difficulty_fit = cols[1].slider("난이도 적합성", 1, 5, review.difficulty_fit)
             distractor_quality = cols[2].slider("오답 품질", 1, 5, review.distractor_quality)
             topik_fit = cols[3].slider("TOPIK 적합성", 1, 5, review.topik_fit)
+            topic_fit = cols[4].slider("소재 준수", 1, 5, review.topic_fit)
             notes = st.text_area("검수 메모", review.notes)
             approved = st.checkbox("최종 승인", review.approved)
             if st.form_submit_button("평가 저장하고 다음 문제", type="primary"):
@@ -1421,6 +1536,7 @@ elif stage == "5. 검수·비교":
                         difficulty_fit=difficulty_fit,
                         distractor_quality=distractor_quality,
                         topik_fit=topik_fit,
+                        topic_fit=topic_fit,
                         notes=notes,
                         approved=approved,
                     ),
@@ -1451,7 +1567,7 @@ elif stage == "5. 검수·비교":
             metrics[provider]["오류율"] += 1 if any(issue["severity"] == "error" for issue in current["validation"]) else 0
             if current["reviewed"]:
                 review_counts[provider] += 1
-                for key, label in [("naturalness", "자연스러움"), ("difficulty_fit", "난이도"), ("distractor_quality", "오답 품질"), ("topik_fit", "TOPIK 적합성")]:
+                for key, label in [("naturalness", "자연스러움"), ("difficulty_fit", "난이도"), ("distractor_quality", "오답 품질"), ("topik_fit", "TOPIK 적합성"), ("topic_fit", "소재 준수")]:
                     metrics[provider][label] += current_review.get(key, 3)
         rows = []
         for provider, values in metrics.items():

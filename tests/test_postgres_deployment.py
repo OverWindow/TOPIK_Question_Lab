@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
+import topik_question_lab.postgres_deployment as deployment_module
 from topik_question_lab.postgres_deployment import (
     CONFLICT,
     MISSING,
@@ -10,6 +11,7 @@ from topik_question_lab.postgres_deployment import (
     TARGET_ONLY,
     _DatabaseSnapshot,
     _build_plan,
+    _load_snapshot,
     _safe_error,
     compare_snapshots,
     database_label,
@@ -30,20 +32,15 @@ def _snapshot(*, include_set: bool = True, stem: str = "문제", created_at=NOW)
         "generator_model": "deepseek",
         "generator_version": "deepseek_v4_pro",
         "set_sequence": 2,
-        "created_at": created_at,
-    }
-    set_version = {
-        "set_id": UUID(SET_ID),
-        "set_version": 1,
         "review_status": "reviewed",
         "default_target_level": 4,
         "default_predicted_difficulty": 0.0,
         "set_fingerprint": "a" * 64,
         "published_at": created_at,
+        "created_at": created_at,
     }
     membership = {
         "set_id": UUID(SET_ID),
-        "set_version": 1,
         "position": 1,
         "item_id": UUID(ITEM_ID),
         "item_version": 1,
@@ -77,8 +74,7 @@ def _snapshot(*, include_set: bool = True, stem: str = "문제", created_at=NOW)
         "created_at": created_at,
     }
     sets = {SET_ID: set_row} if include_set else {}
-    set_versions = {(SET_ID, 1): set_version} if include_set else {}
-    memberships = {(SET_ID, 1, 1): membership} if include_set else {}
+    memberships = {(SET_ID, 1): membership} if include_set else {}
     items = {ITEM_ID: item} if include_set else {}
     item_versions = {(ITEM_ID, 1): item_version} if include_set else {}
     return _DatabaseSnapshot(
@@ -86,10 +82,8 @@ def _snapshot(*, include_set: bool = True, stem: str = "문제", created_at=NOW)
         set_id_by_identity={
             ("reading", "api", "deepseek", "deepseek_v4_pro", 2): SET_ID
         } if include_set else {},
-        set_versions=set_versions,
-        set_version_by_fingerprint={(SET_ID, "a" * 64): 1} if include_set else {},
         memberships=memberships,
-        membership_position_by_item={(SET_ID, 1, ITEM_ID): 1} if include_set else {},
+        membership_position_by_item={(SET_ID, ITEM_ID): 1} if include_set else {},
         items=items,
         item_id_by_source={"reading:test:1": ITEM_ID} if include_set else {},
         item_versions=item_versions,
@@ -106,7 +100,7 @@ def test_missing_set_is_deployable_and_preview_counts_unique_rows():
     assert status.status == MISSING
     assert status.deployable
     assert status.expected_memberships == 1
-    assert plan.created_row_count == 5
+    assert plan.created_row_count == 4
     assert plan.reused_row_count == 0
 
 
@@ -175,3 +169,39 @@ def test_connection_errors_mask_source_and_target_passwords():
     assert "source-secret" not in message
     assert "target-secret" not in message
     assert "[DATABASE_URL]" in message
+
+
+def test_current_snapshot_queries_do_not_require_removed_set_versions(monkeypatch):
+    queries: list[str] = []
+
+    monkeypatch.setattr(deployment_module, "_uses_legacy_set_schema", lambda connection: False)
+
+    def empty_rows(connection, sql, key_function):
+        queries.append(sql)
+        return {}
+
+    monkeypatch.setattr(deployment_module, "_indexed_rows", empty_rows)
+    snapshot = _load_snapshot(object())
+
+    assert snapshot.sets == {}
+    assert "topik_bank.question_set_versions" not in "\n".join(queries)
+    assert "set_version" not in next(
+        sql for sql in queries if "FROM topik_bank.question_set_items" in sql
+    )
+
+
+def test_legacy_source_snapshot_reads_only_latest_set_version(monkeypatch):
+    queries: list[str] = []
+
+    monkeypatch.setattr(deployment_module, "_uses_legacy_set_schema", lambda connection: True)
+
+    def empty_rows(connection, sql, key_function):
+        queries.append(sql)
+        return {}
+
+    monkeypatch.setattr(deployment_module, "_indexed_rows", empty_rows)
+    _load_snapshot(object())
+
+    combined = "\n".join(queries)
+    assert "topik_bank.question_set_versions" in combined
+    assert "MAX(set_version)" in combined

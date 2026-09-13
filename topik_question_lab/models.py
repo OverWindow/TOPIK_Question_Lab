@@ -68,6 +68,10 @@ class GeneratedQuestion(BaseModel):
     question_prompt: str = ""
     auxiliary_text: str = ""
     set_id: str = ""
+    topic_id: str = ""
+    topic_domain: str = ""
+    topic_title: str = ""
+    topic_angle: str = ""
 
     @field_validator("stem")
     @classmethod
@@ -115,6 +119,7 @@ class Review(BaseModel):
     difficulty_fit: int = Field(default=3, ge=1, le=5)
     distractor_quality: int = Field(default=3, ge=1, le=5)
     topik_fit: int = Field(default=3, ge=1, le=5)
+    topic_fit: int = Field(default=3, ge=1, le=5)
     notes: str = ""
     approved: bool = False
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from difflib import SequenceMatcher
 
 from .listening_models import GeneratedListeningQuestion, ListeningQuestionExample
 from .listening_profiles import listening_type_profile
 from .models import ValidationIssue
+from .topic_bank import generation_units
 
 
 def _normalized(value: str) -> str:
@@ -46,6 +48,9 @@ def validate_listening_question(
             )
     if len(set(_normalized(c) for c in question.choices if c.strip())) != len([c for c in question.choices if c.strip()]):
         issues.append(ValidationIssue(code="duplicate_choices", message="서로 같은 보기가 있습니다."))
+    topic_values = [question.topic_id, question.topic_domain, question.topic_title, question.topic_angle]
+    if any(topic_values) and not all(value.strip() for value in topic_values):
+        issues.append(ValidationIssue(code="topic_metadata", message="소재 메타데이터가 일부 누락되었습니다."))
 
     current = _normalized(question.script_text)
     candidates = [e.script_text for e in examples] + list(prior_scripts or [])
@@ -65,6 +70,7 @@ def validate_listening_payload(
     examples: list[ListeningQuestionExample],
     question_type: str,
     existing_scripts: list[str] | None = None,
+    expected_count: int | None = None,
 ) -> tuple[list[GeneratedListeningQuestion], list[list[ValidationIssue]]]:
     raw_questions = payload.get("questions")
     if not isinstance(raw_questions, list):
@@ -81,6 +87,36 @@ def validate_listening_payload(
         issues.append(group)
         if not profile.shared_script:
             prior.append(question.script_text)
+
+    if expected_count is not None:
+        expected_units = generation_units(
+            profile.question_numbers,
+            expected_count,
+            profile.shared_script,
+        )
+        expected_slots = Counter(
+            slot for _, unit_slots in expected_units for slot in unit_slots
+        )
+        actual_slots = Counter(question.type_slot for question in questions)
+        if actual_slots != expected_slots:
+            expected_text = ", ".join(
+                f"{slot}번 {expected_slots[slot]}개" for slot in profile.question_numbers
+            )
+            actual_text = ", ".join(
+                f"{slot}번 {actual_slots[slot]}개"
+                for slot in profile.question_numbers
+                if actual_slots[slot]
+            ) or "없음"
+            message = (
+                f"요청한 번호별 문항 수와 다릅니다. 필요: {expected_text}; 생성: {actual_text}. "
+                "누락되거나 중복된 번호를 보완해 다시 생성하세요."
+            )
+            if issues:
+                issues[0].append(
+                    ValidationIssue(code="batch_distribution", message=message)
+                )
+            else:
+                raise ValueError(message)
 
     if profile.shared_script:
         grouped: dict[str, list[int]] = {}

@@ -19,11 +19,10 @@ class PostgresUnavailableError(RuntimeError):
 @dataclass(frozen=True)
 class PublicationReceipt:
     set_id: str
-    set_version: int
     set_sequence: int
     created_item_versions: int
     reused_item_versions: int
-    created_set_version: bool
+    created_set: bool
 
 
 @dataclass(frozen=True)
@@ -61,6 +60,13 @@ class PostgresQuestionBank:
                            applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
                        )"""
                 )
+                current_set_schema = _uses_item_only_set_schema(connection)
+                superseded_by_current_schema = {
+                    "001_question_bank",
+                    "002_complete_item_bank",
+                    "003_multi_question_sets",
+                    "005_item_only_question_versions",
+                }
                 for path in sorted(MIGRATION_DIR.glob("*.sql")):
                     version = path.stem
                     exists = connection.execute(
@@ -68,7 +74,22 @@ class PostgresQuestionBank:
                     ).fetchone()
                     if exists:
                         continue
-                    connection.execute(path.read_text(encoding="utf-8"))
+                    # Unigate-Web may already have migrated this database with
+                    # its own migration ledger. Do not recreate the removed
+                    # question_set_versions table in that case.
+                    if not (
+                        current_set_schema and version in superseded_by_current_schema
+                    ):
+                        if (
+                            version == "005_item_only_question_versions"
+                            and _has_external_set_version_dependencies(connection)
+                        ):
+                            raise RuntimeError(
+                                "topik_app가 구 세트 버전 구조를 참조하고 있습니다. "
+                                "Unigate-Web의 016_item_only_question_versions 마이그레이션을 "
+                                "먼저 적용하세요. 운영 배포 비교는 구 로컬 구조도 읽을 수 있습니다."
+                            )
+                        connection.execute(path.read_text(encoding="utf-8"))
                     connection.execute(
                         "INSERT INTO topik_bank.schema_migrations(version) VALUES (%s)", (version,)
                     )
@@ -107,14 +128,13 @@ class PostgresQuestionBank:
                     membership_rows, requested_by_position, requested_identity
                 )
                 if existing_membership:
-                    set_id, set_sequence, set_version = existing_membership
+                    set_id, set_sequence = existing_membership
                     return PublicationReceipt(
                         set_id=set_id,
-                        set_version=set_version,
                         set_sequence=set_sequence,
                         created_item_versions=0,
                         reused_item_versions=len(draft.items),
-                        created_set_version=False,
+                        created_set=False,
                     )
                 if conflicts:
                     preview = ", ".join(conflicts[:8])
@@ -143,11 +163,16 @@ class PostgresQuestionBank:
                     ).fetchone()[0]
                 )
                 set_id = draft.set_id_for_sequence(set_sequence)
+                fingerprint = set_fingerprint(
+                    item_versions, draft.default_target_level, draft.default_predicted_difficulty
+                )
                 connection.execute(
                     """INSERT INTO topik_bank.question_sets(
                            set_id, section, generator_provider, generator_model,
-                           generator_version, set_sequence
-                       ) VALUES (%s, %s, %s, %s, %s, %s)""",
+                           generator_version, set_sequence, review_status,
+                           default_target_level, default_predicted_difficulty,
+                           set_fingerprint
+                       ) VALUES (%s, %s, %s, %s, %s, %s, 'reviewed', %s, %s, %s)""",
                     (
                         set_id,
                         draft.section,
@@ -155,20 +180,6 @@ class PostgresQuestionBank:
                         draft.provider_key,
                         draft.model_id,
                         set_sequence,
-                    ),
-                )
-                fingerprint = set_fingerprint(
-                    item_versions, draft.default_target_level, draft.default_predicted_difficulty
-                )
-                set_version = 1
-                connection.execute(
-                    """INSERT INTO topik_bank.question_set_versions(
-                           set_id, set_version, review_status, default_target_level,
-                           default_predicted_difficulty, set_fingerprint
-                       ) VALUES (%s, %s, 'reviewed', %s, %s, %s)""",
-                    (
-                        set_id,
-                        set_version,
                         draft.default_target_level,
                         draft.default_predicted_difficulty,
                         fingerprint,
@@ -177,17 +188,16 @@ class PostgresQuestionBank:
                 _insert_set_items(
                     connection,
                     [
-                        (set_id, set_version, position, item_id, item_version)
+                        (set_id, position, item_id, item_version)
                         for position, (item_id, item_version) in enumerate(item_versions, start=1)
                     ],
                 )
                 return PublicationReceipt(
                     set_id=str(set_id),
-                    set_version=set_version,
                     set_sequence=set_sequence,
                     created_item_versions=created_items,
                     reused_item_versions=reused_items,
-                    created_set_version=True,
+                    created_set=True,
                 )
         except PostgresUnavailableError:
             raise
@@ -224,17 +234,15 @@ class PostgresQuestionBank:
             with psycopg.connect(self.database_url) as connection:
                 cursor = connection.execute(
                     """SELECT s.set_id, s.section, s.generator_provider, s.generator_model,
-                              s.generator_version, s.set_sequence, v.set_version,
-                              v.review_status, v.published_at,
+                              s.generator_version, s.set_sequence,
+                              s.review_status, s.published_at,
                               COUNT(i.position) AS item_count
                        FROM topik_bank.question_sets s
-                       JOIN topik_bank.question_set_versions v ON v.set_id = s.set_id
-                       JOIN topik_bank.question_set_items i
-                         ON i.set_id = v.set_id AND i.set_version = v.set_version
+                       JOIN topik_bank.question_set_items i ON i.set_id = s.set_id
                        GROUP BY s.set_id, s.section, s.generator_provider, s.generator_model,
-                                s.generator_version, s.set_sequence, v.set_version,
-                                v.review_status, v.published_at
-                       ORDER BY v.published_at DESC
+                                s.generator_version, s.set_sequence,
+                                s.review_status, s.published_at
+                       ORDER BY s.published_at DESC
                        LIMIT %s""",
                     (limit,),
                 )
@@ -262,13 +270,12 @@ class PostgresQuestionBank:
     def list_all_set_memberships(self) -> list[dict]:
         return self._query_dicts(
             """SELECT s.set_id, s.set_sequence, s.section, s.generator_provider,
-                      s.generator_model, s.generator_version, si.set_version,
-                      si.position, i.source_key
+                      s.generator_model, s.generator_version, si.position, i.source_key
                FROM topik_bank.question_sets s
                JOIN topik_bank.question_set_items si ON si.set_id = s.set_id
                JOIN topik_bank.items i ON i.item_id = si.item_id
                ORDER BY s.section, s.generator_version, s.set_sequence,
-                        si.set_version, si.position""",
+                        si.position""",
             "전체 세트 문항 사용 이력을 읽지 못했습니다",
         )
 
@@ -320,13 +327,12 @@ def _set_memberships_for_sources(connection, source_keys: list[str]) -> list[dic
         return []
     cursor = connection.execute(
         """SELECT s.set_id, s.set_sequence, s.section, s.generator_provider,
-                  s.generator_model, s.generator_version, si.set_version,
-                  si.position, i.source_key
+                  s.generator_model, s.generator_version, si.position, i.source_key
            FROM topik_bank.question_sets s
            JOIN topik_bank.question_set_items si ON si.set_id = s.set_id
            JOIN topik_bank.items i ON i.item_id = si.item_id
            WHERE i.source_key = ANY(%s)
-           ORDER BY si.set_version DESC, si.position""",
+           ORDER BY si.position""",
         (source_keys,),
     )
     return _dict_rows(cursor, cursor.fetchall())
@@ -336,14 +342,13 @@ def _resolve_set_membership(
     membership_rows: list[dict],
     requested_by_position: dict[int, str],
     requested_identity: tuple[str, str, str, str],
-) -> tuple[tuple[str, int, int] | None, list[str]]:
-    memberships: dict[tuple[str, int, int], dict[int, str]] = {}
-    identities: dict[tuple[str, int, int], tuple[str, str, str, str]] = {}
+) -> tuple[tuple[str, int] | None, list[str]]:
+    memberships: dict[tuple[str, int], dict[int, str]] = {}
+    identities: dict[tuple[str, int], tuple[str, str, str, str]] = {}
     for row in membership_rows:
         membership_key = (
             str(row["set_id"]),
             int(row["set_sequence"]),
-            int(row["set_version"]),
         )
         memberships.setdefault(membership_key, {})[int(row["position"])] = str(
             row["source_key"]
@@ -446,10 +451,51 @@ def _insert_set_items(connection, rows: list[tuple]) -> None:
     with connection.cursor() as cursor:
         cursor.executemany(
             """INSERT INTO topik_bank.question_set_items(
-                   set_id, set_version, position, item_id, item_version
-               ) VALUES (%s, %s, %s, %s, %s)""",
+                   set_id, position, item_id, item_version
+               ) VALUES (%s, %s, %s, %s)""",
             rows,
         )
+
+
+def _uses_item_only_set_schema(connection) -> bool:
+    """Return True for the schema introduced by Unigate-Web migration 016."""
+    return bool(
+        connection.execute(
+            """SELECT
+                   to_regclass('topik_bank.question_sets') IS NOT NULL
+                   AND to_regclass('topik_bank.question_set_items') IS NOT NULL
+                   AND to_regclass('topik_bank.question_set_versions') IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM information_schema.columns
+                       WHERE table_schema='topik_bank' AND table_name='question_sets'
+                         AND column_name='set_fingerprint'
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM information_schema.columns
+                       WHERE table_schema='topik_bank' AND table_name='question_set_items'
+                         AND column_name='set_version'
+                   )"""
+        ).fetchone()[0]
+    )
+
+
+def _has_external_set_version_dependencies(connection) -> bool:
+    if not connection.execute(
+        "SELECT to_regclass('topik_bank.question_set_versions') IS NOT NULL"
+    ).fetchone()[0]:
+        return False
+    return bool(
+        connection.execute(
+            """SELECT EXISTS (
+                   SELECT 1
+                     FROM pg_constraint constraint_row
+                     JOIN pg_class relation ON relation.oid=constraint_row.conrelid
+                     JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+                    WHERE constraint_row.confrelid='topik_bank.question_set_versions'::regclass
+                      AND namespace.nspname<>'topik_bank'
+               )"""
+        ).fetchone()[0]
+    )
 
 
 def _psycopg():

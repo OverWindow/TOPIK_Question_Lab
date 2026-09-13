@@ -1,5 +1,11 @@
 # TOPIK PostgreSQL 문항 은행 — 구조·운영·인수인계 문서
 
+> **현재 스키마 안내(2026-09-14):** Unigate-Web의
+> `016_item_only_question_versions` 이후 `question_set_versions` 테이블과
+> `question_set_items.set_version` 컬럼은 사용하지 않는다. 세트 상태·기본값·fingerprint는
+> `question_sets`에 있고, `question_set_items(set_id, position)`은 현재 문항 버전을 가리킨다.
+> 아래의 세트 버전 관련 과거 설명은 마이그레이션 이전 구조의 이력으로만 참고한다.
+
 > 최종 확인일: 2026-08-11 (미국 동부 시간) / 2026-08-12 (한국 시간)
 >
 > 이 문서는 다음 작업 세션에서 PostgreSQL 구조와 현재 이관 상태를 빠르게 복원하기 위한 기준 문서다. 실제 접속 주소와 비밀번호는 보안상 적지 않는다. 로컬 원본은 `.env`의 `DATABASE_URL`, 운영 Supabase는 `PRODUCTION_DATABASE_URL`을 사용한다.

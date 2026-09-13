@@ -148,13 +148,26 @@ st.subheader("연결 및 스키마")
 if not database_url:
     st.info("`.env`에 `DATABASE_URL`을 설정하면 PostgreSQL 문항 은행을 사용할 수 있습니다.")
 else:
-    if st.button("연결 확인 및 스키마 준비", type="primary"):
+    if st.button("로컬 발행 연결 확인 및 스키마 준비", type="primary"):
         try:
             database_name = bank.check_connection()
-            applied = bank.ensure_schema()
-            st.session_state["postgres-schema-ready"] = True
-            suffix = f" 적용된 마이그레이션: {', '.join(applied)}" if applied else " 스키마가 최신 상태입니다."
-            st.success(f"PostgreSQL `{database_name}` 연결을 확인했습니다.{suffix}")
+            local_status = inspect_database(database_url)
+            if local_status.schema_model == "legacy" and local_status.deployment_ready:
+                st.session_state["postgres-schema-ready"] = False
+                st.warning(
+                    f"PostgreSQL `{database_name}` 연결을 확인했습니다. 로컬은 구 세트 구조이므로 "
+                    "이 화면에서 스키마를 변경하지 않았습니다. 기존 세트를 운영으로 옮길 때는 "
+                    "‘운영 Supabase 배포’ 탭의 ‘원본·운영 연결 및 연동 상태 확인’을 사용하세요."
+                )
+            else:
+                applied = bank.ensure_schema()
+                st.session_state["postgres-schema-ready"] = True
+                suffix = (
+                    f" 적용된 마이그레이션: {', '.join(applied)}"
+                    if applied
+                    else " 스키마가 최신 상태입니다."
+                )
+                st.success(f"PostgreSQL `{database_name}` 연결을 확인했습니다.{suffix}")
         except PostgresUnavailableError as exc:
             st.session_state["postgres-schema-ready"] = False
             st.error(str(exc))
@@ -312,9 +325,9 @@ with set_tab:
             )
             receipt = bank.publish_set(draft)
             action = (
-                f"세트 #{receipt.set_sequence} v{receipt.set_version}을 발행했습니다."
-                if receipt.created_set_version
-                else f"동일한 세트 #{receipt.set_sequence} v{receipt.set_version}이 이미 있습니다."
+                f"세트 #{receipt.set_sequence}을 발행했습니다."
+                if receipt.created_set
+                else f"동일한 세트 #{receipt.set_sequence}이 이미 있습니다."
             )
             st.success(
                 f"{action} set_id={receipt.set_id} · 신규 문항 버전 {receipt.created_item_versions}개 · "
@@ -406,7 +419,6 @@ with history_tab:
                             "영역": SECTION_LABELS.get(value["section"], value["section"]),
                             "provider": value["generator_model"],
                             "모델": value["generator_version"],
-                            "세트 버전": value["set_version"],
                             "상태": value["review_status"],
                             "문항 수": value["item_count"],
                             "발행 시각": value["published_at"],
@@ -458,7 +470,7 @@ with production_tab:
         st.session_state["production-source-status"] = source_status
         st.session_state["production-target-status"] = target_status
         st.session_state.pop("production-preview", None)
-        if source_status.ready and target_status.ready:
+        if source_status.deployment_ready and target_status.ready:
             try:
                 service = PostgresDeploymentService(database_url, production_database_url)
                 st.session_state["production-set-statuses"] = service.compare()
@@ -475,13 +487,18 @@ with production_tab:
         help="원본과 운영 DB에 아직 적용되지 않은 topik_bank 마이그레이션만 적용합니다.",
     ):
         try:
-            source_applied = bank.ensure_schema()
-            target_applied = production_bank.ensure_schema()
-            st.session_state["postgres-schema-ready"] = True
+            source_before = inspect_database(database_url)
+            target_before = inspect_database(production_database_url)
+            source_applied = [] if source_before.deployment_ready else bank.ensure_schema()
+            target_applied = [] if target_before.ready else production_bank.ensure_schema()
             source_status = inspect_database(database_url)
             target_status = inspect_database(production_database_url)
             st.session_state["production-source-status"] = source_status
             st.session_state["production-target-status"] = target_status
+            if not source_status.deployment_ready:
+                raise PostgresUnavailableError(source_status.message)
+            if not target_status.ready:
+                raise PostgresUnavailableError(target_status.message)
             service = PostgresDeploymentService(database_url, production_database_url)
             st.session_state["production-set-statuses"] = service.compare()
             st.session_state.pop("production-preview", None)
@@ -517,6 +534,8 @@ with production_tab:
                 metrics[2].metric("세트", value.set_count)
                 if value.ready:
                     st.caption(f"마이그레이션 {len(value.migrations)}개 · {value.message}")
+                elif title == "로컬 원본" and value.deployment_ready:
+                    st.info(f"운영 배포 읽기 호환 · {value.message}")
                 else:
                     st.warning(value.message)
 
@@ -539,8 +558,6 @@ with production_tab:
                     "모델": value.generator_version,
                     "세트 번호": value.set_sequence,
                     "set_id": value.set_id,
-                    "원본 세트 버전": value.source_set_versions,
-                    "운영 세트 버전": value.target_set_versions,
                     "문항 연결": f"{value.exact_memberships}/{value.expected_memberships}",
                     "누락 행": value.missing_rows,
                     "충돌 행": value.conflict_rows,
@@ -638,7 +655,7 @@ with production_tab:
                     except (ValueError, DeploymentError, PostgresUnavailableError) as exc:
                         st.error(str(exc))
 
-    if source_status and source_status.ready and database_url and production_database_url:
+    if source_status and source_status.deployment_ready and database_url and production_database_url:
         st.divider()
         st.markdown("#### 운영 배포 이력")
         try:

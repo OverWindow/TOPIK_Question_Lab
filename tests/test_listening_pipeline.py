@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from reportlab.pdfgen import canvas
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.listening_comparison_pdf import _draw_visuals
-from topik_question_lab.listening_importer import (
+from topik_question_lab.step_05_export.listening_comparison_pdf import _draw_visuals
+from topik_question_lab.step_01_source.listening_importer import (
     apply_enrichment_payload,
     load_imported_examples,
     needs_transcription,
@@ -17,19 +17,19 @@ from topik_question_lab.listening_importer import (
     save_imported_examples,
     validate_import_coverage,
 )
-from topik_question_lab.listening_exports import to_csv as listening_to_csv, to_txt as listening_to_txt
-from topik_question_lab.listening_models import DialogueTurn, GeneratedListeningQuestion, VisualOption
-from topik_question_lab.listening_profiles import LISTENING_TYPE_PROFILES
-from topik_question_lab.listening_prompts import (
+from topik_question_lab.step_05_export.listening_exports import to_csv as listening_to_csv, to_txt as listening_to_txt
+from topik_question_lab.common.listening_models import DialogueTurn, GeneratedListeningQuestion, VisualOption
+from topik_question_lab.step_02_planning.listening_profiles import LISTENING_TYPE_PROFILES
+from topik_question_lab.step_02_planning.listening_prompts import (
     build_listening_enrichment_prompt,
     build_listening_generation_prompt,
 )
-from topik_question_lab.listening_storage import ListeningStorage
-from topik_question_lab.listening_validation import validate_listening_payload, validate_listening_question
-from topik_question_lab.listening_visuals import render_chart, suggest_visual_prompt
-from topik_question_lab.listening_models import ChartSpec
-from topik_question_lab.navigation import next_sequence_item
-from topik_question_lab.providers import call_provider
+from topik_question_lab.common.listening_storage import ListeningStorage
+from topik_question_lab.step_04_review.listening_validation import validate_listening_payload, validate_listening_question
+from topik_question_lab.common.listening_visuals import render_chart, suggest_visual_prompt
+from topik_question_lab.common.listening_models import ChartSpec
+from topik_question_lab.ui.navigation import next_sequence_item
+from topik_question_lab.step_03_generation.providers import call_provider
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,7 +118,7 @@ def test_source_dialogue_edit_survives_next_and_return_in_ui(tmp_path, monkeypat
     save_imported_examples(exam_dir, examples)
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
 
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "listening_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "listening_app.py"), default_timeout=20).run()
     assert not app.exception
     dialogue = next(field for field in app.text_area if field.label.startswith("대본 ·"))
     dialogue.set_value("여자: 사용자가 직접 수정한 대본")
@@ -385,7 +385,7 @@ def test_multimodal_provider_sends_image_content(monkeypatch, tmp_path):
 
 
 def test_listening_app_all_stages_render():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "listening_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "listening_app.py"), default_timeout=20).run()
     assert not app.exception
     assert app.sidebar.selectbox[0].label == "듣기 문제 유형"
     for stage in ["2. 유형 분석", "3. 프롬프트 작업실", "4. 문제 생성", "5. 검수·비교", "6. 내보내기"]:

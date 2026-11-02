@@ -1,0 +1,364 @@
+from copy import deepcopy
+import io
+from pathlib import Path
+import uuid
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+from test_direct_publication import seed_batch, local_package
+from topik_question_lab.step_06_publication.bank_editor import (
+    BankEditor, prepare_edit, item_metadata, media_ready, set_health, upload_media,
+)
+from topik_question_lab.step_06_publication.direct_publication import DirectPublicationService, PublicationBlocked, package_draft
+from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank, PublicationStateChanged
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PAGE = ROOT / "topik_question_lab/ui/bank_editor_app.py"
+
+
+@pytest.fixture
+def bank(postgres_database_factory, tmp_path, monkeypatch):
+    url = postgres_database_factory()
+    PostgresQuestionBank(url).ensure_schema()
+    batch_id = seed_batch(tmp_path)
+    service = DirectPublicationService(tmp_path, url)
+    draft = package_draft(local_package(service, batch_id))
+    PostgresQuestionBank(url).publish_set(draft)
+    monkeypatch.setenv("DATABASE_URL", url)
+    return BankEditor(url)
+
+
+def pick(editor, slot=1, section="reading"):
+    with editor.connect(True) as c:
+        item_id = c.execute("SELECT item_id FROM topik_bank.items WHERE section=%s AND type_slot=%s", (section, slot)).fetchone()[0]
+    return editor.load(item_id)
+
+
+def edited(snapshot, **values):
+    return {**deepcopy(snapshot["item"]["content_json"]), **values}
+
+
+def seed_listening(editor, root):
+    batch_id = seed_batch(root, "listening")
+    service = DirectPublicationService(root, editor.url)
+    PostgresQuestionBank(editor.url).publish_set(package_draft(local_package(service, batch_id)))
+
+
+def audio_binding(editor, positions):
+    with editor.connect() as c:
+        aid = uuid.uuid4()
+        c.execute("""INSERT INTO topik_bank.tts_audio_assets(audio_asset_id,source_hash,model_name,female_voice,male_voice,
+            storage_bucket,storage_path,storage_url,byte_size,narration_version,script_snapshot,file_sha256)
+            VALUES (%s,%s,'test','female','male','audio','old.mp3','https://example.test/old.mp3',5,'exam_track_v4','{}',%s)""",
+            (aid, uuid.uuid4().hex * 2, "a" * 64))
+        c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
+            SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE section='listening' AND type_slot=ANY(%s)""", (aid, "b" * 64, positions))
+        c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
+            SELECT set_id,position,%s,%s FROM topik_bank.items WHERE section='listening' AND type_slot=ANY(%s)""", (aid, "b" * 64, positions))
+    return str(aid)
+
+
+def visual_binding(editor, slot=10):
+    with editor.connect() as c:
+        c.execute("""INSERT INTO topik_bank.item_visual_assets(visual_asset_id,item_id,content_hash,option_number,visual_role,
+            storage_bucket,storage_path,storage_url,mime_type,byte_size,file_sha256)
+            SELECT %s,item_id,content_hash,1,'material','images','old.png','https://example.test/old.png','image/png',5,%s
+            FROM topik_bank.items WHERE section='reading' AND type_slot=%s""", (uuid.uuid4(), "c" * 64, slot))
+
+
+def fake_uploaded(replacement):
+    audio = replacement["kind"] == "audio"
+    return {"kind": replacement["kind"], "storage_backend": "s3", "storage_bucket": "test-bucket",
+            "storage_path": "new.mp3" if audio else "new.png", "storage_url": "https://example.test/new",
+            "mime_type": "audio/mpeg" if audio else "image/png", "byte_size": 5, "file_sha256": "d" * 64,
+            **({"duration_ms": 5000} if audio else {"visual_role": replacement["visual_role"], "option_number": replacement["option_number"]})}
+
+
+def test_editor_entry_without_database_does_not_create_files(tmp_path):
+    before = list(tmp_path.rglob("*"))
+    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    assert not app.exception
+    assert app.title[0].value == "PostgreSQL 문제 관리"
+    assert list(tmp_path.rglob("*")) == before
+
+
+def test_direct_edit_without_local_original_preserves_identity_and_columns(bank, tmp_path):
+    snapshot = pick(bank)
+    # The editor never reads local generation records, even if they disappear.
+    for path in tmp_path.glob("data/types/*.db"):
+        path.unlink()
+    q = edited(snapshot, stem="오늘은 도서관에 ( ) 공부하려고 한다.", choices=["가서", "가면", "가지만", "가도록"], answer=2, explanation="새 해설")
+    meta = {**item_metadata(snapshot["item"]), "target_level": 5, "predicted_difficulty": 1.2, "primary_skill": "문법 판단"}
+    bank.save(prepare_edit(snapshot, q, meta))
+    current = bank.load(snapshot["item"]["item_id"])
+    row = current["item"]
+    for key in ("item_id", "source_key", "set_id", "position", "item_type", "type_slot", "generator_version", "created_at"):
+        assert row[key] == snapshot["item"][key]
+    assert row["choices"] == q["choices"] == row["content_json"]["choices"]
+    assert row["stem"] == q["stem"] and row["correct_answer"] == 2 and row["explanation"] == "새 해설"
+    assert row["stem_length"] == len(q["stem"].strip()) and row["choice_count"] == 4
+    assert row["target_level"] == 5 and row["source_provenance"]["publication_metadata"]["predicted_difficulty"] == 1.2
+    assert row["review_status"] == current["set"]["review_status"] == "pending_review"
+    assert row["content_hash"] != snapshot["item"]["content_hash"] and row["source_provenance"]["bank_edited_at"]
+
+
+@pytest.mark.parametrize("field,value", [("question_type", "main_topic"), ("type_slot", 2), ("set_id", "other")])
+def test_fixed_fields_rejected(bank, field, value):
+    snapshot = pick(bank)
+    with pytest.raises(PublicationBlocked, match="변경"):
+        prepare_edit(snapshot, edited(snapshot, **{field: value}), item_metadata(snapshot["item"]))
+    assert bank.load(snapshot["item"]["item_id"]) == snapshot
+
+
+def test_shared_passage_updates_only_matching_siblings_atomically(bank):
+    snapshot = pick(bank, 19)
+    old = {r["type_slot"]: r for r in snapshot["items"]}
+    passage = "밑줄표현 새로운 공통 지문 ( )"
+    plan = prepare_edit(snapshot, edited(snapshot, passage=passage), item_metadata(snapshot["item"]))
+    assert len(plan["affected"]) == 2
+    bank.save(plan)
+    current = bank.load(snapshot["item"]["item_id"])
+    new = {r["type_slot"]: r for r in current["items"]}
+    for slot in (19, 20):
+        assert new[slot]["content_json"]["passage"] == passage
+        assert passage in new[slot]["stem"] and new[slot]["review_status"] == "pending_review"
+    assert new[18] == old[18] and new[21] == old[21]
+
+
+def test_changed_sibling_or_media_blocks_all_edits(bank):
+    snapshot = pick(bank, 19)
+    plan = prepare_edit(snapshot, edited(snapshot, explanation="저장되지 않을 변경"), item_metadata(snapshot["item"]))
+    with bank.connect() as c:
+        c.execute("UPDATE topik_bank.items SET explanation='다른 작업' WHERE type_slot=20")
+    with pytest.raises(PublicationStateChanged):
+        bank.save(plan)
+    assert pick(bank, 19)["item"]["explanation"] == snapshot["item"]["explanation"]
+    snapshot = pick(bank, 10)
+    visual_binding(bank)
+    with pytest.raises(PublicationStateChanged):
+        bank.save(prepare_edit(snapshot, edited(snapshot, explanation="오래된 화면"), item_metadata(snapshot["item"])))
+
+
+def test_listening_shared_audio_invalidation_and_replacement(bank, tmp_path):
+    seed_listening(bank, tmp_path)
+    old_aid = audio_binding(bank, [21, 22])
+    snapshot = pick(bank, 21, "listening")
+    q = edited(snapshot, dialogue_turns=[{"speaker": "여자", "text": "수정한 공통 대본입니다."}])
+    bank.save(prepare_edit(snapshot, q, item_metadata(snapshot["item"])))
+    current = pick(bank, 21, "listening")
+    pair = [r for r in current["items"] if r["type_slot"] in (21, 22)]
+    assert all(r["content_json"]["dialogue_turns"] == q["dialogue_turns"] for r in pair)
+    assert not any(b["audio_asset_id"] == old_aid for b in current["media"]["item_audio_bindings"])
+    assert not media_ready(current, current["item"])
+    with pytest.raises(PublicationBlocked, match="미디어|음원"):
+        bank.change_status(current, "approve")
+    replacement = {"kind": "audio", "data": b"new audio"}
+    plan = prepare_edit(current, current["item"]["content_json"], item_metadata(current["item"]), [replacement])
+    bank.save(plan, uploader=fake_uploaded)
+    latest = pick(bank, 21, "listening")
+    assert media_ready(latest, latest["item"])
+    assert len(latest["media"]["question_set_item_audio_bindings"]) == 2
+    assert latest["media"]["tts_audio_assets"][0]["script_snapshot"]["positions"] == [21, 22]
+
+
+def test_unrelated_text_edit_rebinds_unchanged_media(bank, tmp_path):
+    seed_listening(bank, tmp_path)
+    aid = audio_binding(bank, [4])
+    snapshot = pick(bank, 4, "listening")
+    bank.save(prepare_edit(snapshot, edited(snapshot, explanation="해설만 변경"), item_metadata(snapshot["item"])))
+    current = pick(bank, 4, "listening")
+    assert media_ready(current, current["item"])
+    assert any(b["audio_asset_id"] == aid and b["content_hash"] == current["item"]["content_hash"] for b in current["media"]["item_audio_bindings"])
+    visual_binding(bank)
+    snapshot = pick(bank, 10)
+    bank.save(prepare_edit(snapshot, edited(snapshot, explanation="이미지 유지"), item_metadata(snapshot["item"])))
+    assert media_ready(pick(bank, 10), pick(bank, 10)["item"])
+    current = pick(bank, 10)
+    bank.save(prepare_edit(current, edited(current, passage="달라진 자료"), item_metadata(current["item"])))
+    current = pick(bank, 10)
+    assert not media_ready(current, current["item"])
+
+
+def test_image_replacement_and_status_transitions(bank):
+    visual_binding(bank)
+    snapshot = pick(bank, 10)
+    replacement = {"kind": "image", "visual_role": "material", "option_number": 1, "data": b"new image"}
+    bank.save(prepare_edit(snapshot, edited(snapshot, passage="새로운 자료"), item_metadata(snapshot["item"]), [replacement]), uploader=fake_uploaded)
+    current = pick(bank, 10)
+    assert media_ready(current, current["item"])
+    bank.change_status(current, "approve")
+    current = pick(bank, 10)
+    assert current["item"]["review_status"] == "reviewed"
+    bank.change_status(current, "retire")
+    current = pick(bank, 10)
+    assert current["item"]["review_status"] == "retired" and not set_health(current["items"])["ready"]
+    bank.change_status(current, "restore")
+    assert pick(bank, 10)["item"]["review_status"] == "pending_review"
+
+
+def test_delete_keeps_set_numbers_and_cleans_only_item_bindings(bank):
+    visual_binding(bank)
+    snapshot = pick(bank, 10)
+    bank.change_status(snapshot, "delete")
+    current = pick(bank, 11)
+    assert set_health(current["items"])["label"] == "구성 미완성 · 사용 불가"
+    assert len(current["items"]) == 49 and current["item"]["position"] == 11
+    with bank.connect(True) as c:
+        assert c.execute("SELECT count(*) FROM topik_bank.item_visual_assets").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM topik_bank.question_sets").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("composite", [False, True])
+def test_delete_blocks_consumer_history_even_with_cascade(bank, composite):
+    snapshot = pick(bank)
+    with bank.connect() as c:
+        if composite:
+            c.execute("CREATE TABLE public.synthetic_usage(set_id uuid,position smallint,FOREIGN KEY(set_id,position) REFERENCES topik_bank.items(set_id,position) ON DELETE CASCADE)")
+            c.execute("INSERT INTO public.synthetic_usage VALUES (%s,%s)", (snapshot["item"]["set_id"], snapshot["item"]["position"]))
+        else:
+            c.execute("CREATE TABLE public.synthetic_usage(item_id uuid REFERENCES topik_bank.items(item_id) ON DELETE CASCADE)")
+            c.execute("INSERT INTO public.synthetic_usage VALUES (%s)", (snapshot["item"]["item_id"],))
+    with pytest.raises(PublicationBlocked, match="사용 기록"):
+        bank.change_status(snapshot, "delete")
+    assert bank.load(snapshot["item"]["item_id"]) == snapshot
+    with bank.connect(True) as c:
+        assert c.execute("SELECT count(*) FROM public.synthetic_usage").fetchone()[0] == 1
+
+
+def test_upload_failure_does_not_change_database(bank):
+    snapshot = pick(bank, 10)
+    plan = prepare_edit(snapshot, edited(snapshot, explanation="업로드 실패"), item_metadata(snapshot["item"]),
+                        [{"kind": "image", "visual_role": "material", "option_number": 1, "data": b"image"}])
+    def fail(_):
+        raise PublicationBlocked("파일 검증 실패")
+    with pytest.raises(PublicationBlocked):
+        bank.save(plan, uploader=fail)
+    assert bank.load(snapshot["item"]["item_id"]) == snapshot
+
+
+def test_other_writer_during_upload_prevents_partial_save(bank):
+    snapshot = pick(bank, 10)
+    plan = prepare_edit(snapshot, edited(snapshot, explanation="경합 중 저장"), item_metadata(snapshot["item"]),
+                        [{"kind": "image", "visual_role": "material", "option_number": 1, "data": b"image"}])
+    def concurrent_upload(replacement):
+        with bank.connect() as c:
+            c.execute("UPDATE topik_bank.items SET explanation='다른 작업의 수정' WHERE item_id=%s", (snapshot["item"]["item_id"],))
+        return fake_uploaded(replacement)
+    with pytest.raises(PublicationStateChanged):
+        bank.save(plan, uploader=concurrent_upload)
+    current = pick(bank, 10)
+    assert current["item"]["explanation"] == "다른 작업의 수정"
+    assert not current["media"]["item_visual_assets"]
+
+
+def test_image_choices_keep_unchanged_files_and_only_invalidate_changed_picture(bank, tmp_path):
+    seed_listening(bank, tmp_path)
+    with bank.connect() as c:
+        for number in range(1, 5):
+            c.execute("""INSERT INTO topik_bank.item_visual_assets(visual_asset_id,item_id,content_hash,option_number,
+                storage_bucket,storage_path,storage_url,mime_type,byte_size,file_sha256)
+                SELECT %s,item_id,content_hash,%s,'images',%s,'https://example.test/picture.png','image/png',5,%s
+                FROM topik_bank.items WHERE section='listening' AND type_slot=1""", (uuid.uuid4(), number, f"{number}.png", "e" * 64))
+    snapshot = pick(bank, 1, "listening")
+    bank.save(prepare_edit(snapshot, edited(snapshot, explanation="그림 유지"), item_metadata(snapshot["item"])))
+    current = pick(bank, 1, "listening")
+    assert len(current["media"]["item_visual_assets"]) == 4
+    q = edited(current)
+    q["visual_options"][1]["description"] = "완전히 다른 장면"
+    bank.save(prepare_edit(current, q, item_metadata(current["item"])))
+    latest = pick(bank, 1, "listening")
+    assert {v["option_number"] for v in latest["media"]["item_visual_assets"]} == {1, 3, 4}
+    assert latest["item"]["choices"][1] == "완전히 다른 장면"
+
+
+def test_repeat_count_edit_and_replacement_follow_current_shared_script(bank, tmp_path):
+    seed_listening(bank, tmp_path)
+    audio_binding(bank, [21, 22])
+    snapshot = pick(bank, 21, "listening")
+    replacement = {"kind": "audio", "data": b"single-reading audio"}
+    bank.save(prepare_edit(snapshot, edited(snapshot, repeat_count=1), item_metadata(snapshot["item"]), [replacement]), uploader=fake_uploaded)
+    current = pick(bank, 21, "listening")
+    assert all(r["content_json"]["repeat_count"] == 1 for r in current["items"] if r["type_slot"] in (21, 22))
+    script = current["media"]["tts_audio_assets"][0]["script_snapshot"]
+    assert len([s for s in script["segments"] if s["kind"] == "dialogue"]) == 1
+
+
+def test_representative_editors_render_without_mutations(bank, tmp_path):
+    seed_listening(bank, tmp_path)
+    with bank.connect(True) as c:
+        before = c.execute("SELECT to_jsonb(i) FROM topik_bank.items i ORDER BY item_id").fetchall()
+    app = AppTest.from_file(str(PAGE), default_timeout=25).run()
+    for section, slot in (("reading", 10), ("reading", 19), ("listening", 1), ("listening", 21)):
+        row = pick(bank, slot, section)["item"]
+        next(w for w in app.selectbox if w.label == "편집할 문제").set_value(row["item_id"]).run()
+        assert not app.exception and not app.error
+        if section == "listening":
+            assert any(w.label.startswith("듣기 대본") for w in app.text_area)
+        if slot == 1:
+            assert len([w for w in app.text_area if "그림 설명" in w.label]) == 4
+    with bank.connect(True) as c:
+        assert c.execute("SELECT to_jsonb(i) FROM topik_bank.items i ORDER BY item_id").fetchall() == before
+
+
+def test_ui_edit_confirmation_save_and_delete_confirmation(bank):
+    app = AppTest.from_file(str(PAGE), default_timeout=25).run()
+    assert not app.exception
+    snapshot = pick(bank)
+    next(w for w in app.selectbox if w.label == "편집할 문제").set_value(snapshot["item"]["item_id"]).run()
+    next(w for w in app.text_area if w.label == "해설").set_value("화면에서 편집한 해설")
+    next(b for b in app.button if b.label == "변경 내용 확인").click().run()
+    assert not app.exception
+    assert pick(bank)["item"]["explanation"] != "화면에서 편집한 해설"
+    next(b for b in app.button if b.label == "PostgreSQL에 저장").click().run()
+    assert not app.exception
+    assert pick(bank)["item"]["explanation"] == "화면에서 편집한 해설"
+    next(w for w in app.selectbox if w.label == "문항 작업").set_value("delete").run()
+    next(b for b in app.button if b.label == "작업 내용 확인").click().run()
+    assert next(b for b in app.button if b.label == "영구 삭제 실행").disabled
+    next(w for w in app.checkbox if "영구 삭제하며" in w.label).check().run()
+    assert not next(b for b in app.button if b.label == "영구 삭제 실행").disabled
+
+
+def test_registration_requires_acknowledgement_before_overwriting_bank_edit(bank, tmp_path):
+    from topik_question_lab.step_06_publication.registration_workflow import RegistrationWorkflow
+    snapshot = pick(bank)
+    bank.save(prepare_edit(snapshot, edited(snapshot, explanation="PostgreSQL 편집본"), item_metadata(snapshot["item"])))
+    workflow = RegistrationWorkflow(tmp_path, bank.url)
+    plan = workflow.prepare("update", [snapshot["item"]["source_key"]], {"level": 4, "difficulty": 0.0, "items": {}})
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/postgres_publish_app.py"), default_timeout=25).run()
+    app.session_state["registration-plan"] = plan
+    app.run()
+    assert not app.exception
+    assert next(b for b in app.button if b.label == "선택한 1문제 변경 내용 반영하기").disabled
+    next(w for w in app.checkbox if "편집본을 SQLite" in w.label).check().run()
+    assert not next(b for b in app.button if b.label == "선택한 1문제 변경 내용 반영하기").disabled
+    assert pick(bank)["item"]["explanation"] == "PostgreSQL 편집본"
+
+
+def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
+    from PIL import Image
+    from topik_question_lab.step_06_publication import media_cloud
+    checked = []
+    class Store:
+        bucket = "test-bucket"
+        base_url = "https://example.test"
+        def __init__(self, *args):
+            pass
+        def upload(self, path, key, size, digest, mime):
+            with Image.open(path) as image:
+                assert image.size == (4, 4) and image.format == "PNG"
+            checked.append("upload")
+        def verify(self, row, *, local_path):
+            assert row["storage_backend"] == "s3" and local_path.exists()
+            checked.append("verify")
+        def close(self):
+            checked.append("close")
+    monkeypatch.setattr(media_cloud, "S3MediaStore", Store)
+    stream = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(stream, format="JPEG")
+    row = upload_media({"kind": "image", "visual_role": "material", "option_number": 1, "data": stream.getvalue()})
+    assert row["mime_type"] == "image/png" and checked == ["upload", "verify", "close"]
+    with pytest.raises(PublicationBlocked, match="이미지"):
+        upload_media({"kind": "image", "data": b"not an image"})

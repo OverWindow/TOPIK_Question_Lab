@@ -1,18 +1,20 @@
 import json
 from types import SimpleNamespace
 
-from topik_question_lab.exports import to_csv, to_json, to_txt
-from topik_question_lab.highlights import highlighted_html, parse_highlight_marker
-from topik_question_lab.listening_storage import ListeningStorage
-from topik_question_lab.models import EnrichmentPayload, GeneratedQuestion, ProviderResult, QuestionExample, Review
-from topik_question_lab.navigation import next_sequence_item
-from topik_question_lab.prompt_profiles import (
+import pytest
+
+from topik_question_lab.step_05_export.exports import to_csv, to_json, to_txt
+from topik_question_lab.step_04_review.highlights import highlighted_html, parse_highlight_marker
+from topik_question_lab.common.listening_storage import ListeningStorage
+from topik_question_lab.common.models import EnrichmentPayload, GeneratedQuestion, ProviderResult, QuestionExample, Review
+from topik_question_lab.ui.navigation import next_sequence_item
+from topik_question_lab.step_02_planning.prompt_profiles import (
     DEFAULT_PROVIDER_INSTRUCTIONS,
     QUESTION_TYPE_PROFILES,
     apply_provider_instruction,
 )
-from topik_question_lab.prompts import build_enrichment_prompt, build_generation_prompt
-from topik_question_lab.providers import (
+from topik_question_lab.step_02_planning.prompts import build_enrichment_prompt, build_generation_prompt
+from topik_question_lab.step_03_generation.providers import (
     DEFAULT_ACTIVE_PROVIDERS,
     DEFAULT_PROVIDERS,
     GENERATION_PRESETS,
@@ -31,8 +33,8 @@ from topik_question_lab.providers import (
     provider_label,
     resolve_generation_preset,
 )
-from topik_question_lab.storage import Storage
-from topik_question_lab.validation import normalize_text, validate_generation_payload, validate_question
+from topik_question_lab.common.storage import Storage
+from topik_question_lab.step_04_review.validation import normalize_text, validate_generation_payload, validate_question
 
 
 def sample_question(stem: str = "비가 그친 후에 공원에 ( ).") -> dict:
@@ -153,7 +155,11 @@ def test_manual_generation_records_preset_without_api_parameters():
     assert result.request_parameters == {"api_parameters_applied": False, "mode": "web_manual"}
 
 
-def test_provider_generation_sends_only_family_parameters(monkeypatch):
+@pytest.mark.parametrize("provider,model", [
+    ("gpt_5_6_luna", "gpt-5.6-luna"),
+    ("gpt_6_luna", "gpt-6-luna"),
+])
+def test_provider_generation_sends_only_family_parameters(monkeypatch, provider, model):
     calls = []
 
     class FakeCompletions:
@@ -175,7 +181,7 @@ def test_provider_generation_sends_only_family_parameters(monkeypatch):
         "deepseek", "deepseek-v4-flash", "generation", "system", "user", generation_preset="format_repair"
     )
     gpt = call_provider(
-        "gpt_5_6_luna", "gpt-5.6-luna", "generation", "system", "user", generation_preset="fast_draft"
+        provider, model, "generation", "system", "user", generation_preset="fast_draft"
     )
     unsupported = call_provider(
         "claude", "claude-haiku-4-5", "generation", "system", "user", generation_preset="precise_generation"
@@ -185,6 +191,7 @@ def test_provider_generation_sends_only_family_parameters(monkeypatch):
     assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert calls[0]["max_tokens"] == 32_768
     assert calls[1]["reasoning_effort"] == "low"
+    assert calls[1]["model"] == model
     assert calls[1]["max_completion_tokens"] == 32_768
     assert "temperature" not in calls[1] and "top_p" not in calls[1]
     assert set(calls[2]) == {"model", "messages"}
@@ -212,6 +219,45 @@ def test_generation_api_error_keeps_attempted_parameter_record(monkeypatch):
     assert "400 invalid parameter" in result.error
     assert result.generation_preset == "precise_generation"
     assert result.request_parameters["reasoning_effort"] == "high"
+
+
+def test_deepseek_v4_1_flash_uses_official_model_and_presets(monkeypatch):
+    clients = []
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"questions": []}'))],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            clients.append(kwargs)
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.delenv("CHATKHU_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.setattr("topik_question_lab.step_03_generation.providers.DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    config = DEFAULT_PROVIDERS["deepseek_v4_1_flash"]
+
+    assert can_gateway_call(config.name) is True
+    for preset in GENERATION_PRESETS:
+        result = call_provider(config.name, config.model, "generation", "system", "user", generation_preset=preset)
+        assert not result.error
+        assert result.model == "deepseek-flash"
+        assert result.generation_preset == preset
+        assert clients[-1]["base_url"] == "https://api.deepseek.com"
+        assert clients[-1]["api_key"] == "test-deepseek-key"
+        expected = generation_request_parameters("deepseek", "deepseek-v4-flash", preset)
+        assert calls[-1] == {
+            "model": "deepseek-flash",
+            "messages": [{"role": "system", "content": "system"}, {"role": "user", "content": "user"}],
+            **expected,
+        }
 
 
 def test_empty_and_truncated_generation_responses_keep_existing_error_flow(monkeypatch):
@@ -433,6 +479,7 @@ def test_active_model_comparison_set(monkeypatch):
 
     assert list(DEFAULT_PROVIDERS) == [
         "gpt_5_6_luna",
+        "gpt_6_luna",
         "gpt_5_3_chat",
         "claude",
         "gemini_3_5_flash",
@@ -443,10 +490,12 @@ def test_active_model_comparison_set(monkeypatch):
         "gemma",
         "gpt_5_4_nano",
         "deepseek",
+        "deepseek_v4_1_flash",
         "deepseek_v4_pro",
     ]
     assert DEFAULT_ACTIVE_PROVIDERS == ["gpt_5_6_luna", "claude", "gemini_3_5_flash"]
     assert DEFAULT_PROVIDERS["gpt_5_6_luna"].model == "gpt-5.6-luna"
+    assert DEFAULT_PROVIDERS["gpt_6_luna"].model == "gpt-6-luna"
     assert DEFAULT_PROVIDERS["gpt_5_3_chat"].model == "gpt-5.3-chat-latest"
     assert DEFAULT_PROVIDERS["gemini_3_5_flash"].model == "gemini-3.5-flash"
     assert DEFAULT_PROVIDERS["gemini"].model == "gemini-3.1-flash-lite"
@@ -456,11 +505,13 @@ def test_active_model_comparison_set(monkeypatch):
     assert DEFAULT_PROVIDERS["gemma"].model == "google/gemma-3-27b-it"
     assert DEFAULT_PROVIDERS["gpt_5_4_nano"].model == "gpt-5.4-nano"
     assert DEFAULT_PROVIDERS["deepseek"].model == "deepseek-v4-flash"
+    assert DEFAULT_PROVIDERS["deepseek_v4_1_flash"].model == "deepseek-flash"
     assert DEFAULT_PROVIDERS["deepseek_v4_pro"].model == "deepseek-v4-pro"
     assert can_gateway_call("k_exaone") is True
     assert can_gateway_call("tenant-specific-model") is True
     assert provider_label("gpt_5_1") == "GPT 5.1 (기존 기록)"
     assert provider_label("deepseek") == "DeepSeek V4 Flash"
+    assert provider_label("deepseek_v4_1_flash") == "DeepSeek V4.1 Flash"
 
 
 def test_generation_validation_detects_duplicates():

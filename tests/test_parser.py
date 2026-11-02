@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from topik_question_lab.parser import scan_extracted_text
-from topik_question_lab.prompt_profiles import QUESTION_TYPE_PROFILES, question_role_label
+from topik_question_lab.step_01_source.parser import scan_extracted_text
+from topik_question_lab.step_02_planning.prompt_profiles import QUESTION_TYPE_PROFILES, question_role_label
 
 
 ROOT = Path(__file__).resolve().parents[1]

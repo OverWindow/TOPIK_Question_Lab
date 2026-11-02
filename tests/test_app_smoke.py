@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from streamlit.testing.v1 import AppTest
 
 
@@ -14,8 +16,29 @@ STAGES = [
 ]
 
 
-def test_all_stages_render_without_exception():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=10).run()
+@pytest.fixture(autouse=True)
+def synthetic_reading_examples(tmp_path):
+    from topik_question_lab.common.models import QuestionExample
+    from topik_question_lab.step_02_planning.prompt_profiles import QUESTION_TYPE_PROFILES
+    from topik_question_lab.common.storage import Storage
+
+    for type_id, profile in QUESTION_TYPE_PROFILES.items():
+        db = tmp_path / "data/types" / f"{type_id}.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        storage = Storage(db)
+        storage.upsert_examples([
+            QuestionExample(source_exam="synthetic", question_number=number,
+                instruction="알맞은 답을 고르십시오.", stem="밑줄표현 합성 예시 ( )",
+                choices=["가", "나", "다", "라"], question_type=type_id,
+                passage="합성 지문 ( )", question_prompt="알맞은 것은?",
+                auxiliary_text="주어진 문장", set_key=f"synthetic:{type_id}")
+            for number in profile.question_numbers
+        ])
+
+
+def test_all_stages_render_without_exception(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "app.py"), default_timeout=10).run()
     assert not app.exception
     assert any(button.label == "모델 선택" for button in app.sidebar.button)
     model_button = next(button for button in app.sidebar.button if button.label == "모델 선택")
@@ -23,6 +46,7 @@ def test_all_stages_render_without_exception():
     assert not app.exception
     picker = next(widget for widget in app.multiselect if widget.label == "사용할 모델")
     assert "GPT-5.6 Luna" in picker.options
+    assert "GPT-6 Luna" in picker.options
     assert "Gemini 3.5 Flash" in picker.options
     assert "DeepSeek V4 Pro" in picker.options
     assert any(button.label == "전체 선택" for button in app.button)
@@ -31,30 +55,20 @@ def test_all_stages_render_without_exception():
 
 def test_postgres_publication_page_renders_without_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
-    monkeypatch.setenv("PRODUCTION_DATABASE_URL", "")
     app = AppTest.from_file(
-        str(ROOT / "topik_question_lab" / "postgres_publish_app.py"), default_timeout=20
+        str(ROOT / "topik_question_lab" / "ui" / "postgres_publish_app.py"), default_timeout=20
     ).run()
 
     assert not app.exception
-    assert any(title.value == "PostgreSQL 문항 은행 발행" for title in app.title)
-    assert [tab.label for tab in app.tabs] == [
-        "문항 동기화", "50문항 세트", "이관 현황", "발행 이력", "운영 Supabase 배포"
-    ]
-    publish = next(
-        button
-        for button in app.button
-        if button.label == "PostgreSQL에 새 50문항 세트 발행"
-    )
-    assert publish.disabled
-    production_status = next(
-        button for button in app.button if button.label == "원본·운영 연결 및 연동 상태 확인"
-    )
-    assert production_status.disabled
+    assert any(title.value == "문제 등록·세트 만들기" for title in app.title)
+    assert any(button.label == "문제 추가하기" for button in app.button)
+    assert any(button.label == "50문제 세트 만들기" for button in app.button)
+    assert any("승인·자동검사 통과 문항이 없습니다" in item.value for item in app.info)
+    assert next(m for m in app.metric if m.label == "등록된 세트").value == "확인 불가"
 
 
 def test_database_delete_dialog_requires_confirmation():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=10).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "app.py"), default_timeout=10).run()
     database_button = next(button for button in app.sidebar.button if button.label == "유형 DB 관리")
     database_button.click().run()
 
@@ -69,7 +83,7 @@ def test_database_delete_dialog_requires_confirmation():
 
 
 def test_similar_expression_database_and_highlight_editor_render():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=10).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "app.py"), default_timeout=10).run()
     app.sidebar.selectbox[0].set_value("similar_expression").run()
 
     assert not app.exception
@@ -79,7 +93,7 @@ def test_similar_expression_database_and_highlight_editor_render():
 
 
 def test_enrichment_targets_can_be_selected_for_paired_46_47():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=15).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "app.py"), default_timeout=15).run()
     app.sidebar.selectbox[0].set_value("paired_46_47").run()
 
     assert not app.exception
@@ -96,7 +110,7 @@ def test_enrichment_targets_can_be_selected_for_paired_46_47():
 
 
 def test_representative_structured_type_editors_render():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "app.py"), default_timeout=15).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "app.py"), default_timeout=15).run()
 
     app.sidebar.selectbox[0].set_value("short_text_topic").run()
     assert not app.exception

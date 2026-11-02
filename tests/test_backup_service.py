@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.backup_service import (
+from topik_question_lab.maintenance.backup_service import (
     BackupOptions,
     create_backup,
     inspect_backup,
     restore_backup,
 )
-from topik_question_lab.topic_bank import SlotTopicPool, TopicStore
+from topik_question_lab.step_02_planning.topic_bank import SlotTopicPool, TopicStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +142,7 @@ def test_backup_rejects_path_traversal(tmp_path):
 
 
 def test_backup_restore_page_renders():
-    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "backup_restore_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab" / "ui" / "backup_restore_app.py"), default_timeout=20).run()
     assert not app.exception
     assert any(button.label == "읽기·듣기 전체 백업 생성" for button in app.button)
     assert any(button.label == "검증된 백업 복원" for button in app.button)

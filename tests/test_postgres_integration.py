@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from topik_question_lab.postgres_storage import PostgresQuestionBank
-from topik_question_lab.publication import (
+from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+from topik_question_lab.step_06_publication.publication import (
     PublicationCandidate,
     PublicationItemMetadata,
     build_set_draft,
@@ -11,7 +11,9 @@ from topik_question_lab.publication import (
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
-pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL이 설정되지 않았습니다.")
+@pytest.fixture(autouse=True)
+def isolated_database(postgres_database_factory, monkeypatch):
+    monkeypatch.setitem(globals(), "TEST_DATABASE_URL", postgres_database_factory())
 
 
 def _draft(offset: int = 0):
@@ -114,9 +116,6 @@ def _cleanup_integration_data(psycopg):
             ).fetchall()
         ]
         for set_id in set_ids:
-            connection.execute("DELETE FROM topik_bank.question_set_items WHERE set_id = %s", (set_id,))
+            connection.execute("DELETE FROM topik_bank.items WHERE set_id = %s", (set_id,))
             connection.execute("DELETE FROM topik_bank.question_sets WHERE set_id = %s", (set_id,))
-        connection.execute(
-            "DELETE FROM topik_bank.item_versions WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE source_key LIKE 'reading:integration_test:%')"
-        )
         connection.execute("DELETE FROM topik_bank.items WHERE source_key LIKE 'reading:integration_test:%'")

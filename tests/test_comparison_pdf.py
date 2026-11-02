@@ -4,8 +4,8 @@ import io
 
 from pypdf import PdfReader
 
-from topik_question_lab.comparison_pdf import build_comparison_pdf, build_comparison_rows
-from topik_question_lab.models import QuestionExample, Review
+from topik_question_lab.step_05_export.comparison_pdf import build_comparison_pdf, build_comparison_rows
+from topik_question_lab.common.models import QuestionExample, Review
 
 
 def generated_item(item_id: int, provider: str, model: str, slot: int, passage: str = "") -> dict:

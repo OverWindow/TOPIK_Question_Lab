@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from topik_question_lab.models import ProviderResult, Review
-from topik_question_lab.postgres_storage import (
+from topik_question_lab.common.models import ProviderResult, Review
+from topik_question_lab.step_06_publication.postgres_storage import (
     _insert_set_items,
     _resolve_set_membership,
     _safe_error,
     _source_provenance,
 )
-from topik_question_lab.publication import (
+from topik_question_lab.step_06_publication.publication import (
     CandidateCatalog,
     LocalPublicationRecord,
     PublicationCandidate,
@@ -24,7 +24,7 @@ from topik_question_lab.publication import (
     unused_set_candidates,
     validate_complete_selection,
 )
-from topik_question_lab.storage import Storage
+from topik_question_lab.common.storage import Storage
 
 
 def candidate(slot: int, *, section: str = "reading", source_id: int | None = None) -> PublicationCandidate:
@@ -269,7 +269,7 @@ def test_collector_normalizes_legacy_blank_spacing_and_clears_error(tmp_path: Pa
 
 
 def test_migration_declares_required_item_bank_fields():
-    sql = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "001_question_bank.sql").read_text(encoding="utf-8")
+    sql = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "001_question_bank.sql").read_text(encoding="utf-8")
     for field in [
         "item_id",
         "item_version",
@@ -287,22 +287,22 @@ def test_migration_declares_required_item_bank_fields():
     ]:
         assert field in sql
 
-    second = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "002_complete_item_bank.sql").read_text(encoding="utf-8")
+    second = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "002_complete_item_bank.sql").read_text(encoding="utf-8")
     assert "type_slot" in second
     assert "topik_bank.current_items" in second
     assert "topik_bank.current_set_contents" in second
 
-    third = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "003_multi_question_sets.sql").read_text(encoding="utf-8")
+    third = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "003_multi_question_sets.sql").read_text(encoding="utf-8")
     assert "set_sequence" in third
     assert "question_sets_identity_sequence_key" in third
     assert "DROP CONSTRAINT IF EXISTS question_sets_section_generator_provider_generator_model_ge_key" in third
 
-    fourth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "004_postgres_deployments.sql").read_text(encoding="utf-8")
+    fourth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "004_postgres_deployments.sql").read_text(encoding="utf-8")
     assert "topik_bank.deployment_runs" in fourth
     assert "topik_bank.deployment_run_sets" in fourth
     assert "outcome_unknown" in fourth
 
-    fifth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "migrations" / "005_item_only_question_versions.sql").read_text(encoding="utf-8")
+    fifth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "005_item_only_question_versions.sql").read_text(encoding="utf-8")
     assert "DROP TABLE topik_bank.question_set_versions" in fifth
     assert "DROP COLUMN set_version" in fifth
     assert "CREATE VIEW topik_bank.current_set_contents" in fifth
@@ -326,7 +326,6 @@ def test_reconciliation_reports_all_local_and_postgres_states():
         {
             "source_key": latest.source_key,
             "item_id": "item-1",
-            "item_version": 1,
             "section": "reading",
             "generator_model": latest.provider_key,
             "generator_version": latest.model_id,
@@ -338,7 +337,6 @@ def test_reconciliation_reports_all_local_and_postgres_states():
         {
             "source_key": changed.source_key,
             "item_id": "item-3",
-            "item_version": 1,
             "section": "reading",
             "generator_model": changed.provider_key,
             "generator_version": changed.model_id,
@@ -350,7 +348,6 @@ def test_reconciliation_reports_all_local_and_postgres_states():
         {
             "source_key": ineligible.source_key,
             "item_id": "item-4",
-            "item_version": 1,
             "section": "reading",
             "generator_model": ineligible.provider_key,
             "generator_version": ineligible.model_id,
@@ -362,7 +359,6 @@ def test_reconciliation_reports_all_local_and_postgres_states():
         {
             "source_key": "reading:removed:99",
             "item_id": "item-99",
-            "item_version": 1,
             "section": "reading",
             "generator_model": "old",
             "generator_version": "old-model",
@@ -389,37 +385,6 @@ def test_postgres_error_redacts_connection_string_and_password():
     message = _safe_error(RuntimeError(f"failed for {url}; password=very-secret"), url)
     assert url not in message
     assert "very-secret" not in message
-
-
-def test_set_item_batch_insert_uses_cursor_executemany():
-    class FakeCursor:
-        def __init__(self):
-            self.calls = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def executemany(self, sql, rows):
-            self.calls.append((sql, rows))
-
-    class FakeConnection:
-        def __init__(self):
-            self.value = FakeCursor()
-
-        def cursor(self):
-            return self.value
-
-    connection = FakeConnection()
-    rows = [("set", 1, "item", 1)]
-
-    _insert_set_items(connection, rows)
-
-    assert len(connection.value.calls) == 1
-    assert "question_set_items" in connection.value.calls[0][0]
-    assert connection.value.calls[0][1] == rows
 
 
 def test_set_membership_retry_is_idempotent_and_partial_overlap_conflicts():

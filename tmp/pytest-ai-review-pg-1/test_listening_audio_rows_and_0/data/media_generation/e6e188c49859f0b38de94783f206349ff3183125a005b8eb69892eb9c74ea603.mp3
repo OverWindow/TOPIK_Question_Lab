@@ -1,0 +1,1 @@
+synthetic-mp3-{"version": "exam_track_v4", "kind": "single", "positions": [12], "segments": [{"kind": "bell"}, {"kind": "silence", "durationMs": 1000}, {"kind": "speech", "role": "instruction", "speaker": "여자", "text": "12번. 들은 내용은?"}, {"kind": "silence", "durationMs": 1000}, {"kind": "dialogue", "repeatIndex": 1, "turns": [{"speaker": "여자", "text": "대본 내용"}]}]}

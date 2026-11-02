@@ -36,7 +36,6 @@ from topik_question_lab.step_02_planning.prompts import (
     ENRICHMENT_SYSTEM_PROMPT,
     build_analysis_prompt,
     build_enrichment_prompt,
-    build_generation_prompt,
 )
 from topik_question_lab.step_02_planning.prompt_profiles import (
     DEFAULT_PROVIDER_INSTRUCTIONS,
@@ -237,25 +236,11 @@ def optimize_prompts(system_prompt: str, user_prompt: str, provider: str | None)
     )
 
 
-def prompts_for(
-    operation: str,
-    provider: str | None = None,
-    topic_briefs: list[TopicBrief] | None = None,
-) -> tuple[str, str]:
+def analysis_prompts_for(provider: str | None = None) -> tuple[str, str]:
     examples = storage.list_examples(approved_only=True)
     system_prompt = storage.get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT)
     type_id = storage.get_setting("question_type", "grammar_blank")
-    if operation == "analysis":
-        user_prompt = build_analysis_prompt(examples, type_id)
-    else:
-        user_prompt = build_generation_prompt(
-            examples,
-            storage.get_setting("analysis_guide", default_analysis_guide(selected_type_id)),
-            int(storage.get_setting("generation_count", "2")),
-            storage.get_setting("difficulty", "TOPIK II 읽기 초반 수준"),
-            type_id,
-            topic_briefs,
-        )
+    user_prompt = build_analysis_prompt(examples, type_id)
     return optimize_prompts(system_prompt, user_prompt, provider)
 
 
@@ -884,7 +869,7 @@ elif stage == "2. 유형 분석":
         format_func=provider_label,
         key=f"analysis-preview-provider-{selected_type_id}",
     )
-    system_prompt, user_prompt = prompts_for("analysis", preview_provider)
+    system_prompt, user_prompt = analysis_prompts_for(preview_provider)
     with st.expander("모델에 전달할 프롬프트"):
         st.text_area("System", system_prompt, height=130, disabled=True)
         st.text_area("User", user_prompt, height=300, disabled=True)
@@ -909,7 +894,7 @@ elif stage == "2. 유형 분석":
                 with ThreadPoolExecutor(max_workers=len(callable_providers)) as executor:
                     futures = {}
                     for provider in callable_providers:
-                        provider_system, provider_user = prompts_for("analysis", provider)
+                        provider_system, provider_user = analysis_prompts_for(provider)
                         future = executor.submit(
                             call_provider,
                             provider,
@@ -928,7 +913,7 @@ elif stage == "2. 유형 분석":
     st.subheader("웹 응답 가져오기")
     manual_provider = preview_provider
     st.caption(f"응답 모델 · {provider_label(manual_provider)}")
-    manual_system, manual_user = prompts_for("analysis", manual_provider)
+    manual_system, manual_user = analysis_prompts_for(manual_provider)
     raw_analysis = st.text_area("모델의 JSON 응답", height=180, key="analysis-manual-raw")
     if st.button("분석 응답 저장", disabled=not raw_analysis.strip() or not examples):
         result = manual_result(manual_provider, model_for(manual_provider), "analysis", raw_analysis)

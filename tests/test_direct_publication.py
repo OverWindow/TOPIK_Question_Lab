@@ -168,10 +168,12 @@ def test_ui_requires_local_postgres_url(tmp_path, monkeypatch):
     bid = seed_batch(tmp_path)
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
     monkeypatch.setenv("DATABASE_URL", "")
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/direct_publish_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/postgres_publish_app.py"), default_timeout=20).run()
     assert not app.exception
     assert app.title[0].value == "문제 등록·세트 만들기"
     assert any("로컬 PostgreSQL 연결이 필요합니다" in i.value for i in app.info)
+    next(b for b in app.button if b.label == "생성 묶음 등록·승인 보기").click().run()
+    assert not app.exception
     next(s for s in app.selectbox if s.label == "생성 묶음").set_value(bid).run()
     assert not app.exception
     assert next(b for b in app.button if b.label == "생성 묶음 내용 확인").disabled
@@ -184,7 +186,7 @@ def test_former_database_jobs_are_visible_but_readonly(tmp_path, monkeypatch):
     job = former.jobs.save(former.target, [local_package(former, bid)])
     former.jobs.update(job['id'], 'failed', message='synthetic prior failure')
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test@localhost/new')
-    app = AppTest.from_file(str(ROOT / 'topik_question_lab/ui/direct_publish_app.py'), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / 'topik_question_lab/ui/postgres_publish_app.py'), default_timeout=20).run()
     assert not app.exception
     assert any('이전 DB · 조회 전용' in item.label for item in app.expander)
     assert next(b for b in app.button if b.label == '등록 결과 다시 확인').disabled
@@ -371,7 +373,7 @@ def test_ui_registers_and_recovers_receipt_on_restart(local_service, monkeypatch
     service, ids = local_service
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(service.root))
     monkeypatch.setenv("DATABASE_URL", service.target_url)
-    path = str(ROOT / "topik_question_lab/ui/direct_publish_app.py")
+    path = str(ROOT / "topik_question_lab/ui/postgres_publish_app.py")
     app = AppTest.from_file(path, default_timeout=30).run()
     app.session_state["publication-batch-link"] = ids[0]
     app.run()

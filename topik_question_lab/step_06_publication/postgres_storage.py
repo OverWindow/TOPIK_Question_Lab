@@ -39,16 +39,6 @@ class PostgresQuestionBank:
             raise ValueError("DATABASE_URL이 설정되지 않았습니다.")
         self.database_url = database_url.strip()
 
-    def check_connection(self) -> str:
-        psycopg, _ = _psycopg()
-        try:
-            with psycopg.connect(self.database_url) as connection:
-                return str(connection.execute("SELECT current_database()").fetchone()[0])
-        except Exception as exc:
-            raise PostgresUnavailableError(
-                f"PostgreSQL 연결에 실패했습니다: {_safe_error(exc, self.database_url)}"
-            ) from exc
-
     def ensure_schema(self) -> list[str]:
         psycopg, _ = _psycopg()
         applied: list[str] = []
@@ -252,31 +242,6 @@ class PostgresQuestionBank:
                 f"문항 동기화에 실패해 전체 작업을 롤백했습니다: {_safe_error(exc, self.database_url)}"
             ) from exc
 
-    def list_recent_sets(self, limit: int = 20) -> list[dict]:
-        psycopg, _ = _psycopg()
-        try:
-            with psycopg.connect(self.database_url) as connection:
-                cursor = connection.execute(
-                    """SELECT s.set_id, s.section, s.generator_provider, s.generator_model,
-                              s.generator_version, s.set_sequence,
-                              s.review_status, s.published_at,
-                              COUNT(i.position) AS item_count
-                       FROM topik_bank.question_sets s
-                       LEFT JOIN topik_bank.items i ON i.set_id = s.set_id
-                       GROUP BY s.set_id, s.section, s.generator_provider, s.generator_model,
-                                s.generator_version, s.set_sequence,
-                                s.review_status, s.published_at
-                       ORDER BY s.published_at DESC
-                       LIMIT %s""",
-                    (limit,),
-                )
-                rows = cursor.fetchall()
-                return _dict_rows(cursor, rows)
-        except Exception as exc:
-            raise PostgresUnavailableError(
-                f"발행 이력을 읽지 못했습니다: {_safe_error(exc, self.database_url)}"
-            ) from exc
-
     def list_deployment_runs(self, limit: int = 50) -> list[dict]:
         """Read historical deployments without contacting their former targets."""
         return self._query_dicts(
@@ -317,10 +282,6 @@ class PostgresQuestionBank:
 
     def list_all_set_source_keys(self) -> set[str]:
         return {str(value["source_key"]) for value in self.list_all_set_memberships()}
-
-    def list_current_set_source_keys(self) -> set[str]:
-        """Backward-compatible alias; membership now covers all historical sets."""
-        return self.list_all_set_source_keys()
 
     def next_set_sequence(
         self,

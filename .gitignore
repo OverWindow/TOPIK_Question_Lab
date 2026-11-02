@@ -10,8 +10,6 @@ data/listening/
 data/media/
 data/media_generation/
 data/media_migrations/
-tmp/pdfs/
-tmp/pytest-media*/
+/tmp/
 backups/
 .local/postgres-bank/
-tmp/pytest-bank*/

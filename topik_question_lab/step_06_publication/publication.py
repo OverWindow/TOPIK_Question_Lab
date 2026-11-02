@@ -92,13 +92,6 @@ class CandidateCatalog:
     def identities(self) -> list[tuple[Section, str, str]]:
         return sorted({(value.section, value.provider_key, value.model_id) for value in self.candidates})
 
-    def for_identity(self, section: Section, provider_key: str, model_id: str) -> list[PublicationCandidate]:
-        return [
-            value
-            for value in self.candidates
-            if (value.section, value.provider_key, value.model_id) == (section, provider_key, model_id)
-        ]
-
 
 @dataclass(frozen=True)
 class PublicationItemMetadata:

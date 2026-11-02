@@ -541,13 +541,6 @@ class TopicStore:
                 ),
             )
 
-    def set_active(self, topic_id: str, active: bool) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "UPDATE topics SET active = ?, updated_at=CURRENT_TIMESTAMP WHERE id = ?",
-                (int(active), topic_id),
-            )
-
     def recent_pairs(self, limit: int = RECENT_TOPIC_LIMIT) -> set[tuple[str, str]]:
         with self.connect() as connection:
             rows = connection.execute(

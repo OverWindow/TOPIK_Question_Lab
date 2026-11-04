@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from topik_question_lab.common.listening_models import GeneratedListeningQuestion, ListeningQuestionExample
 from topik_question_lab.step_02_planning.listening_profiles import listening_type_profile
 from topik_question_lab.common.models import ValidationIssue
+from topik_question_lab.step_02_planning.exam_profiles import profile_for, exam_for_type
 from topik_question_lab.step_02_planning.topic_bank import generation_units
 
 
@@ -20,7 +21,13 @@ def validate_listening_question(
     prior_scripts: list[str] | None = None,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    profile = listening_type_profile(question.question_type)
+    profile = profile_for("listening", question.question_type, question.generation_profile)
+    if question.exam_format != exam_for_type(question.question_type):
+        issues.append(ValidationIssue(code="exam_format", message="시험 형식과 문항 유형이 다릅니다."))
+    if question.exam_format == "ibt" and question.type_slot in profile.question_numbers:
+        role = profile.roles[profile.question_numbers.index(question.type_slot)]
+        if question.question_role != role:
+            issues.append(ValidationIssue(code="question_role", message=f"질문 역할은 {role}이어야 합니다."))
     if question.type_slot not in profile.question_numbers:
         issues.append(ValidationIssue(code="type_slot", message=f"문항 번호는 {profile.question_numbers} 중 하나여야 합니다."))
     if question.repeat_count != profile.repeat_count:
@@ -39,6 +46,11 @@ def validate_listening_question(
             issues.append(ValidationIssue(code="visual_kind", message=f"시각 자료 종류는 {profile.visual_kind}여야 합니다."))
         if len(question.visual_options) != 4:
             issues.append(ValidationIssue(code="visual_options", message="시각 선택지 4개가 필요합니다."))
+        if question.exam_format == "ibt":
+            if sorted(v.number for v in question.visual_options) != [1, 2, 3, 4]:
+                issues.append(ValidationIssue(code="visual_options", message="시각 선택지 번호는 중복 없이 1~4여야 합니다."))
+            if profile.visual_kind == "chart" and sorted(v.chart_spec.chart_type if v.chart_spec else "" for v in question.visual_options) != ["bar", "bar", "pie", "pie"]:
+                issues.append(ValidationIssue(code="chart_spec", message="IBT 그래프 선택지는 원그래프 두 개와 막대그래프 두 개가 필요합니다."))
         if any(not v.description.strip() or not v.image_prompt.strip() for v in question.visual_options):
             issues.append(
                 ValidationIssue(
@@ -75,7 +87,7 @@ def validate_listening_payload(
     raw_questions = payload.get("questions")
     if not isinstance(raw_questions, list):
         raise ValueError("JSON에 questions 배열이 없습니다.")
-    profile = listening_type_profile(question_type)
+    profile = profile_for("listening", question_type, raw_questions[0].get("generation_profile") if raw_questions else None)
     questions: list[GeneratedListeningQuestion] = []
     issues: list[list[ValidationIssue]] = []
     prior = list(existing_scripts or [])

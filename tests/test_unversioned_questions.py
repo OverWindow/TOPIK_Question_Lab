@@ -43,6 +43,7 @@ def insert_legacy_item(connection, value, version):
     connection.execute("INSERT INTO topik_bank.items(item_id,source_key) VALUES (%s,%s) ON CONFLICT DO NOTHING",
                        (value.item_id, value.source_key))
     payload = {"item_id": value.item_id, "item_version": version, **expected_item(item), "predicted_difficulty": 0.0, "source_provenance": {}}
+    payload.pop("exam_format")  # The legacy schema predates exam formats.
     names = list(payload)
     connection.execute(
         f"INSERT INTO topik_bank.item_versions({','.join(names)}) VALUES ({','.join(['%s'] * len(names))})",
@@ -78,7 +79,7 @@ def test_migration_preserves_published_contents_and_latest_unassigned_item(postg
             source_snapshot_hash,status,requested_set_count) VALUES (%s,%s,'test',%s,'succeeded',1)""",
             (uuid.uuid4(), "b" * 64, "c" * 64))
     bank = PostgresQuestionBank(url)
-    assert bank.ensure_schema() == ["006_unversioned_items", "007_bank_media", "008_s3_media", "009_pending_media_review"]
+    assert bank.ensure_schema() == ["006_unversioned_items", "007_bank_media", "008_s3_media", "009_pending_media_review", "010_exam_format"]
     assert bank.ensure_schema() == []
     with psycopg.connect(url) as connection:
         rows = connection.execute("SELECT source_key,stem,set_id,position FROM topik_bank.items ORDER BY type_slot").fetchall()

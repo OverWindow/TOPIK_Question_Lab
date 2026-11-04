@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator, model_serializer
 
 
 AnswerSource = Literal["official", "ai_suggested", "manual", "unknown"]
@@ -15,11 +15,38 @@ class DialogueTurn(BaseModel):
 
 
 class ChartSpec(BaseModel):
-    chart_type: Literal["bar", "pie", "line"] = "bar"
+    chart_type: Literal["bar", "pie", "line", "combo"] = "bar"
     title: str = ""
     labels: list[str] = Field(default_factory=list)
     values: list[float] = Field(default_factory=list)
     unit: str = ""
+    series_name: str = ""
+    line_values: list[float] = Field(default_factory=list)
+    line_name: str = ""
+    line_unit: str = ""
+
+    @model_serializer(mode="wrap")
+    def serialize_chart(self, handler):
+        data = handler(self)
+        # Keep existing PBT chart payloads and media signatures stable.
+        if self.chart_type != "combo":
+            for key in ("series_name", "line_values", "line_name", "line_unit"):
+                data.pop(key, None)
+        return data
+
+    @model_validator(mode="after")
+    def validate_combo(self):
+        import math
+        if self.chart_type == "combo":
+            if self.series_name.strip() == self.line_name.strip():
+                raise ValueError("복합 도표의 두 계열 이름은 달라야 합니다.")
+            if not self.series_name.strip() or not self.line_name.strip() or not self.unit.strip() or not self.line_unit.strip():
+                raise ValueError("복합 도표의 두 계열 이름과 단위가 필요합니다.")
+            if not self.labels or len(self.line_values) != len(self.labels):
+                raise ValueError("복합 도표의 두 계열과 항목 수가 같아야 합니다.")
+            if any(not math.isfinite(v) or v < 0 for v in self.line_values + self.values):
+                raise ValueError("복합 도표 수치는 유한한 0 이상 값이어야 합니다.")
+        return self
 
     @field_validator("values")
     @classmethod
@@ -95,6 +122,8 @@ class ListeningQuestionExample(BaseModel):
 
 
 class GeneratedListeningQuestion(BaseModel):
+    exam_format: Literal["pbt", "ibt"] = "pbt"
+    generation_profile: dict | None = None
     question_type: str
     type_slot: int = Field(ge=1, le=50)
     dialogue_turns: list[DialogueTurn] = Field(min_length=1)

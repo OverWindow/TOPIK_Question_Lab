@@ -33,6 +33,9 @@ TOPIC_FREE_LISTENING_TYPES = {
 
 
 def uses_topic_bank(section: str, question_type: str) -> bool:
+    if question_type.startswith("ibt_"):
+        from .exam_profiles import profile_for
+        question_type = profile_for(section, question_type).base_type_id
     if section == "reading":
         return question_type not in TOPIC_FREE_READING_TYPES
     if section == "listening":
@@ -692,6 +695,18 @@ class TopicStore:
         initial_domain_counts: Counter[str] | None = None,
         rng: random.Random | random.SystemRandom | None = None,
     ) -> list[TopicBrief]:
+        if question_type.startswith("ibt_"):
+            from .exam_profiles import profile_for
+            profile = profile_for(section, question_type)
+            slot_map = dict(zip(profile.question_numbers, profile.topic_slots))
+            plans = self.select_plan(
+                section=section, question_type=profile.base_type_id,
+                units=[(key, [slot_map[n] for n in slots]) for key, slots in units],
+                forbidden_pairs=forbidden_pairs, initial_pair_counts=initial_pair_counts,
+                forbidden_topic_ids=forbidden_topic_ids, initial_domain_counts=initial_domain_counts, rng=rng,
+            )
+            original = dict(units)
+            return [brief.model_copy(update={"slot_numbers": original[brief.unit_key]}) for brief in plans]
         if section not in {"reading", "listening"}:
             raise ValueError(f"알 수 없는 영역입니다: {section}")
 

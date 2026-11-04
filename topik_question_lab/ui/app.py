@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from topik_question_lab.step_02_planning.exam_profiles import profiles_for_exam, exam_for_type, profile_for
 from pathlib import Path
 
 import streamlit as st
@@ -97,9 +98,13 @@ def get_topic_store(schema_version: int) -> TopicStore:
 
 
 st.sidebar.title("TOPIK Question Lab")
-implemented_type_ids = [
-    type_id for type_id, profile in QUESTION_TYPE_PROFILES.items() if profile.implemented
-]
+review_link = st.session_state.get("registration-review-link")
+if review_link and review_link["section"] == "reading":
+    st.session_state["reading-exam-format"] = exam_for_type(review_link["type_id"])
+exam_format = st.sidebar.radio("시험 형식", ["pbt", "ibt"], format_func=str.upper, key="reading-exam-format")
+implemented_type_ids = list(profiles_for_exam("reading", exam_format))
+if st.session_state.get("selected-question-type") not in implemented_type_ids:
+    st.session_state.pop("selected-question-type", None)
 pending_type = st.session_state.pop("_selected_type_after_delete", "")
 review_link = st.session_state.get("registration-review-link")
 if review_link and review_link["section"] == "reading":
@@ -128,7 +133,7 @@ if "_database_delete_notice" in st.session_state:
 
 
 def initialize_data() -> None:
-    if not storage.list_examples() and EXTRACTED_DIR.exists():
+    if exam_format == "pbt" and not storage.list_examples() and EXTRACTED_DIR.exists():
         storage.upsert_examples(
             scan_extracted_text(
                 EXTRACTED_DIR,
@@ -485,6 +490,12 @@ for provider in active_providers:
     mode = "웹 전용" if config and not config.gateway_supported else model_for(provider)
     st.sidebar.write(f"{provider_label(provider)} · {mode}")
 
+
+if stage == "1. 기출 데이터" and exam_format == "ibt":
+    st.info("IBT는 대응하는 PBT 유형의 승인 예시를 참고합니다. 원본 관리는 PBT 화면에서 진행하세요.")
+    st.write(f"참고 유형: {selected_type_profile.base_type_id} · 승인 예시 {len(storage.list_examples(approved_only=True))}개")
+    st.json({"번호": selected_type_profile.question_numbers, "역할": selected_type_profile.roles, "생성 규칙": selected_type_profile.generation_rules})
+    st.stop()
 
 if stage == "1. 기출 데이터":
     st.title("기출 데이터")
@@ -1327,6 +1338,17 @@ elif stage == "5. 검수·비교":
         st.caption(f"검수 위치 · {generated_ids.index(selected_id) + 1} / {len(generated_ids)}")
         item = next(item for item in filtered if item["id"] == selected_id)
         question = GeneratedQuestion.model_validate(item["question"])
+        selected_type_profile = profile_for("reading", question.question_type, question.generation_profile)
+        material_kind = getattr(selected_type_profile, "material_kind", "none")
+        if material_kind != "none":
+            from topik_question_lab.common.listening_models import ChartSpec
+            from topik_question_lab.common.listening_visuals import render_chart, render_banner
+            try:
+                material = question.visual_material or {}
+                preview = render_banner(material.get("text", "")) if material_kind == "material_banner" else render_chart(ChartSpec.model_validate(material.get("chart_spec")))
+                st.image(preview, caption="생성 자료 미리보기", width=640)
+            except (ValueError, TypeError) as exc:
+                st.warning(f"자료 이미지 확인 필요: {exc}")
 
         topic_values = [getattr(question, field) for field in TOPIC_METADATA_FIELDS]
         slot_uses_topics = uses_topic_bank("reading", selected_type_id) or topic_store.has_active_slot_pool(
@@ -1395,6 +1417,9 @@ elif stage == "5. 검수·비교":
                 question_prompt = st.text_input("문항 질문", question.question_prompt)
                 stem = compose_structured_stem(passage, question_prompt, auxiliary_text)
             generated_highlight = question.highlight_text
+            visual_material = question.visual_material
+            if material_kind == "material_combo_chart":
+                chart_json = st.text_area("복합 도표 데이터 (JSON)", json.dumps((visual_material or {}).get("chart_spec", {}), ensure_ascii=False, indent=2), height=240)
             if question_requires_highlight:
                 generated_highlight = st.text_input("밑줄 대상 표현", question.highlight_text)
             cols = st.columns(2)
@@ -1404,6 +1429,15 @@ elif stage == "5. 검수·비교":
             explanation = st.text_area("해설", question.explanation, height=120)
             difficulty = st.text_input("난이도", question.difficulty)
             if st.form_submit_button("문제 수정 저장"):
+                if material_kind == "material_banner":
+                    visual_material = {"text": passage}
+                elif material_kind == "material_combo_chart":
+                    from topik_question_lab.step_03_generation.media_generation import chart_spec
+                    try:
+                        visual_material = {"chart_spec": chart_spec(json.loads(chart_json), passage)}
+                    except (ValueError, TypeError) as exc:
+                        st.error(f"복합 도표 데이터 확인 필요: {exc}")
+                        st.stop()
                 highlight_error = ""
                 if question_requires_highlight:
                     if selected_type_profile.content_mode == "single_sentence":
@@ -1415,6 +1449,8 @@ elif stage == "5. 검수·비교":
                     st.error(highlight_error)
                     st.stop()
                 edited = GeneratedQuestion(
+                    exam_format=question.exam_format, generation_profile=question.generation_profile,
+                    visual_material=visual_material,
                     type_slot=type_slot,
                     stem=stem,
                     question_type=selected_type_id,
@@ -1535,6 +1571,9 @@ elif stage == "6. 내보내기":
         st.code(txt_data, language=None)
 
     st.divider()
+    if exam_format == "ibt":
+        st.info("IBT 원본 전사·정답이 없어 원본 비교 PDF는 제공하지 않습니다. 위에서 생성 문항을 TXT·JSON·CSV로 내보낼 수 있습니다.")
+        st.stop()
     st.subheader("원본 · 모델 A · 모델 B 비교 PDF")
     st.caption("실제로 생성 기록이 있는 두 모델을 선택하면 같은 문제 번호 슬롯의 원본과 생성 문제를 순서대로 묶어 A4 가로 3열 PDF로 만듭니다.")
     model_identities = sorted(

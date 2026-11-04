@@ -1,6 +1,7 @@
 """Direct, transactional editing of registered questions without local originals."""
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import profile_for, question_count
 from copy import deepcopy
 from datetime import datetime, timezone
 import io
@@ -26,16 +27,15 @@ from topik_question_lab.step_06_publication.storage_overview import visual_requi
 
 
 LOCKS = ("topik_bank:production_deployment", "topik_bank:set_membership", "topik_bank:item_sync")
-FIXED_FIELDS = ("question_type", "type_slot", "set_id")
+FIXED_FIELDS = ("question_type", "type_slot", "set_id", "exam_format", "generation_profile")
 MEDIA_TABLES = ("item_audio_bindings", "question_set_item_audio_bindings", "item_visual_assets")
 
 
 def question_profile(row):
-    profiles = QUESTION_TYPE_PROFILES if row["section"] == "reading" else LISTENING_TYPE_PROFILES
-    profile = profiles.get(row["item_type"])
-    if row["section"] not in ("reading", "listening") or profile is None:
-        raise PublicationBlocked("지원하는 읽기·듣기 유형의 문항을 선택하세요.")
-    return profile
+    try:
+        return profile_for(row["section"], row["item_type"], row["content_json"].get("generation_profile"))
+    except (KeyError, ValueError):
+        raise PublicationBlocked("지원하는 읽기·듣기 유형의 문항을 선택하세요.") from None
 
 
 def shared_members(snapshot):
@@ -51,7 +51,7 @@ def shared_members(snapshot):
 def checked_question(row, question):
     question = deepcopy(question)
     old = row["content_json"]
-    if any(question.get(k) != old.get(k) for k in FIXED_FIELDS):
+    if any(question.get(k, "pbt" if k == "exam_format" else None) != old.get(k, "pbt" if k == "exam_format" else None) for k in FIXED_FIELDS):
         raise PublicationBlocked("세트·유형·문항 번호는 변경할 수 없습니다.")
     if question.get("question_type") != row["item_type"] or question.get("type_slot") != row["type_slot"]:
         raise PublicationBlocked("DB에 저장된 유형·번호와 문제 내용이 다릅니다.")
@@ -67,7 +67,8 @@ def checked_question(row, question):
             question["stem"] = display_stem(SimpleNamespace(section="reading", question=question))
         parsed = model.model_validate(question)
     issues = (validate_question if row["section"] == "reading" else validate_listening_question)(parsed, [])
-    errors = [i.message for i in issues if i.severity == "error" and i.code != "repeat_count"]
+    errors = [i.message for i in issues if i.severity == "error"
+              and (i.code != "repeat_count" or question.get("exam_format", "pbt") == "ibt")]
     if row["section"] == "listening" and question.get("visual_options"):
         if sorted(o["number"] for o in question["visual_options"]) != [1, 2, 3, 4]:
             errors.append("이미지 선지 번호는 중복 없이 1~4여야 합니다.")
@@ -125,7 +126,8 @@ def audio_members(snapshot):
     if row["section"] != "listening":
         return []
     slot = row["type_slot"]
-    positions = [slot] if slot <= 20 else [21 + (slot - 21) // 2 * 2, 22 + (slot - 21) // 2 * 2]
+    profile = question_profile(row)
+    positions = list(profile.question_numbers) if profile.shared_script else [slot]
     return [r for r in snapshot["items"] if r["section"] == "listening" and r["type_slot"] in positions]
 
 
@@ -445,10 +447,12 @@ def media_ready(snapshot, row):
 
 
 def set_health(items):
-    complete = len(items) == 50 and {r["position"] for r in items} == set(range(1, 51))
+    formats = {r.get("exam_format", "pbt") for r in items}
+    expected = question_count(next(iter(formats), "pbt"))
+    complete = len(formats) == 1 and len(items) == expected and {r["position"] for r in items} == set(range(1, expected + 1))
     retired = sum(r["review_status"] == "retired" for r in items)
     pending = sum(r["review_status"] == "pending_review" for r in items)
-    return {"count": len(items), "complete": complete, "retired": retired, "pending": pending,
+    return {"count": len(items), "expected_count": expected, "complete": complete, "retired": retired, "pending": pending,
             "ready": complete and not retired and not pending,
             "label": "구성 미완성 · 사용 불가" if not complete else "사용 중지 문항 포함 · 사용 불가" if retired else "검수 대기" if pending else "검수 완료"}
 

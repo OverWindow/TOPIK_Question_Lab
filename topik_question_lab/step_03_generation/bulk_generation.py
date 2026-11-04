@@ -1,4 +1,4 @@
-"""Durable 50-question batches and a single background runner per project."""
+"""Durable exam batches and a single background runner per project."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import uuid
 from collections import Counter
+from topik_question_lab.step_02_planning.exam_profiles import profiles_for_exam, exam_for_type, question_count, profile_for
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -21,17 +22,12 @@ from topik_question_lab.common.storage import Storage
 from topik_question_lab.step_02_planning.topic_bank import TopicBrief, TopicStore, generation_units
 
 
-def profiles_for(section):
-    if section == "reading":
-        return {key: value for key, value in QUESTION_TYPE_PROFILES.items() if value.implemented}
-    if section == "listening":
-        return LISTENING_TYPE_PROFILES
-    raise ValueError("듣기 또는 읽기 영역을 선택하세요.")
+def profiles_for(section, exam_format="pbt"):
+    return profiles_for_exam(section, exam_format)
 
 
-def storage_for(root: Path, section: str, type_id: str):
-    if type_id not in profiles_for(section):
-        raise ValueError("알 수 없는 문제 유형입니다.")
+def storage_for(root: Path, section: str, type_id: str, generation_profile=None):
+    profile_for(section, type_id, generation_profile)
     directory = root / "data" / ("types" if section == "reading" else "listening/types")
     cls = Storage if section == "reading" else ListeningStorage
     return cls(directory / f"{type_id}.db")
@@ -82,12 +78,13 @@ def custom_model(model: str) -> tuple[str, str]:
     return provider, model
 
 
-def prepare_batch(root: Path, section: str, provider: str, model: str, preset: str | None) -> tuple[list[dict], list[str]]:
-    profiles = profiles_for(section)
+def prepare_batch(root: Path, section: str, provider: str, model: str, preset: str | None, exam_format: str = "pbt") -> tuple[list[dict], list[str]]:
+    profiles = profiles_for(section, exam_format)
+    expected_count = question_count(exam_format)
     slots = [slot for profile in profiles.values() for slot in profile.question_numbers]
     errors = []
-    if sorted(slots) != list(range(1, 51)):
-        errors.append("유형 구성이 정확히 1~50번을 포함하지 않습니다.")
+    if sorted(slots) != list(range(1, expected_count + 1)):
+        errors.append(f"유형 구성이 정확히 1~{expected_count}번을 포함하지 않습니다.")
     if not is_text_model(model):
         errors.append("텍스트 모델만 사용할 수 있습니다.")
     if not can_gateway_call(provider):
@@ -145,7 +142,7 @@ class BulkStore:
             """)
             columns = {row[1] for row in connection.execute("PRAGMA table_info(batches)")}
             # Retain retired review fields for saved batches and backup compatibility.
-            for name, declaration in {"media_config": "TEXT NOT NULL DEFAULT '{}'", "pipeline_status": "TEXT NOT NULL DEFAULT ''",
+            for name, declaration in {"exam_format": "TEXT NOT NULL DEFAULT 'pbt'", "media_config": "TEXT NOT NULL DEFAULT '{}'", "pipeline_status": "TEXT NOT NULL DEFAULT ''",
                                       "auto_resume": "INTEGER NOT NULL DEFAULT 0", "next_attempt_at": "REAL NOT NULL DEFAULT 0",
                                       "review_config": "TEXT NOT NULL DEFAULT '{}'", "review_summary": "TEXT NOT NULL DEFAULT '{}'"}.items():
                 if name not in columns:
@@ -176,12 +173,14 @@ class BulkStore:
         if not snapshots:
             raise ValueError("생성할 유형이 없습니다.")
         first = snapshots[0]
-        if sorted(slot for item in snapshots for slot in item["slots"]) != list(range(1, 51)):
-            raise ValueError("정확히 1~50번을 준비해야 합니다.")
-        identity = {(item["section"], item["provider"], item["model"], item["preset"]) for item in snapshots}
+        exam_format = first.get("exam_format", "pbt")
+        expected_count = question_count(exam_format)
+        if sorted(slot for item in snapshots for slot in item["slots"]) != list(range(1, expected_count + 1)):
+            raise ValueError(f"정확히 1~{expected_count}번을 준비해야 합니다.")
+        identity = {(item.get("exam_format", "pbt"), item["section"], item["provider"], item["model"], item["preset"]) for item in snapshots}
         if len(identity) != 1 or len({item["type_id"] for item in snapshots}) != len(snapshots):
             raise ValueError("전체 유형의 영역·모델·프리셋이 동일해야 합니다.")
-        profiles = profiles_for(first["section"])
+        profiles = profiles_for(first["section"], exam_format)
         if {item["type_id"] for item in snapshots} != set(profiles):
             raise ValueError("전체 유형을 준비해야 합니다.")
         if any(item["slots"] != list(profiles[item["type_id"]].question_numbers)
@@ -189,8 +188,8 @@ class BulkStore:
             raise ValueError("유형별 번호·문항 수와 승인 예시를 확인하세요.")
         batch_id = uuid.uuid4().hex
         with self.connect() as connection:
-            connection.execute("INSERT INTO batches(id,section,provider,model,preset,status) VALUES (?,?,?,?,?,'running')",
-                               (batch_id, first["section"], first["provider"], first["model"], first["preset"]))
+            connection.execute("INSERT INTO batches(id,section,provider,model,preset,exam_format,status) VALUES (?,?,?,?,?,?,'running')",
+                               (batch_id, first["section"], first["provider"], first["model"], first["preset"], exam_format))
             connection.executemany("INSERT INTO tasks(batch_id,type_id,snapshot_json) VALUES (?,?,?)",
                                    [(batch_id, item["type_id"], json.dumps(item, ensure_ascii=False)) for item in snapshots])
         return batch_id
@@ -363,19 +362,21 @@ class BulkRunner:
             return batch_id
 
     def _approve_batch(self, batch_id):
+        batch = next(b for b in self.store.batches() if b["id"] == batch_id)
+        expected_count = question_count(batch.get("exam_format", "pbt"))
         stores, slots = [], []
         for task in self.store.tasks(batch_id):
             snapshot = task["snapshot"]
-            storage = storage_for(self.root, snapshot["section"], task["type_id"])
+            storage = storage_for(self.root, snapshot["section"], task["type_id"], snapshot.get("generation_profile"))
             receipt = storage.generation_receipt(batch_id)
             rows = [row for row in storage.list_generated() if row["batch_id"] == batch_id]
             if (not receipt or sorted(receipt["slots"]) != sorted(snapshot["slots"])
                     or {row["id"] for row in rows} != set(receipt["question_ids"])):
-                raise ValueError("자동 승인에는 삭제되지 않은 1~50번 생성 문항이 모두 필요합니다.")
+                raise ValueError(f"자동 승인에는 삭제되지 않은 1~{expected_count}번 생성 문항이 모두 필요합니다.")
             slots.extend(receipt["slots"])
             stores.append(storage)
-        if sorted(slots) != list(range(1, 51)):
-            raise ValueError("자동 승인에는 정확히 1~50번 생성 문항이 필요합니다.")
+        if sorted(slots) != list(range(1, expected_count + 1)):
+            raise ValueError(f"자동 승인에는 정확히 1~{expected_count}번 생성 문항이 필요합니다.")
         for storage in stores:
             storage.approve_generation(batch_id)
 
@@ -398,7 +399,7 @@ class BulkRunner:
                     raise Stopped()
                 snapshot, type_id = task["snapshot"], task["type_id"]
                 try:
-                    storage = storage_for(self.root, snapshot["section"], type_id)
+                    storage = storage_for(self.root, snapshot["section"], type_id, snapshot.get("generation_profile"))
                     receipt = storage.generation_receipt(batch_id)
                     if receipt:
                         if sorted(receipt["slots"]) != sorted(snapshot["slots"]):
@@ -440,7 +441,7 @@ class BulkRunner:
                         topics=[TopicBrief.model_validate(value) for value in snapshot["topics"]],
                         strict=True, batch_id=batch_id,
                         examples=[example_cls.model_validate(value) for value in snapshot["examples"]],
-                        prompt_mode=snapshot["prompt_mode"],
+                        prompt_mode=snapshot["prompt_mode"], generation_profile=snapshot.get("generation_profile"),
                     )
                     self.store.update_task(batch_id, type_id, "succeeded" if outcome.ok else "failed",
                                            count=outcome.count, review_count=outcome.review_count, run_id=outcome.run_id,
@@ -451,7 +452,7 @@ class BulkRunner:
                     self.store.update_task(batch_id, type_id, "failed", error="문항 생성 실패 · 설정과 입력을 확인하세요.")
             tasks = self.store.tasks(batch_id)
             count = sum(task["count"] for task in tasks)
-            status = "succeeded" if count == 50 and all(task["status"] == "succeeded" for task in tasks) else "partial" if count else "failed"
+            status = "succeeded" if count == question_count(batch.get("exam_format", "pbt")) and all(task["status"] == "succeeded" for task in tasks) else "partial" if count else "failed"
             if status == "succeeded":
                 if self.stop_event.is_set():
                     raise Stopped()

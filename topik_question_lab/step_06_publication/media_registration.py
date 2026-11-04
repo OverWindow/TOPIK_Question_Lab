@@ -1,6 +1,7 @@
 """Atomic registration with durable, verifiable media receipts."""
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import question_count, requires_material, profile_for
 from topik_question_lab.step_03_generation.media_provider import MediaError
 from topik_question_lab.step_06_publication.direct_publication import (
     DirectPublicationService, PublicationBlocked, _dicts, _hash, check_registered_set,
@@ -42,13 +43,13 @@ def check_media(c, package):
                 raise PublicationBlocked("이미지 문항 연결이 중복되었습니다.")
             expected_visual[key] = asset["visual_asset_id"]
     draft = package_draft(package)
-    required_audio = set(range(1, 51)) if draft.section == "listening" else set()
+    required_audio = set(range(1, question_count(draft.exam_format) + 1)) if draft.section == "listening" else set()
     required_visual = set()
     for item in draft.items:
         candidate = item.candidate
         for option in candidate.question.get("visual_options") or []:
             required_visual.add((str(candidate.item_id), item.content_hash, "choice", option["number"]))
-        if draft.section == "reading" and candidate.slot == 10:
+        if requires_material(draft.section, candidate.slot, candidate.question):
             required_visual.add((str(candidate.item_id), item.content_hash, "material", 1))
     if set(expected_audio) != required_audio or set(expected_visual) != required_visual:
         raise PublicationBlocked("필수 음원·이미지 전체가 준비되어야 DB에 등록할 수 있습니다.")
@@ -58,8 +59,12 @@ def check_media(c, package):
             continue
         positions = asset["positions"]
         leader = min(positions)
-        expected_positions = [leader] if leader <= 20 else [leader, leader + 1]
-        if positions != expected_positions or (leader > 20 and leader % 2 == 0):
+        first = next((i.candidate for i in draft.items if i.candidate.slot == leader), None)
+        if first is None:
+            raise PublicationBlocked("음원 문항 번호가 세트에 없습니다.")
+        profile = profile_for("listening", first.question_type, first.question.get("generation_profile"))
+        expected_positions = list(profile.question_numbers) if profile.shared_script else [leader]
+        if positions != expected_positions:
             raise PublicationBlocked("시험 음원 그룹 구성이 다릅니다.")
         expected_script = narration_script([i.candidate for i in draft.items if i.candidate.slot in positions])
         if any(asset["script_snapshot"].get(k) != v for k, v in expected_script.items()):

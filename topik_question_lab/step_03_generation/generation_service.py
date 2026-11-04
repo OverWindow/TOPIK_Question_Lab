@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from topik_question_lab.step_02_planning.exam_profiles import exam_for_type, profile_for, profile_snapshot
 from dataclasses import dataclass
 
 from topik_question_lab.common.listening_models import GeneratedListeningQuestion
@@ -49,7 +50,8 @@ def build_generation_snapshot(storage, section, type_id, provider, model, preset
     builder = build_generation_prompt if reading else build_listening_generation_prompt
     user = builder(examples, guide, count, difficulty, type_id, topics)
     system, user = apply_generation_style(storage, section, system, user, provider, model, preset)
-    return {"section": section, "type_id": type_id, "slots": list(profile.question_numbers),
+    return {"exam_format": exam_for_type(type_id), "generation_profile": profile_snapshot(profile),
+            "section": section, "type_id": type_id, "slots": list(profile.question_numbers),
             "count": count, "provider": provider, "model": model, "preset": preset,
             "system": system, "user": user, "difficulty": difficulty,
             "prompt_mode": storage.get_setting("prompt_mode", "optimized"),
@@ -90,17 +92,21 @@ def record_generation_topics(topic_store, topics, section, type_id, result, run_
 
 def save_generation(
     storage, result, system, user, *, section, type_id, expected_count,
-    topic_store=None, topics=None, strict=False, batch_id=None, examples=None, prompt_mode=None,
+    topic_store=None, topics=None, strict=False, batch_id=None, examples=None, prompt_mode=None, generation_profile=None,
 ) -> GenerationOutcome:
     mode = prompt_mode or storage.get_setting("prompt_mode", "optimized")
     reading = section == "reading"
-    profile = question_type_profile(type_id) if reading else listening_type_profile(type_id)
+    profile = profile_for(section, type_id, generation_profile)
     shared = profile.shared_passage if reading else profile.shared_script
     topics = topics or []
     try:
         if result.error or result.parsed_json is None:
             raise ValueError(result.error or "JSON 응답이 없습니다.")
-        application = apply_topic_plan(result.parsed_json, topics, shared=shared)
+        payload = result.parsed_json
+        if exam_for_type(type_id) == "ibt":
+            payload = {**payload, "questions": [{**q, "exam_format": "ibt", "question_type": type_id,
+                       "generation_profile": profile_snapshot(profile)} for q in payload.get("questions", [])]}
+        application = apply_topic_plan(payload, topics, shared=shared)
         examples = examples if examples is not None else storage.list_examples(approved_only=True)
         existing = storage.list_generated()
         if reading:

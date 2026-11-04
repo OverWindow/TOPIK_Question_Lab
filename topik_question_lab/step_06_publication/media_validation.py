@@ -1,6 +1,7 @@
 """Read-only checks of complete local sets and their media files."""
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import question_count, requires_material
 import hashlib
 import json
 import uuid
@@ -50,8 +51,9 @@ class LocalMediaValidator:
         visuals = {(str(r["item_id"]), r["content_hash"], r["visual_role"], r["option_number"]): r for r in rows["item_visual_assets"]}
         for set_row in rows["question_sets"]:
             members = [i for i in items if i["set_id"] == set_row["set_id"]]
-            if len(members) != 50 or {i["position"] for i in members} != set(range(1, 51)):
-                raise ValueError("완성 세트 검증에는 중복 없는 1~50번 문항이 필요합니다.")
+            expected_count = question_count(set_row.get("exam_format", "pbt"))
+            if len(members) != expected_count or {i["position"] for i in members} != set(range(1, expected_count + 1)) or any(i.get("exam_format", "pbt") != set_row.get("exam_format", "pbt") for i in members):
+                raise ValueError("완성 세트 검증에는 시험 구성에 맞는 전체 문항이 필요합니다.")
             if set_row["review_status"] == "retired":
                 raise ValueError("퇴역 처리된 세트는 완성 검증을 통과할 수 없습니다.")
             for item in members:
@@ -65,7 +67,7 @@ class LocalMediaValidator:
                     if not asset or asset["narration_version"] != "exam_track_v4":
                         raise ValueError(f"듣기 {item['position']}번의 현재 시험 음성이 준비되지 않았습니다.")
                 expected = [("choice", n) for n in range(1, len(options) + 1)]
-                if item["section"] == "reading" and item["position"] == 10:
+                if requires_material(item["section"], item["position"], content):
                     expected.append(("material", 1))
                 if any((str(item["item_id"]), item["content_hash"], role, number) not in visuals for role, number in expected):
                     raise ValueError(f"{item['position']}번의 필수 이미지가 준비되지 않았습니다.")

@@ -61,9 +61,24 @@ def render_chart(spec: ChartSpec, width: int = 640, height: int = 420) -> bytes:
         for index, (label, value) in enumerate(zip(labels, values)):
             x0 = left + gap + index * (bar_width + gap)
             y0 = bottom - value / maximum * (bottom - top - 25)
-            draw.rectangle((x0, y0, x0 + bar_width, bottom), fill=colors[index % len(colors)])
+            draw.rectangle((x0, y0, x0 + bar_width, bottom), fill="#c8ded8" if spec.chart_type == "combo" else colors[index % len(colors)])
             draw.text((x0 + bar_width / 2, y0 - 8), f"{value:g}{spec.unit}", fill="#202124", font=label_font, anchor="ms")
             draw.text((x0 + bar_width / 2, bottom + 12), label, fill="#202124", font=label_font, anchor="ma")
+    if spec.chart_type == "combo":
+        # Separate scales are explicit in the legends and per-point value labels.
+        draw.text((left, top - 24), f"{spec.series_name} ({spec.unit})", fill=colors[0], font=label_font)
+        draw.text((right, top - 24), f"{spec.line_name} ({spec.line_unit})", fill="#b33a3a", font=label_font, anchor="ra")
+        maximum = max(spec.line_values) or 1
+        points = []
+        for index, value in enumerate(spec.line_values):
+            x = left + gap + index * (bar_width + gap) + bar_width / 2
+            y = bottom - value / maximum * (bottom - top - 45)
+            points.append((x, y))
+            draw.text((x, y + 10), f"{value:g}{spec.line_unit}", fill="#b33a3a", font=label_font, anchor="ma")
+        if len(points) > 1:
+            draw.line(points, fill="#b33a3a", width=4)
+        for x, y in points:
+            draw.ellipse((x-5,y-5,x+5,y+5), fill="#b33a3a")
     output = io.BytesIO()
     image.save(output, "PNG")
     return output.getvalue()
@@ -101,3 +116,31 @@ def save_uploaded_asset(data: bytes, name: str, target_dir: Path) -> Path:
     path = target_dir / safe
     path.write_bytes(data)
     return path
+
+
+def render_banner(text: str) -> bytes:
+    """Render Korean copy directly, avoiding text corruption in generated images."""
+    if not text.strip():
+        raise ValueError("광고·표어 문구가 필요합니다.")
+    image = Image.new("RGB", (800, 360), "#f5f8fb")
+    draw = ImageDraw.Draw(image)
+    font = _font(28)
+    lines, line = [], ""
+    for character in text:
+        if character == "\n" or draw.textlength(line + character, font=font) > 700:
+            lines.append(line)
+            line = "" if character == "\n" else character
+        else:
+            line += character
+    if line:
+        lines.append(line)
+    if len(lines) > 6:
+        raise ValueError("광고·표어 문구는 여섯 줄 이내로 작성하세요.")
+    draw.rectangle((16, 16, 784, 344), outline="#176b5b", width=5)
+    y = (360 - len(lines) * 42) / 2
+    for line in lines:
+        draw.text((400, y), line, font=font, fill="#202124", anchor="ma")
+        y += 42
+    output = io.BytesIO()
+    image.save(output, "PNG")
+    return output.getvalue()

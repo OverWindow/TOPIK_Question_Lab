@@ -121,6 +121,8 @@ class ListeningStorage(GenerationStorageMixin):
         return inserted
 
     def list_examples(self, approved_only: bool = False) -> list[ListeningQuestionExample]:
+        if self.path.stem.startswith("ibt_"):
+            return self.reference_examples(ListeningQuestionExample, approved_only)
         with self.connect() as connection:
             rows = connection.execute("SELECT data_json FROM examples ORDER BY source_exam, question_number").fetchall()
         values = [ListeningQuestionExample.model_validate_json(row["data_json"]) for row in rows]

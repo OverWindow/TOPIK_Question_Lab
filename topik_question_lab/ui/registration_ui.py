@@ -1,4 +1,5 @@
 """Shared Korean registration UI; all initial reads are side-effect free."""
+from topik_question_lab.step_02_planning.exam_profiles import question_count
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from topik_question_lab.step_06_publication.postgres_storage import PostgresQues
 
 
 SECTION = {"reading": "읽기", "listening": "듣기", "writing": "쓰기"}
-MODES = {"add": "문제 추가하기", "set": "50문제 세트 만들기", "update": "변경 내용 반영",
+MODES = {"add": "문제 추가하기", "set": "문제 세트 만들기", "update": "변경 내용 반영",
          "review": "검수할 문제", "sets": "등록된 세트", "batches": "생성 묶음 등록·승인",
          "cleanup": "미등록 문제 정리", "trash": "휴지통", "set-cleanup": "등록 완료 세트 로컬 정리"}
 STATUS = {"prepared": "등록 준비", "publishing": "결과 확인 필요", "outcome_unknown": "결과 확인 필요",
@@ -91,6 +92,8 @@ def metadata_editor(candidates, remote, prefix, default_level=4):
 
 
 def filters(candidates, prefix):
+    exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key=f"{prefix}-exam")
+    candidates = [c for c in candidates if exam == "all" or c.exam_format == exam]
     left, right = st.columns(2)
     section = left.selectbox("영역", ["all", "reading", "listening"],
                              format_func=lambda x: SECTION.get(x, "전체"), key=f"{prefix}-section")
@@ -118,17 +121,17 @@ def selection(snapshot, catalog, workflow, mode, ready):
             if blocked:
                 st.warning(f"내용이 다른 문제 중 {blocked}개는 검수·자동검사를 먼저 완료해야 합니다.")
     elif mode == "set":
-        source = st.radio("문제 출처", ["기존 개별 생성 문제", "50문제 일괄 생성 묶음"], horizontal=True)
-        if source == "50문제 일괄 생성 묶음":
+        source = st.radio("문제 출처", ["기존 개별 생성 문제", "문제 일괄 생성 묶음"], horizontal=True)
+        if source == "문제 일괄 생성 묶음":
             render_batches(snapshot, catalog, workflow, ready)
             return
         candidates = [r.candidate for r in catalog.records if can_register(r) and not r.candidate.batch_id and not remote.get(r.candidate.source_key, {}).get("set_id")]
-        identities = sorted({(c.section, c.provider_key, c.model_id) for c in candidates})
+        identities = sorted({(c.exam_format, c.section, c.provider_key, c.model_id) for c in candidates})
         if not identities:
             st.info("세트에 사용하지 않은 승인 문항이 없습니다.")
             return
-        identity = st.selectbox("세트 영역·모델", identities, format_func=lambda x: f"{SECTION[x[0]]} · {x[2]}")
-        grouped = group_by_slot([c for c in candidates if (c.section, c.provider_key, c.model_id) == identity])
+        identity = st.selectbox("세트 영역·모델", identities, format_func=lambda x: f"{x[0].upper()} · {SECTION[x[1]]} · {x[3]}")
+        grouped = group_by_slot([c for c in candidates if (c.exam_format, c.section, c.provider_key, c.model_id) == identity], identity[0])
         missing = [n for n, values in grouped.items() if not values]
         if missing:
             st.warning(f"아직 {len(missing)}문제가 부족합니다. 필요한 번호: {', '.join(map(str, missing))}")
@@ -150,15 +153,15 @@ def selection(snapshot, catalog, workflow, mode, ready):
             st.session_state["registration-error"] = str(exc)
         except Exception:
             st.session_state["registration-error"] = "선택 내용을 확인하지 못했습니다. 연결 상태를 확인하고 새로고침하세요."
-    st.button("선택 내용 확인", type="primary", disabled=not ready or not selected or (mode == "set" and len(selected) != 50), on_click=prepare_selection)
+    st.button("선택 내용 확인", type="primary", disabled=not ready or not selected or (mode == "set" and selected and len(selected) != question_count(selected[0].exam_format)), on_click=prepare_selection)
 
 
 def render_batches(snapshot, catalog, workflow, ready):
     batches = snapshot["batches"]
     if not batches:
-        st.info("일괄 생성한 묶음이 없습니다. 50문제 일괄 생성에서 먼저 생성하세요.")
+        st.info("일괄 생성한 묶음이 없습니다. 문제 일괄 생성에서 먼저 생성하세요.")
         return
-    labels = {b["id"]: f"{SECTION[b['section']]} · {b['model']} · {b['created_at']} UTC" for b in batches}
+    labels = {b["id"]: f"{b.get('exam_format', 'pbt').upper()} · {SECTION[b['section']]} · {b['model']} · {b['created_at']} UTC" for b in batches}
     linked = st.session_state.pop("publication-batch-link", None)
     if linked in labels:
         st.session_state["registration-batch"] = linked
@@ -169,32 +172,32 @@ def render_batches(snapshot, catalog, workflow, ready):
         st.button("로컬 정리 상태 보기", on_click=change_mode, args=("set-cleanup",))
         return
     records = [r for r in catalog.records if r.candidate.batch_id == bid]
-    st.write(f"문제 {b['local_count']}/50 · 승인 {sum(r.candidate.review.get('approved', False) for r in records)}/50")
-    if b["registered_count"] == 50:
+    st.write(f"문제 {b['local_count']}/{question_count(b.get('exam_format', 'pbt'))} · 승인 {sum(r.candidate.review.get('approved', False) for r in records)}/{question_count(b.get('exam_format', 'pbt'))}")
+    if b["registered_count"] == question_count(b.get("exam_format", "pbt")):
         st.success(f"등록 완료 · {b['review_status']}")
     elif b["registered_count"] is None:
         st.warning("DB 등록 여부를 확인할 수 없습니다.")
     else:
-        st.info(f"DB 등록 {b['registered_count']}/50")
+        st.info(f"DB 등록 {b['registered_count']}/{question_count(b.get('exam_format', 'pbt'))}")
     coverage = b["coverage"]
     if coverage:
         show_coverage(coverage)
     p = b["preparation"]
-    if b.get("pipeline_status") and b["registered_count"] != 50:
-        st.warning(f"미디어·자동 등록 단계: {PHASE_LABELS.get(b['pipeline_status'], b['pipeline_status'])} · 음원 준비 {p['audio_bound'] if p['audio_bound'] is not None else '확인 필요'}/{'50' if b['section']=='listening' else '0'} · 이미지 준비 {p['images_ready'] if p['images_ready'] is not None else '확인 필요'}/{p['images_required'] if p['images_required'] is not None else '확인 필요'}")
+    if b.get("pipeline_status") and b["registered_count"] != question_count(b.get("exam_format", "pbt")):
+        st.warning(f"미디어·자동 등록 단계: {PHASE_LABELS.get(b['pipeline_status'], b['pipeline_status'])} · 음원 준비 {p['audio_bound'] if p['audio_bound'] is not None else '확인 필요'}/{question_count(b.get('exam_format', 'pbt')) if b['section']=='listening' else 0} · 이미지 준비 {p['images_ready'] if p['images_ready'] is not None else '확인 필요'}/{p['images_required'] if p['images_required'] is not None else '확인 필요'}")
         if st.button("미디어 완성·재시도 화면으로 이동"):
             st.switch_page(str(Path(__file__).parent / "bulk_generation_app.py"))
         return
-    if b["registered_count"] == 50 and b["review_status"] != "검수 대기":
+    if b["registered_count"] == question_count(b.get("exam_format", "pbt")) and b["review_status"] != "검수 대기":
         st.caption("이미 등록된 세트입니다. 문제 저장 현황에서 내용을 확인하세요.")
         return
     candidates = [r.candidate for r in records]
     remote = {r["source_key"]: r for r in snapshot["bank"]["items"]}
     stored_set = next((s for s in snapshot["bank"]["sets"] if str(s["set_id"]) == b["set_id"]), {})
     meta = metadata_editor(candidates, remote, f"batch-{bid}", stored_set.get("default_target_level", 4))
-    valid = len(records) == 50 and all(can_register(r) for r in records) and b["status"] == "succeeded"
+    valid = len(records) == question_count(b.get("exam_format", "pbt")) and all(can_register(r) for r in records) and b["status"] == "succeeded"
     if not valid:
-        st.warning("50문항의 검수 승인과 자동검사를 모두 완료해야 합니다.")
+        st.warning("전체 문항의 검수 승인과 자동검사를 모두 완료해야 합니다.")
     def prepare_batch():
         try:
             st.session_state["registration-plan"] = workflow.prepare("batch", [c.source_key for c in candidates], meta, batch_id=bid)
@@ -232,7 +235,7 @@ def confirmation(plan, workflow):
     if plan["mode"] == "batch" and any(baseline.values()):
         label = "선택 세트 승인 상태 반영"
     elif plan["mode"] in ("set", "batch"):
-        label = f"{SECTION[candidates[0]['section']]} 50문제 세트 등록하기"
+        label = f"{SECTION[candidates[0]['section']]} {len(candidates)}문제 세트 등록하기"
     elif plan["mode"] == "update":
         label = f"선택한 {len(candidates)}문제 변경 내용 반영하기"
     else:
@@ -269,15 +272,17 @@ def show_coverage(coverage):
 
 def render_sets(snapshot, url):
     sets = snapshot["bank"]["sets"]
+    exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key="registered-set-exam")
+    sets = [s for s in sets if exam == "all" or s.get("exam_format", "pbt") == exam]
     if not sets:
         st.info("조회된 세트가 없습니다." if snapshot["bank"]["available"] else "DB 연결 상태를 확인하세요.")
         return
-    label = lambda s: f"{SECTION[s['section']]} · {s['generator_version']} · {s['set_sequence']}번 세트"
+    label = lambda s: f"{s.get('exam_format', 'pbt').upper()} · {SECTION[s['section']]} · {s['generator_version']} · {s['set_sequence']}번 세트"
     chosen = st.selectbox("확인할 세트", range(len(sets)), format_func=lambda i: label(sets[i]))
     s = sets[chosen]
     with st.container(border=True):
         st.subheader(label(s))
-        st.write(f"{'✅' if s['item_count']==50 else '⚠️'} 문제 {s['item_count']}/50 · 등록 완료 · {REVIEW_LABELS.get(s['review_status'],s['review_status'])}")
+        st.write(f"{'✅' if s['item_count']==question_count(s.get('exam_format', 'pbt')) else '⚠️'} 문제 {s['item_count']}/{question_count(s.get('exam_format', 'pbt'))} · 등록 완료 · {REVIEW_LABELS.get(s['review_status'],s['review_status'])}")
         show_coverage(s["coverage"])
         key = f"registration-verification-{s['set_id']}"
         st.caption("URL 연결 여부와 실제 파일 검증 결과는 별개입니다.")
@@ -504,7 +509,7 @@ def render_app(root, url, initial_mode="add"):
         st.warning(f"자동검사 오류가 있는 문제 {errors}개는 수정 후 등록할 수 있습니다.")
     left, right = st.columns(2)
     left.button("문제 추가하기", width="stretch", type="primary", on_click=change_mode, args=("add",))
-    right.button("50문제 세트 만들기", width="stretch", type="primary", on_click=change_mode, args=("set",))
+    right.button("문제 세트 만들기", width="stretch", type="primary", on_click=change_mode, args=("set",))
     clean, trash = st.columns(2)
     clean.button("미등록 문제 정리", width="stretch", on_click=change_mode, args=("cleanup",))
     trash.button(f"휴지통 보기 · {len(saved['trashed'])}문제", width="stretch", on_click=change_mode, args=("trash",))

@@ -4,18 +4,30 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 from topik_question_lab.ui.runner_service import get_runner
+from topik_question_lab.ui.startup import prepare_local_database
+from topik_question_lab.maintenance.bank_migrations import StartupMigrationError
+from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
 
 
 APP_DIR = Path(__file__).resolve().parent / "ui"
 ROOT = Path(os.getenv("TOPIK_LAB_ROOT", str(APP_DIR.parents[1]))).resolve()
 load_dotenv(ROOT / ".env")
 
+try:
+    revision = tuple((path.name, path.stat().st_mtime_ns) for path in sorted(MIGRATION_DIR.glob("*.sql")))
+    prepare_local_database(str(ROOT), os.getenv("DATABASE_URL", "").strip(), revision)
+except StartupMigrationError as exc:
+    st.error(str(exc))
+    if st.button("DB 준비 다시 시도"):
+        st.rerun()
+    st.stop()
+
 navigation = st.navigation(
     {
-        "PBT 문제 생성": [
+        "TOPIK 문제 생성": [
             st.Page(APP_DIR / "app.py", title="TOPIK II 읽기", icon="📖", default=True),
             st.Page(APP_DIR / "listening_app.py", title="TOPIK II 듣기", icon="🎧"),
-            st.Page(APP_DIR / "bulk_generation_app.py", title="50문제 일괄 생성", icon="✨"),
+            st.Page(APP_DIR / "bulk_generation_app.py", title="문제 일괄 생성", icon="✨"),
             st.Page(APP_DIR / "storage_overview_app.py", title="문제 저장 현황", icon="📊"),
             st.Page(APP_DIR / "bank_editor_app.py", title="PostgreSQL 문제 관리", icon="✏️"),
             st.Page(APP_DIR / "topic_bank_app.py", title="소재 은행", icon="🗂️"),

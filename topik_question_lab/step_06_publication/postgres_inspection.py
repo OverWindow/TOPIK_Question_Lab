@@ -149,6 +149,7 @@ def _required_structure_problems(connection) -> list[str]:
         *(("items", column) for column in ITEM_COLUMNS),
         *((table,column) for table in ASSET_TABLES for column in ("storage_backend","file_sha256")),
         ("question_sets", "set_sequence"),
+        ("question_sets", "exam_format"),
         ("question_sets", "review_status"),
         ("question_sets", "default_target_level"),
         ("question_sets", "published_at"),
@@ -178,13 +179,13 @@ def _required_structure_problems(connection) -> list[str]:
         connection.execute(
             """SELECT EXISTS(
                    SELECT 1 FROM pg_constraint
-                   WHERE conname = 'question_sets_identity_sequence_key'
+                   WHERE conname = 'question_sets_exam_sequence_key'
                      AND conrelid = 'topik_bank.question_sets'::regclass
                )"""
         ).fetchone()[0]
     ) if "question_sets" in existing_tables else False
     if not has_sequence_constraint:
-        problems.append("제약 question_sets_identity_sequence_key")
+        problems.append("제약 question_sets_exam_sequence_key (마이그레이션 010 필요)")
     return problems
 
 

@@ -1,5 +1,6 @@
 """Frozen registration selections and recoverable manual publication receipts."""
 from dataclasses import asdict
+from topik_question_lab.step_02_planning.exam_profiles import question_count
 from pathlib import Path
 
 from topik_question_lab.step_06_publication.direct_publication import (
@@ -151,9 +152,9 @@ class RegistrationWorkflow:
                     complete = complete and len(set_ids) == 1 and all(r and r["position"] == i.candidate.slot for i in items for r in [current[i.candidate.source_key]])
                     if complete:
                         sid = next(iter(set_ids))
-                        row = c.execute("SELECT section,generator_provider,generator_model,generator_version,review_status,default_target_level FROM topik_bank.question_sets WHERE set_id=%s", (sid,)).fetchone()
-                        complete = row == (draft.section, draft.backend, draft.provider_key, draft.model_id, "reviewed", draft.default_target_level)
-                        complete = complete and c.execute("SELECT count(*) FROM topik_bank.items WHERE set_id=%s", (sid,)).fetchone()[0] == 50
+                        row = c.execute("SELECT section,generator_provider,generator_model,generator_version,review_status,default_target_level,exam_format FROM topik_bank.question_sets WHERE set_id=%s", (sid,)).fetchone()
+                        complete = row == (draft.section, draft.backend, draft.provider_key, draft.model_id, "reviewed", draft.default_target_level, draft.exam_format)
+                        complete = complete and c.execute("SELECT count(*) FROM topik_bank.items WHERE set_id=%s", (sid,)).fetchone()[0] == question_count(draft.exam_format)
                 state = "succeeded" if complete else "failed" if current == p["baseline"] else "conflict"
                 result = {"items": len(items), "set_ids": sorted(set_ids), "mode": p["mode"]} if complete else {}
             jobs.update(job_id, state, result, "" if complete else "미반영 상태입니다. 재시도할 수 있습니다." if state == "failed" else "DB 내용이 예상과 다릅니다. 새로고침 후 비교하세요.")
@@ -169,7 +170,7 @@ class RegistrationWorkflow:
         p = job["payload"]["packages"][0]
         if p.get("kind") != "manual_registration":
             if "media" in p:
-                raise PublicationBlocked("미디어 작업은 50문제 일괄 생성에서 재시도하세요.")
+                raise PublicationBlocked("미디어 작업은 문제 일괄 생성에서 재시도하세요.")
             return DirectPublicationService(self.root, self.url).publish(job_id)
         if job["status"] != "prepared":
             checked = self.reconcile(job_id)

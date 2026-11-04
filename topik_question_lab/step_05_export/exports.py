@@ -17,6 +17,8 @@ def to_txt(items: list[dict]) -> str:
     for index, item in enumerate(approved_items(items), start=1):
         question = item["question"]
         parts.append(f"## 문제 {index} [{item['provider']} / {item['model']}]")
+        if question.get("exam_format") == "ibt":
+            parts.append(f"IBT 읽기 {question['type_slot']}번")
         if question.get("set_id"):
             parts.append(f"세트: {question['set_id']}")
         if question.get("topic_id"):
@@ -59,7 +61,7 @@ def to_json(items: list[dict]) -> str:
 def to_csv(items: list[dict]) -> str:
     output = io.StringIO()
     fields = [
-        "provider", "model", "question_type", "type_slot", "set_id", "stem",
+        "provider", "model", "exam_format", "question_type", "type_slot", "set_id", "stem",
         "highlight_text", "passage", "question_prompt", "auxiliary_text",
         "choice_1", "choice_2", "choice_3", "choice_4", "answer", "explanation",
         "target_grammar", "difficulty", "topic_id", "topic_domain", "topic_title",
@@ -75,6 +77,7 @@ def to_csv(items: list[dict]) -> str:
             {
                 "provider": item["provider"],
                 "model": item["model"],
+                "exam_format": question.get("exam_format", "pbt"),
                 "question_type": question.get("question_type", "grammar_blank"),
                 "type_slot": question["type_slot"],
                 "set_id": question.get("set_id", ""),

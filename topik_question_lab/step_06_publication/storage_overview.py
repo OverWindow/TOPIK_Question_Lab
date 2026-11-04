@@ -1,6 +1,7 @@
 """Read-only view of authoring records, bank contents, and media coverage."""
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import requires_material
 from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ def _read_local(root):
                     if "batches" in tables:
                         # Do not read saved provider configuration or raw error responses.
                         columns = {r[1] for r in c.execute("PRAGMA table_info(batches)")}
-                        names = [n for n in ("id", "section", "model", "provider", "status", "created_at",
+                        names = [n for n in ("id", "exam_format", "section", "model", "provider", "status", "created_at",
                                              "pipeline_status", "next_attempt_at") if n in columns]
                         batches = [dict(r) for r in c.execute(f"SELECT {','.join(names)} FROM batches ORDER BY created_at DESC")]
                     if "media_tasks" in tables:
@@ -90,12 +91,12 @@ def read_bank(database_url):
                 cursor = c.execute(sql)
                 return _dict_rows(cursor, cursor.fetchall())
 
-            result["items"] = query("""SELECT item_id,source_key,section,type_slot,item_type,generator_model,
+            result["items"] = query("""SELECT COALESCE(to_jsonb(i)->>'exam_format','pbt') AS exam_format,item_id,source_key,section,type_slot,item_type,generator_model,
                 generator_version,review_status,content_json,content_hash,set_id,position,created_at,
                 stem,choices,correct_answer,explanation,primary_skill,target_level,source_provenance
-                FROM topik_bank.items ORDER BY created_at DESC,source_key""")
-            result["sets"] = query("""SELECT set_id,section,generator_version,set_sequence,review_status,published_at,default_target_level
-                FROM topik_bank.question_sets ORDER BY published_at DESC,set_id""")
+                FROM topik_bank.items i ORDER BY created_at DESC,source_key""")
+            result["sets"] = query("""SELECT COALESCE(to_jsonb(s)->>'exam_format','pbt') AS exam_format,set_id,section,generator_version,set_sequence,review_status,published_at,default_target_level
+                FROM topik_bank.question_sets s ORDER BY published_at DESC,set_id""")
             columns = {(r[0], r[1]) for r in c.execute("""SELECT table_name,column_name FROM information_schema.columns
                 WHERE table_schema='topik_bank'""")}
             required = {(t, col) for t in ("tts_audio_assets", "item_visual_assets")
@@ -131,7 +132,7 @@ def read_bank(database_url):
 
 def visual_requirements(section, slot, question):
     required = {("choice", int(o["number"])) for o in question.get("visual_options", []) or []}
-    if section == "reading" and slot == 10:
+    if requires_material(section, slot, question):
         required.add(("material", 1))
     return required
 

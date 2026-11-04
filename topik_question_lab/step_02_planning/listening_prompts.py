@@ -104,6 +104,9 @@ def build_listening_generation_prompt(
     type_id: str,
     topic_briefs: list[TopicBrief] | None = None,
 ) -> str:
+    if type_id.startswith("ibt_"):
+        from .ibt_prompts import build_ibt_prompt
+        return build_ibt_prompt("listening", examples, analysis_guide, count, difficulty, type_id, topic_briefs)
     profile = listening_type_profile(type_id)
     if profile.shared_script:
         set_count = max(1, count // len(profile.question_numbers))

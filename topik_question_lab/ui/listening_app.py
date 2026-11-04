@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from topik_question_lab.step_02_planning.exam_profiles import profiles_for_exam, exam_for_type
 from pathlib import Path
 
 import streamlit as st
@@ -153,9 +154,15 @@ if review_link and review_link["section"] == "listening":
     st.session_state["listening-work-stage"] = "5. 검수·비교"
     st.session_state[f"pending-listening-generated-review-selection-{review_link['type_id']}"] = review_link["id"]
     st.session_state[f"review-batch-listening-{review_link['type_id']}"] = "all"
+if review_link and review_link["section"] == "listening":
+    st.session_state["listening-exam-format"] = exam_for_type(review_link["type_id"])
+exam_format = st.sidebar.radio("시험 형식", ["pbt", "ibt"], format_func=str.upper, key="listening-exam-format")
+available_types = profiles_for_exam("listening", exam_format)
+if st.session_state.get("listening-question-type") not in available_types:
+    st.session_state.pop("listening-question-type", None)
 type_id = st.sidebar.selectbox(
     "듣기 문제 유형",
-    list(LISTENING_TYPE_PROFILES),
+    list(available_types),
     format_func=lambda value: f"{listening_type_profile(value).number_range}번 · {listening_type_profile(value).label}",
     key="listening-question-type",
 )
@@ -222,6 +229,12 @@ def sync_type_examples() -> int:
 if not list_source_examples() and IMPORT_ROOT.exists():
     sync_type_examples()
 
+
+if stage == "1. 기출 데이터" and exam_format == "ibt":
+    st.info("IBT는 대응하는 PBT 유형의 승인 예시를 참고합니다. 원본 관리는 PBT 화면에서 진행하세요.")
+    st.write(f"참고 유형: {profile.base_type_id} · 승인 예시 {len(storage.list_examples(approved_only=True))}개")
+    st.json({"번호": profile.question_numbers, "역할": profile.roles, "재생 횟수": profile.repeat_count})
+    st.stop()
 
 if stage == "1. 기출 데이터":
     st.title("기출 데이터")
@@ -945,6 +958,9 @@ else:
     downloads[2].download_button("CSV", csv_text, f"{type_id}.csv", disabled=not approved_count, width="stretch")
     downloads[3].download_button("자산 ZIP", to_zip(items, ROOT), f"{type_id}_bundle.zip", disabled=not approved_count, width="stretch")
 
+    if exam_format == "ibt":
+        st.info("IBT 원본 대본·정답이 없어 원본 비교 PDF는 제공하지 않습니다. 위에서 생성 문항과 자산을 내보낼 수 있습니다.")
+        st.stop()
     identities = sorted({(item["provider"], item["model"]) for item in items})
     st.subheader("원본 · 모델 A · 모델 B 비교 PDF")
     if len(identities) < 2:

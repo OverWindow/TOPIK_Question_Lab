@@ -50,7 +50,7 @@ def test_entry_and_filter_dont_create_files_or_connect_to_media(tmp_path, monkey
     assert not app.exception
     assert app.title[0].value == "문제 등록·세트 만들기"
     assert next(m for m in app.metric if m.label == "바로 등록 가능").value == "확인 불가"
-    next(b for b in app.button if b.label == "50문제 세트 만들기").click().run()
+    next(b for b in app.button if b.label == "문제 세트 만들기").click().run()
     assert not app.exception and files(tmp_path) == before
 
 

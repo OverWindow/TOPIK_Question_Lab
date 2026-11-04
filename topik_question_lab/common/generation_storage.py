@@ -16,11 +16,24 @@ def ensure_generation_schema(connection: sqlite3.Connection) -> None:
 
 
 class GenerationStorageMixin:
+    def reference_examples(self, example_cls, approved_only=False):
+        """Read PBT references without relabelling or copying them into IBT storage."""
+        from topik_question_lab.step_02_planning.exam_profiles import profile_for
+        section = "listening" if example_cls.__name__.startswith("Listening") else "reading"
+        profile = profile_for(section, self.path.stem)
+        source = self.path.with_name(profile.base_type_id + ".db")
+        if not source.exists():
+            return []
+        with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            rows = connection.execute("SELECT data_json FROM examples ORDER BY source_exam,question_number").fetchall()
+        values = [example_cls.model_validate_json(row[0]) for row in rows]
+        return [v for v in values if v.approved] if approved_only else values
+
     def approve_generation(self, batch_id: str) -> None:
         from topik_question_lab.common.models import Review
         from topik_question_lab.common.question_lifecycle import active_condition
 
-        review = Review(approved=True, notes="50문항 생성 완료로 자동 승인").model_dump_json()
+        review = Review(approved=True, notes=("30문항" if self.path.stem.startswith("ibt_") else "50문항") + " 생성 완료로 자동 승인").model_dump_json()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             receipt = connection.execute(

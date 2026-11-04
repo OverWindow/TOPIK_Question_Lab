@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import question_count, MAPPING_PATH
 import json
 import os
 import time
@@ -29,9 +30,11 @@ def model_label(value):
     return f"{provider_label(provider)} · {model} · {backend}"
 
 
-st.set_page_config(page_title="50문제 일괄 생성", page_icon="✨", layout="wide")
-st.title("50문제 일괄 생성")
-st.caption("50문항 생성이 완료되면 바로 검수 완료(승인)로 처리합니다. 미디어 준비·DB 등록은 아래 설정에 따릅니다.")
+st.set_page_config(page_title="문제 일괄 생성", page_icon="✨", layout="wide")
+st.title("문제 일괄 생성")
+exam_format = st.radio("시험 형식", ["pbt", "ibt"], format_func=str.upper, horizontal=True, key="bulk-exam-format")
+expected_count = question_count(exam_format)
+st.caption(f"{expected_count}문항 생성이 완료되면 바로 검수 완료(승인)로 처리합니다. 미디어 준비·DB 등록은 아래 설정에 따릅니다.")
 runner = get_runner(str(ROOT))
 runner.recover_idle()
 store = runner.store
@@ -145,9 +148,9 @@ def render_progress():
         if st.session_state.get("bulk-completed-history") not in completed_ids:
             st.session_state.pop("bulk-completed-history", None)
         with st.expander(f"완료된 생성 이력 · {len(completed)}개", expanded=False):
-            st.caption("PostgreSQL의 50문항과 필수 미디어 URL 연결이 확인된 묶음입니다. 검수 상태와 실제 파일 검증은 등록 화면에서 확인하세요.")
+            st.caption("PostgreSQL의 전체 문항과 필수 미디어 URL 연결이 확인된 묶음입니다. 검수 상태와 실제 파일 검증은 등록 화면에서 확인하세요.")
             st.dataframe([{"영역": "듣기" if b["section"] == "listening" else "읽기", "모델": b["model"],
-                           "생성 시각 (UTC)": b["created_at"], "문항": "50/50", "검수": b["review_status"],
+                           "생성 시각 (UTC)": b["created_at"], "시험": b.get("exam_format", "pbt").upper(), "문항": str(question_count(b.get("exam_format", "pbt"))), "검수": b["review_status"],
                            "음원 연결": f"{b['coverage']['audio_bound']}/{b['coverage']['audio_required']}",
                            "이미지 연결": f"{b['coverage']['images_ready']}/{b['coverage']['images_required']}"}
                           for b in completed], hide_index=True, width="stretch")
@@ -172,6 +175,9 @@ def render_progress():
             for batch in batches if batch["id"] == value),
     )
     batch = next(value for value in batches if value["id"] == selected_id)
+    batch_format = batch.get("exam_format", "pbt")
+    total = question_count(batch_format)
+    st.caption(f"시험 형식: {batch_format.upper()}")
     from topik_question_lab.common.local_cleanup import batch_was_cleaned
     if batch_was_cleaned(ROOT, selected_id):
         st.info("등록 완료 후 로컬 정리한 묶음입니다. PostgreSQL 세트와 정리 결과는 문제 등록·세트 만들기에서 확인하세요.")
@@ -186,7 +192,7 @@ def render_progress():
     if batch["pipeline_status"] == "succeeded":
         phase = "로컬 작업 완료 · 현재 등록 상태 확인 필요"
     approved = sum(row.get("batch_id") == selected_id and row.get("local_review") == "승인" for row in snapshot["rows"])
-    st.progress(count / 50, text=f"{phase} · 문항 저장 {count}/50 · 검수 완료 {approved}/50 · 검사 지적 문항 {reviews}")
+    st.progress(min(count / total, 1.0), text=f"{phase} · 문항 저장 {count}/{total} · 검수 완료 {approved}/{total} · 검사 지적 문항 {reviews}")
     st.caption(f"고정 모델: {batch['model']} · 고정 프리셋: {GENERATION_PRESETS[batch['preset']].label if batch['preset'] else '기본 API 설정'}")
     if batch["media_config"] != "{}":
         st.write(PIPELINE_LABELS.get(batch["pipeline_status"], batch["pipeline_status"]))
@@ -196,8 +202,8 @@ def render_progress():
         done_audio = [t for t in audio if t["status"] == "succeeded"]
         connected = sum(len(json.loads(t["snapshot_json"])["script"]["positions"]) for t in done_audio)
         listening = batch["section"] == "listening"
-        expected_images = sum(4 * len(p.question_numbers) for p in profiles_for("listening").values() if p.visual_kind != "none") if listening else 1
-        st.caption(f"생성 음원 {len(done_audio)}/{35 if listening else 0}그룹 · 음원 대상 {connected}/{50 if listening else 0}문항 · "
+        expected_images = sum(4 * len(p.question_numbers) for p in profiles_for("listening", batch_format).values() if p.visual_kind != "none") if listening else (4 if batch_format == "ibt" else 1)
+        st.caption(f"생성 음원 {len(done_audio)}/{(22 if batch_format == 'ibt' else 35) if listening else 0}그룹 · 음원 대상 {connected}/{total if listening else 0}문항 · "
                    f"이미지 파일 {sum(t['status']=='succeeded' for t in images)}개 생성 · 필수 이미지 연결 {expected_images}개 · DB 연결은 전체 검증 후 반영")
         if batch["next_attempt_at"] > time.time():
             st.caption(f"다음 요청까지 {max(0, int(batch['next_attempt_at'] - time.time()))}초")
@@ -213,10 +219,10 @@ def render_progress():
     if batch["pipeline_status"] == "succeeded":
         st.info("로컬 작업은 완료되었습니다. 현재 문항·미디어 등록 상태를 확인하지 못했거나 추가 확인이 필요해 진행 목록에 표시합니다.")
     elif batch["status"] == "succeeded" and batch["media_config"] == "{}":
-        if approved == 50:
-            st.success("1~50번 생성과 검수 완료(자동 승인) 처리가 끝났습니다. 등록 상태를 확인하거나 아래에서 미디어 완성·자동 등록을 실행하세요.")
+        if approved == total:
+            st.success(f"1~{total}번 생성과 검수 완료(자동 승인) 처리가 끝났습니다. 등록 상태를 확인하거나 아래에서 미디어 완성·자동 등록을 실행하세요.")
         else:
-            st.info("1~50번 생성이 완료되었습니다. 기존 승인 기록은 등록·승인 확인에서 확인하세요.")
+            st.info(f"1~{total}번 생성이 완료되었습니다. 기존 승인 기록은 등록·승인 확인에서 확인하세요.")
     if batch["status"] == "succeeded":
         if st.button("이 묶음 등록·승인 확인", key="bulk-open-publication"):
             st.session_state["publication-batch-link"] = selected_id
@@ -240,21 +246,21 @@ def render_progress():
         st.rerun()
 
 
-listening_tab, reading_tab = st.tabs(["듣기 50문제", "읽기 50문제"])
+listening_tab, reading_tab = st.tabs([f"듣기 {expected_count}문제", f"읽기 {expected_count}문제"])
 for section, tab in (("listening", listening_tab), ("reading", reading_tab)):
     with tab:
         label = "듣기" if section == "listening" else "읽기"
-        type_count = len(profiles_for(section))
+        type_count = len(profiles_for(section, exam_format))
         st.caption(f"{type_count}개 유형을 순서대로 실행합니다. 문제·보기·정답·해설과 필요한 대본·이미지 설명을 생성합니다.")
         if st.button("준비 상태 새로 확인", key=f"bulk-refresh-{section}"):
             st.session_state.pop(f"bulk-plan-{section}", None)
         files = list((ROOT / "data/types").glob("*.db")) if section == "reading" else list((ROOT / "data/listening/types").glob("*.db"))
         topic_path = ROOT / "data/topic_bank.db"
-        signature = (provider, model, preset, tuple((str(path), path.stat().st_mtime_ns) for path in sorted(files)),
+        signature = (exam_format, MAPPING_PATH.stat().st_mtime_ns if exam_format == "ibt" else 0, provider, model, preset, tuple((str(path), path.stat().st_mtime_ns) for path in sorted(files)),
                      topic_path.stat().st_mtime_ns if topic_path.exists() else 0)
         cached = st.session_state.get(f"bulk-plan-{section}")
         if cached is None or cached[0] != signature:
-            snapshots, errors = prepare_batch(ROOT, section, provider, model, preset)
+            snapshots, errors = prepare_batch(ROOT, section, provider, model, preset, exam_format)
             cached = (signature, snapshots, errors)
             st.session_state[f"bulk-plan-{section}"] = cached
         _, snapshots, errors = cached
@@ -264,7 +270,7 @@ for section, tab in (("listening", listening_tab), ("reading", reading_tab)):
         for error in errors:
             st.error(error)
         busy = is_busy() or any(batch["status"] == "running" for batch in store.batches())
-        if st.button(f"{label} 50문제 생성", type="primary", disabled=bool(errors) or busy, key=f"bulk-start-{section}"):
+        if st.button(f"{label} {expected_count}문제 생성", type="primary", disabled=bool(errors) or busy, key=f"bulk-start-{section}"):
             try:
                 config = media_config(section) if auto_media else None
                 batch_id = runner.start(snapshots, media_config=config)

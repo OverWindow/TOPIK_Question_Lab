@@ -62,7 +62,7 @@ def test_postgres_publication_page_renders_without_database_url(monkeypatch):
     assert not app.exception
     assert any(title.value == "문제 등록·세트 만들기" for title in app.title)
     assert any(button.label == "문제 추가하기" for button in app.button)
-    assert any(button.label == "50문제 세트 만들기" for button in app.button)
+    assert any(button.label == "문제 세트 만들기" for button in app.button)
     assert any("승인·자동검사 통과 문항이 없습니다" in item.value for item in app.info)
     assert next(m for m in app.metric if m.label == "등록된 세트").value == "확인 불가"
 
@@ -78,7 +78,7 @@ def test_database_delete_dialog_requires_confirmation():
     assert any(field.label == "확인을 위해 유형 ID 입력" for field in app.text_input)
 
     for stage in STAGES[1:]:
-        app.sidebar.radio[0].set_value(stage).run()
+        app.sidebar.radio(key="reading-work-stage").set_value(stage).run()
         assert not app.exception, stage
 
 

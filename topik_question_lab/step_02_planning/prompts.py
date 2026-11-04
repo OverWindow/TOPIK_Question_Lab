@@ -82,6 +82,9 @@ def build_generation_prompt(
     type_id: str = "grammar_blank",
     topic_briefs: list[TopicBrief] | None = None,
 ) -> str:
+    if type_id.startswith("ibt_"):
+        from .ibt_prompts import build_ibt_prompt
+        return build_ibt_prompt("reading", examples, analysis_guide, count, difficulty, type_id, topic_briefs)
     profile = question_type_profile(type_id)
     slots = profile.question_numbers
     counts = {slot: count // len(slots) for slot in slots}

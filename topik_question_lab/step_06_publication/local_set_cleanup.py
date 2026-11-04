@@ -1,4 +1,5 @@
 """Explicit, backed-up SQLite cleanup; PostgreSQL connections are read-only."""
+from topik_question_lab.step_02_planning.exam_profiles import question_count
 from contextlib import ExitStack, closing
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -51,8 +52,9 @@ class LocalSetCleanup:
             archived = {key for r in receipts if r["set_id"] == sid and r["target"] == self.reader.target for key in r["source_keys"]}
             records = [local[i["source_key"]] for i in items if i["source_key"] in local]
             reasons = []
-            if len(items) != 50 or [i["position"] for i in items] != list(range(1, 51)):
-                reasons.append("1~50번 문항 등록 확인 필요")
+            expected_count = question_count(s.get("exam_format", "pbt"))
+            if len(items) != expected_count or [i["position"] for i in items] != list(range(1, expected_count + 1)):
+                reasons.append(f"1~{expected_count}번 문항 등록 확인 필요")
             if s["review_status"] not in APPROVED or any(i["review_status"] not in APPROVED for i in items):
                 reasons.append("PostgreSQL 세트·전체 문항 승인 필요")
             if any(not r.candidate.review.get("approved") or r.trashed_at for r in records):
@@ -85,7 +87,7 @@ class LocalSetCleanup:
                     reasons.append("다른 문항과 연결된 생성 묶음")
             result.append({"set_id": sid, "section": s["section"], "model": s["generator_version"],
                            "sequence": s["set_sequence"], "count": len(records), "coverage": coverage,
-                           "complete": not records and len(archived) == 50,
+                           "complete": not records and len(archived) == expected_count,
                            "reasons": list(dict.fromkeys(reasons)), "records": records,
                            "token": _token({"set": s, "items": items, "local": [asdict(r) for r in records],
                                             "archived": sorted(archived), "target": self.reader.target,

@@ -389,7 +389,7 @@ def test_listening_app_all_stages_render():
     assert not app.exception
     assert app.sidebar.selectbox[0].label == "듣기 문제 유형"
     for stage in ["2. 유형 분석", "3. 프롬프트 작업실", "4. 문제 생성", "5. 검수·비교", "6. 내보내기"]:
-        app.sidebar.radio[0].set_value(stage).run()
+        app.sidebar.radio(key="listening-work-stage").set_value(stage).run()
         assert not app.exception, stage
 
 

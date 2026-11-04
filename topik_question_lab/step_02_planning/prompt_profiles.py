@@ -189,11 +189,17 @@ DEFAULT_PROVIDER_INSTRUCTIONS = {
 
 
 def question_type_profile(type_id: str = "grammar_blank") -> QuestionTypeProfile:
+    if type_id.startswith("ibt_"):
+        from .exam_profiles import profile_for
+        return profile_for("reading", type_id)
     return QUESTION_TYPE_PROFILES[type_id]
 
 
 def question_role_label(type_id: str, question_number: int, question_prompt: str = "") -> str:
     """Return the semantic role for types whose slot order changed over time."""
+    if type_id.startswith("ibt_"):
+        profile = question_type_profile(type_id)
+        return profile.roles[profile.question_numbers.index(question_number)] if question_number in profile.question_numbers else ""
     if type_id != "paired_44_45":
         return ""
     prompt = question_prompt.replace(" ", "")

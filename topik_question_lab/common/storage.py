@@ -148,6 +148,8 @@ class Storage(GenerationStorageMixin):
         return inserted
 
     def list_examples(self, approved_only: bool = False) -> list[QuestionExample]:
+        if self.path.stem.startswith("ibt_"):
+            return self.reference_examples(QuestionExample, approved_only)
         with self.connect() as connection:
             rows = connection.execute("SELECT data_json FROM examples ORDER BY source_exam, question_number").fetchall()
         examples = [QuestionExample.model_validate_json(row["data_json"]) for row in rows]

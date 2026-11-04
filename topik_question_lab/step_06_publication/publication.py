@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import profile_for, exam_for_type, question_count
+
 import hashlib
 import json
 import re
@@ -41,6 +43,10 @@ class PublicationCandidate:
     generation_preset: str | None = None
     request_parameters: dict[str, object] = field(default_factory=dict)
     batch_id: str | None = None
+
+    @property
+    def exam_format(self):
+        return self.question.get("exam_format", exam_for_type(self.question_type))
 
     @property
     def slot(self) -> int:
@@ -134,10 +140,16 @@ class PublicationSetDraft:
         """Legacy sequence-1 set ID retained for backward compatibility."""
         return self.set_id_for_sequence(1)
 
+    @property
+    def exam_format(self):
+        return self.items[0].candidate.exam_format if self.items else "pbt"
+
     def set_id_for_sequence(self, set_sequence: int) -> uuid.UUID:
         if set_sequence < 1:
             raise ValueError("set_sequence는 1 이상이어야 합니다.")
         identity = f"set:{self.section}:{self.backend}:{self.provider_key}:{self.model_id}"
+        if self.exam_format != "pbt":
+            identity = f"{self.exam_format}:{identity}"
         if set_sequence > 1:
             identity = f"{identity}:sequence:{set_sequence}"
         return uuid.uuid5(PUBLICATION_NAMESPACE, identity)
@@ -168,10 +180,10 @@ def collect_candidate_catalog(root: Path, *, include_trashed=False) -> Candidate
     return catalog
 
 
-def group_by_slot(candidates: Iterable[PublicationCandidate]) -> dict[int, list[PublicationCandidate]]:
-    grouped: dict[int, list[PublicationCandidate]] = {slot: [] for slot in range(1, 51)}
+def group_by_slot(candidates: Iterable[PublicationCandidate], exam_format: str = "pbt") -> dict[int, list[PublicationCandidate]]:
+    grouped: dict[int, list[PublicationCandidate]] = {slot: [] for slot in range(1, question_count(exam_format) + 1)}
     for candidate in candidates:
-        if 1 <= candidate.slot <= 50:
+        if candidate.exam_format == exam_format and candidate.slot in grouped:
             grouped[candidate.slot].append(candidate)
     for values in grouped.values():
         values.sort(key=lambda value: (value.created_at, value.generated_id), reverse=True)
@@ -192,7 +204,8 @@ def unused_set_candidates(
 def validate_complete_selection(candidates: Iterable[PublicationCandidate]) -> tuple[PublicationCandidate, ...]:
     values = tuple(sorted(candidates, key=lambda value: value.slot))
     slots = [value.slot for value in values]
-    expected = list(range(1, 51))
+    exam_format = values[0].exam_format if values else "pbt"
+    expected = list(range(1, question_count(exam_format) + 1))
     if slots != expected:
         missing = [slot for slot in expected if slot not in slots]
         duplicates = sorted({slot for slot in slots if slots.count(slot) > 1})
@@ -201,10 +214,10 @@ def validate_complete_selection(candidates: Iterable[PublicationCandidate]) -> t
             details.append(f"누락: {missing}")
         if duplicates:
             details.append(f"중복: {duplicates}")
-        raise ValueError("1~50번이 각각 한 문항이어야 합니다. " + ", ".join(details))
-    identity = {(value.section, value.provider_key, value.model_id) for value in values}
+        raise ValueError(f"1~{len(expected)}번이 각각 한 문항이어야 합니다. " + ", ".join(details))
+    identity = {(value.exam_format, value.section, value.provider_key, value.model_id) for value in values}
     if len(identity) != 1:
-        raise ValueError("한 세트에는 동일한 영역과 모델의 문항만 포함할 수 있습니다.")
+        raise ValueError("한 세트에는 동일한 시험·영역과 모델의 문항만 포함할 수 있습니다.")
     return values
 
 
@@ -304,6 +317,7 @@ def reconcile_catalog(
             {
                 "source_key": source_key,
                 "section": remote.get("section", ""),
+                "exam_format": remote.get("exam_format", "pbt"),
                 "provider_key": remote.get("generator_model", ""),
                 "model_id": remote.get("generator_version", ""),
                 "type_slot": remote.get("type_slot"),
@@ -380,10 +394,11 @@ def item_payload(candidate: PublicationCandidate, metadata: PublicationItemMetad
 
 def _collect_database(path: Path, root: Path, section: Section, catalog: CandidateCatalog, *, include_trashed=False) -> None:
     question_type = path.stem
-    profile = QUESTION_TYPE_PROFILES.get(question_type) if section == "reading" else LISTENING_TYPE_PROFILES.get(question_type)
-    if profile is None:
-        return
-    allowed_slots = set(profile.question_numbers)
+    if not question_type.startswith("ibt_"):
+        try:
+            profile_for(section, question_type)
+        except KeyError:
+            return
     try:
         # Publication is a read-only projection over the local authoring stores.
         # URI read-only mode also prevents an accidental journal/schema write.
@@ -415,6 +430,7 @@ def _collect_database(path: Path, root: Path, section: Section, catalog: Candida
             question, _json_list(row["validation_json"])
         )
         slot = int(question.get("type_slot", 0) or 0)
+        allowed_slots = set(profile_for(section, question_type, question.get("generation_profile")).question_numbers)
         reason = ""
         if row["trashed_at"] is not None:
             reason = "휴지통에 있는 문제입니다."
@@ -466,6 +482,7 @@ def _reconciliation_row(
 ) -> dict:
     return {
         "source_key": candidate.source_key,
+        "exam_format": candidate.exam_format,
         "section": candidate.section,
         "provider_key": candidate.provider_key,
         "model_id": candidate.model_id,

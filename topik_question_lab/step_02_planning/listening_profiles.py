@@ -71,6 +71,9 @@ LISTENING_TYPE_PROFILES = {
 
 
 def listening_type_profile(type_id: str) -> ListeningTypeProfile:
+    if type_id.startswith("ibt_"):
+        from .exam_profiles import profile_for
+        return profile_for("listening", type_id)
     return LISTENING_TYPE_PROFILES[type_id]
 
 

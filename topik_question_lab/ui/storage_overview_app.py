@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import os
+from topik_question_lab.step_02_planning.exam_profiles import question_count
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -51,6 +52,11 @@ reviews = Counter(i["review_status"] for i in bank["items"])
 st.caption("PostgreSQL 검수 상태: " + (" · ".join(f"{REVIEW_LABELS.get(k, k)} {n}문항" for k, n in reviews.items())
                                     if bank["available"] else "확인 불가"))
 
+exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper())
+all_rows = [r for r in all_rows if exam == "all" or r.get("exam_format", "pbt") == exam]
+snapshot = {**snapshot, "batches": [b for b in snapshot["batches"] if exam == "all" or b.get("exam_format", "pbt") == exam]}
+bank = {**bank, "sets": [s for s in bank["sets"] if exam == "all" or s.get("exam_format", "pbt") == exam],
+        "items": [i for i in bank["items"] if exam == "all" or i.get("exam_format", "pbt") == exam]}
 filters = st.columns(3)
 sections = filters[0].multiselect("영역", list(SECTION), format_func=SECTION.get)
 models = filters[1].multiselect("모델", sorted({r["model_id"] for r in all_rows} | {b["model"] for b in snapshot["batches"]}))
@@ -123,15 +129,15 @@ batch_tab, item_tab, storage_tab = st.tabs(["생성 묶음", "문항 조회·비
 with batch_tab:
     batches = [b for b in snapshot["batches"] if included(b["section"], b["model"], b["created_at"])]
     st.caption("미디어 준비는 현재 문제와 일치하는 생성·검증 작업 기록입니다. 실제 파일의 현재 접근 여부는 세트별 검증으로 확인하세요.")
-    st.caption("듣기 50문항은 35개 음원을 공유합니다. 이미지 수는 필요한 문항별 이미지 연결 수이며, 미완성·검사 오류 묶음은 준비 수량을 확정할 수 없습니다.")
+    st.caption("PBT 듣기는 50문항·35개 음원, IBT 듣기는 30문항·22개 음원입니다. 이미지 수는 필요한 문항별 이미지 연결 수이며, 미완성·검사 오류 묶음은 준비 수량을 확정할 수 없습니다.")
     if batches:
         st.dataframe([{
             "묶음": b["id"], "영역": SECTION.get(b["section"], b["section"]), "모델": b["model"],
-            "생성일": b["created_at"], "SQLite 문항": f"{b['local_count']}/50",
+            "생성일": b["created_at"], "SQLite 문항": f"{b['local_count']}/{question_count(b.get('exam_format', 'pbt'))}",
             "음원 파일": b["preparation"]["audio_files"],
-            "음원 준비 문항": fraction(b["preparation"]["audio_bound"], 50) if b["section"] == "listening" else "해당 없음",
+            "음원 준비 문항": fraction(b["preparation"]["audio_bound"], question_count(b.get("exam_format", "pbt"))) if b["section"] == "listening" else "해당 없음",
             "이미지 준비": fraction(b["preparation"]["images_ready"], b["preparation"]["images_required"]),
-            "PG 등록": fraction(b["registered_count"], 50),
+            "PG 등록": fraction(b["registered_count"], question_count(b.get("exam_format", "pbt"))),
             "PG 미디어 연결": coverage_text(b["coverage"]),
             "처리 단계": PHASE_LABELS.get(b.get("pipeline_status") or b["status"], b.get("pipeline_status") or b["status"]),
             "재시도 대기": b["task_statuses"].get("retry_wait", 0), "실패 작업": b["task_statuses"].get("failed", 0),
@@ -144,7 +150,7 @@ with batch_tab:
                            "상태": PHASE_LABELS.get(t["status"], t["status"]), "시도 횟수": t["attempts"],
                            "재시도 예정 (UTC)": datetime.fromtimestamp(t["next_attempt_at"], timezone.utc).isoformat(timespec="seconds")
                            if t["next_attempt_at"] else "—"} for t in batch["tasks"]], hide_index=True, width="stretch")
-        st.caption("재시도·중단은 ‘50문제 일괄 생성’ 화면에서 실행할 수 있습니다.")
+        st.caption("재시도·중단은 ‘문제 일괄 생성’ 화면에서 실행할 수 있습니다.")
     else:
         st.info("조건에 맞는 일괄 생성 묶음이 없습니다.")
 
@@ -204,7 +210,7 @@ with storage_tab:
     st.subheader("PostgreSQL 세트")
     sets = [s for s in bank["sets"] if included(s["section"], s["generator_version"], s["published_at"])]
     st.dataframe([{"세트": str(s["set_id"]), "영역": SECTION.get(s["section"], s["section"]), "모델": s["generator_version"],
-                   "문항": f"{s['item_count']}/50", "검수": REVIEW_LABELS.get(s["review_status"], s["review_status"]),
+                   "문항": f"{s['item_count']}/{question_count(s.get('exam_format', 'pbt'))}", "검수": REVIEW_LABELS.get(s["review_status"], s["review_status"]),
                    "구성 상태": set_health([i for i in bank["items"] if i["set_id"] == s["set_id"]])["label"],
                    "미디어 URL 연결": coverage_text(s["coverage"]), "등록일": str(s["published_at"])} for s in sets],
                  hide_index=True, width="stretch")

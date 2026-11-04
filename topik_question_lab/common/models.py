@@ -55,6 +55,8 @@ class TypeAnalysis(BaseModel):
 
 
 class GeneratedQuestion(BaseModel):
+    exam_format: Literal["pbt", "ibt"] = "pbt"
+    generation_profile: dict | None = None
     type_slot: int = Field(ge=1, le=50)
     stem: str
     choices: list[str] = Field(min_length=4, max_length=4)

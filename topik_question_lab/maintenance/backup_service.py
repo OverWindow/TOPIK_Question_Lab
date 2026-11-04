@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 BACKUP_FORMAT_VERSION = 1
 MANIFEST_NAME = "backup_manifest.json"
 ALLOWED_RESTORE_ROOTS = {
+    "IBT",
     "data",
     "extracted_text",
     "html변환",
@@ -71,6 +72,8 @@ def _category(relative: Path) -> str:
 def _collect_files(root: Path, options: BackupOptions) -> list[Path]:
     candidates: list[Path] = []
     patterns = [
+        "IBT/type_mapping.json",
+        "IBT/type_mapping_notes.txt",
         "data/types/*.db",
         "data/topik_lab.db",
         "data/topic_bank.db",
@@ -90,6 +93,8 @@ def _collect_files(root: Path, options: BackupOptions) -> list[Path]:
         patterns.extend(
             [
                 "TOPIK-II-Reading-Test-Paper/**/*",
+                "IBT/읽기/*.png",
+                "IBT/듣기/*.png",
                 "TOPIK-II-Listening-Script/**/*",
             ]
         )

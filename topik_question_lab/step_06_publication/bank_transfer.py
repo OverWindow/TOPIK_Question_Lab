@@ -26,7 +26,7 @@ TABLES = tuple(KEYS)
 VIEWS = ("current_items", "current_set_contents")
 SCHEMA_FILE = Path(__file__).with_name("target_bank.sql")
 NATURAL_KEYS = {
-    "question_sets": ("section", "generator_provider", "generator_model", "generator_version", "set_sequence"),
+    "question_sets": ("exam_format", "section", "generator_provider", "generator_model", "generator_version", "set_sequence"),
     "items": ("source_key",),
     "tts_audio_assets": ("source_hash", "model_name", "female_voice", "male_voice"),
 }

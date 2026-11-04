@@ -253,8 +253,9 @@ def render_app(url):
         if prepared:
             confirm_plan(editor, prepared)
             return
-        items = bank["items"]
-        sets = {str(s["set_id"]): s for s in bank["sets"]}
+        exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key="bank-editor-exam")
+        items = [r for r in bank["items"] if exam == "all" or r.get("exam_format", "pbt") == exam]
+        sets = {str(s["set_id"]): s for s in bank["sets"] if exam == "all" or s.get("exam_format", "pbt") == exam}
         filters = st.columns(3)
         section = filters[0].selectbox("영역", ["all", "reading", "listening"], format_func=lambda v: SECTION.get(v, "전체"))
         types = sorted({r["item_type"] for r in items if section == "all" or r["section"] == section})
@@ -277,7 +278,7 @@ def render_app(url):
         if not rows:
             st.info("조건에 맞는 문제가 없습니다.")
             return
-        st.dataframe([{"영역": SECTION.get(r["section"]), "번호": r["type_slot"], "유형": r["item_type"],
+        st.dataframe([{"시험": r.get("exam_format", "pbt").upper(), "영역": SECTION.get(r["section"]), "번호": r["type_slot"], "유형": r["item_type"],
                        "상태": REVIEW_LABELS.get(r["review_status"], r["review_status"]), "문제": r["stem"][:90],
                        "문항 ID": str(r["item_id"])} for r in rows], hide_index=True, width="stretch")
         options = [str(r["item_id"]) for r in rows]
@@ -295,7 +296,7 @@ def render_app(url):
         st.caption(f"문항 ID: {row['item_id']} · 유형: {row['item_type']} · 번호: {row['type_slot']} · 상태: {REVIEW_LABELS.get(row['review_status'])}")
         if cached["set"]:
             health = set_health(cached["items"])
-            st.info(f"세트 {cached['set']['set_sequence']} · {health['count']}/50 · {health['label']}")
+            st.info(f"세트 {cached['set']['set_sequence']} · {health['count']}/{health['expected_count']} · {health['label']}")
             if cached["set"]["review_status"] == "retired":
                 st.warning("사용 중지된 세트입니다.")
         show_media(cached)

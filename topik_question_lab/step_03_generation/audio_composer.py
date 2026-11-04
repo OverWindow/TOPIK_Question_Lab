@@ -14,6 +14,12 @@ COMPOSER_VERSION = "hub_pcm_v1"
 
 def narration_script(items):
     ordered = sorted(items, key=lambda c: c.slot)
+    if not ordered:
+        raise ValueError("음원에 연결할 문항이 없습니다.")
+    if ordered[0].question.get("exam_format") == "ibt":
+        expected = 2 if len(ordered) == 2 else 1
+        if len(ordered) not in (1, 2) or any(c.question.get("repeat_count") != expected for c in ordered):
+            raise ValueError("IBT는 독립 문항 1회, 두 문항 공유 대본 2회 재생입니다.")
     turns = ordered[0].question["dialogue_turns"]
     if not turns or any(t.get("speaker") not in ("남자", "여자") or not utterances(t.get("text", "")) for t in turns):
         raise ValueError("듣기 대본에는 남자·여자 화자와 낭독할 문장이 필요합니다.")

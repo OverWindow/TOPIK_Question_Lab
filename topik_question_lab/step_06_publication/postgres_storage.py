@@ -44,52 +44,59 @@ class PostgresQuestionBank:
         applied: list[str] = []
         try:
             with psycopg.connect(self.database_url) as connection:
-                connection.execute("CREATE SCHEMA IF NOT EXISTS topik_bank")
-                connection.execute(
-                    """CREATE TABLE IF NOT EXISTS topik_bank.schema_migrations (
-                           version TEXT PRIMARY KEY,
-                           applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-                       )"""
-                )
-                unversioned = _uses_unversioned_schema(connection)
-                current_set_schema = unversioned or _uses_item_only_set_schema(connection)
-                superseded_by_current_schema = {
-                    "001_question_bank",
-                    "002_complete_item_bank",
-                    "003_multi_question_sets",
-                    "005_item_only_question_versions",
-                }
-                if unversioned:
-                    superseded_by_current_schema.add("006_unversioned_items")
-                for path in sorted(MIGRATION_DIR.glob("*.sql")):
-                    version = path.stem
-                    exists = connection.execute(
-                        "SELECT 1 FROM topik_bank.schema_migrations WHERE version = %s", (version,)
-                    ).fetchone()
-                    if exists:
-                        continue
-                    # Respect schema changes applied by the consumer service.
-                    if not (
-                        current_set_schema and version in superseded_by_current_schema
-                    ):
-                        if (
-                            version == "005_item_only_question_versions"
-                            and _has_external_set_version_dependencies(connection)
-                        ):
-                            raise RuntimeError(
-                                "topik_app가 구 세트 버전 구조를 참조하고 있습니다. "
-                                "Unigate-Web의 016_item_only_question_versions 마이그레이션을 "
-                                "먼저 적용한 후 문항 버전 제거 마이그레이션(006)을 준비하세요."
-                            )
-                        connection.execute(path.read_text(encoding="utf-8"))
-                    connection.execute(
-                        "INSERT INTO topik_bank.schema_migrations(version) VALUES (%s)", (version,)
-                    )
-                    applied.append(version)
+                connection.execute("SELECT pg_advisory_xact_lock(hashtext('topik_bank:schema_migrations'))")
+                applied = self._apply_migrations(connection)
         except Exception as exc:
             raise PostgresUnavailableError(
                 f"PostgreSQL 스키마 준비에 실패했습니다: {_safe_error(exc, self.database_url)}"
             ) from exc
+        return applied
+
+    def _apply_migrations(self, connection) -> list[str]:
+        """Caller holds the migration lock and owns the transaction."""
+        applied = []
+        connection.execute("CREATE SCHEMA IF NOT EXISTS topik_bank")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS topik_bank.schema_migrations (
+                   version TEXT PRIMARY KEY,
+                   applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        unversioned = _uses_unversioned_schema(connection)
+        current_set_schema = unversioned or _uses_item_only_set_schema(connection)
+        superseded_by_current_schema = {
+            "001_question_bank",
+            "002_complete_item_bank",
+            "003_multi_question_sets",
+            "005_item_only_question_versions",
+        }
+        if unversioned:
+            superseded_by_current_schema.add("006_unversioned_items")
+        for path in sorted(MIGRATION_DIR.glob("*.sql")):
+            version = path.stem
+            exists = connection.execute(
+                "SELECT 1 FROM topik_bank.schema_migrations WHERE version = %s", (version,)
+            ).fetchone()
+            if exists:
+                continue
+            # Respect schema changes applied by the consumer service.
+            if not (
+                current_set_schema and version in superseded_by_current_schema
+            ):
+                if (
+                    version == "005_item_only_question_versions"
+                    and _has_external_set_version_dependencies(connection)
+                ):
+                    raise RuntimeError(
+                        "topik_app가 구 세트 버전 구조를 참조하고 있습니다. "
+                        "Unigate-Web의 016_item_only_question_versions 마이그레이션을 "
+                        "먼저 적용한 후 문항 버전 제거 마이그레이션(006)을 준비하세요."
+                    )
+                connection.execute(path.read_text(encoding="utf-8"))
+            connection.execute(
+                "INSERT INTO topik_bank.schema_migrations(version) VALUES (%s)", (version,)
+            )
+            applied.append(version)
         return applied
 
     def publish_set(self, draft: PublicationSetDraft, *, expected_state=None, validate_source=None) -> PublicationReceipt:
@@ -120,7 +127,7 @@ class PostgresQuestionBank:
                     draft.model_id,
                 )
                 existing_membership, conflicts = _resolve_set_membership(
-                    membership_rows, requested_by_position, requested_identity
+                    membership_rows, requested_by_position, requested_identity, draft.exam_format
                 )
                 if existing_membership:
                     set_id, set_sequence = existing_membership
@@ -166,8 +173,8 @@ class PostgresQuestionBank:
                         """SELECT COALESCE(MAX(set_sequence), 0) + 1
                            FROM topik_bank.question_sets
                            WHERE section = %s AND generator_provider = %s
-                             AND generator_model = %s AND generator_version = %s""",
-                        requested_identity,
+                             AND generator_model = %s AND generator_version = %s AND exam_format = %s""",
+                        (*requested_identity, draft.exam_format),
                     ).fetchone()[0]
                 )
                 set_id = draft.set_id_for_sequence(set_sequence)
@@ -175,8 +182,8 @@ class PostgresQuestionBank:
                     """INSERT INTO topik_bank.question_sets(
                            set_id, section, generator_provider, generator_model,
                            generator_version, set_sequence, review_status,
-                           default_target_level
-                       ) VALUES (%s, %s, %s, %s, %s, %s, 'reviewed', %s)""",
+                           default_target_level, exam_format
+                       ) VALUES (%s, %s, %s, %s, %s, %s, 'reviewed', %s, %s)""",
                     (
                         set_id,
                         draft.section,
@@ -184,7 +191,7 @@ class PostgresQuestionBank:
                         draft.provider_key,
                         draft.model_id,
                         set_sequence,
-                        draft.default_target_level,
+                        draft.default_target_level, draft.exam_format,
                     ),
                 )
                 _insert_set_items(
@@ -272,7 +279,7 @@ class PostgresQuestionBank:
     def list_all_set_memberships(self) -> list[dict]:
         return self._query_dicts(
             """SELECT s.set_id, s.set_sequence, s.section, s.generator_provider,
-                      s.generator_model, s.generator_version, i.position, i.source_key
+                      s.generator_model, s.generator_version, i.position, i.source_key, s.exam_format
                FROM topik_bank.question_sets s
                JOIN topik_bank.items i ON i.set_id = s.set_id
                ORDER BY s.section, s.generator_version, s.set_sequence,
@@ -289,14 +296,15 @@ class PostgresQuestionBank:
         backend: str,
         provider_key: str,
         model_id: str,
+        exam_format: str = "pbt",
     ) -> int:
         rows = self._query_dicts(
             """SELECT COALESCE(MAX(set_sequence), 0) + 1 AS next_sequence
                FROM topik_bank.question_sets
                WHERE section = %s AND generator_provider = %s
-                 AND generator_model = %s AND generator_version = %s""",
+                 AND generator_model = %s AND generator_version = %s AND exam_format = %s""",
             "다음 세트 번호를 읽지 못했습니다",
-            (section, backend, provider_key, model_id),
+            (section, backend, provider_key, model_id, exam_format),
         )
         return int(rows[0]["next_sequence"])
 
@@ -319,7 +327,7 @@ def _set_memberships_for_sources(connection, source_keys: list[str]) -> list[dic
         return []
     cursor = connection.execute(
         """SELECT s.set_id, s.set_sequence, s.section, s.generator_provider,
-                  s.generator_model, s.generator_version, i.position, i.source_key
+                  s.generator_model, s.generator_version, i.position, i.source_key, s.exam_format
            FROM topik_bank.question_sets s
            JOIN topik_bank.items i ON i.set_id = s.set_id
            WHERE i.source_key = ANY(%s)
@@ -333,10 +341,13 @@ def _resolve_set_membership(
     membership_rows: list[dict],
     requested_by_position: dict[int, str],
     requested_identity: tuple[str, str, str, str],
+    exam_format: str = "pbt",
 ) -> tuple[tuple[str, int] | None, list[str]]:
     memberships: dict[tuple[str, int], dict[int, str]] = {}
     identities: dict[tuple[str, int], tuple[str, str, str, str]] = {}
     for row in membership_rows:
+        if row.get("exam_format", "pbt") != exam_format:
+            continue
         membership_key = (
             str(row["set_id"]),
             int(row["set_sequence"]),
@@ -402,6 +413,7 @@ def _check_expected_state(connection, items, expected, validate_source):
 
 
 ITEM_CONTENT_COLUMNS = (
+    "exam_format",
     "section", "type_slot", "item_type", "primary_skill", "target_level",
     "stem_length",
     "choice_count", "generator_provider", "generator_model", "generator_version",
@@ -425,14 +437,14 @@ def _upsert_item(connection, item: PublicationItemDraft, Jsonb, *, review_status
         return existing[0], "reused"
     item_id = existing[0] if existing else candidate.item_id
     columns = (
-        "section", "type_slot", "item_type", "primary_skill", "target_level",
+        "exam_format", "section", "type_slot", "item_type", "primary_skill", "target_level",
         "stem_length", "choice_count", "generator_provider",
         "generator_model", "generator_version", "prompt_version", "review_status",
         "stem", "choices", "correct_answer", "explanation", "content_json",
         "source_provenance", "content_hash",
     )
     values = (
-        candidate.section, candidate.slot, candidate.question_type,
+        candidate.exam_format, candidate.section, candidate.slot, candidate.question_type,
         item.metadata.primary_skill.strip(), item.metadata.target_level,
         item.stem_length, item.choice_count,
         candidate.backend, candidate.provider_key, candidate.model_id,

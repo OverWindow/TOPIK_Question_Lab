@@ -1,18 +1,20 @@
 """Checkpointed media creation, verified uploads, and atomic bank registration."""
 from __future__ import annotations
 
+from topik_question_lab.step_02_planning.exam_profiles import profile_for
 from collections import defaultdict
 import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 import uuid
 
 from PIL import Image
 
 from topik_question_lab.common.listening_models import ChartSpec
-from topik_question_lab.common.listening_visuals import render_chart
+from topik_question_lab.common.listening_visuals import render_chart, render_banner
 from topik_question_lab.step_03_generation.audio_composer import COMPOSER_VERSION, compose, narration_script, pcm, validate_mp3
 from topik_question_lab.step_03_generation.media_provider import GoogleMediaClient, MediaSettings, RequestRunner, Stopped
 from topik_question_lab.step_06_publication.direct_publication import _hash, _json, package_draft
@@ -25,10 +27,21 @@ def chart_spec(value, source=""):
     spec = ChartSpec.model_validate(value)
     if not spec.labels or len(spec.labels) != len(spec.values) or not all(math.isfinite(v) and v >= 0 for v in spec.values):
         raise ValueError("도표의 항목·수치가 없거나 올바르지 않습니다.")
+    if source and spec.chart_type == "combo":
+        if not spec.title or spec.title not in source:
+            raise ValueError("복합 도표 제목이 지문과 일치하지 않습니다.")
+        for name, values, unit in ((spec.series_name, spec.values, spec.unit), (spec.line_name, spec.line_values, spec.line_unit)):
+            marker = re.search(re.escape(name) + r"\s*[:：]", source)
+            if marker is None:
+                raise ValueError("복합 도표 계열 이름이 지문에 없습니다.")
+            section = source[marker.end():]
+            other = spec.line_name if name == spec.series_name else spec.series_name
+            section = re.split(re.escape(other) + r"\s*[:：]", section, maxsplit=1)[0]
+            chart_spec({"chart_type": "bar", "title": spec.title, "labels": spec.labels, "values": values, "unit": unit}, spec.title + " " + section)
+        return spec.model_dump()
     if source:
         if not spec.title or spec.title not in source or any(label not in source for label in spec.labels):
             raise ValueError("읽기 도표의 제목·항목이 지문과 일치하지 않습니다.")
-        import re
         numbers = {float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*(?:\.\d+)?", source)}
         if any(v not in numbers for v in spec.values) or (spec.unit and spec.unit not in source):
             raise ValueError("읽기 도표의 수치·단위가 지문과 일치하지 않습니다.")
@@ -36,7 +49,7 @@ def chart_spec(value, source=""):
             number = re.escape(f"{value:g}") + (r"(?:\.0+)?" if value == int(value) else "")
             if not re.search(re.escape(label) + r"\s*[:：(\[]?\s*" + number + r"\s*" + re.escape(spec.unit), source):
                 raise ValueError("읽기 도표의 항목별 수치가 지문과 일치하지 않습니다. '항목: 수치단위'로 작성하세요.")
-    return spec.model_dump()
+    return spec.model_dump(exclude={"series_name", "line_values", "line_name", "line_unit"} if spec.chart_type != "combo" else set())
 
 
 def media_plan(package, settings):
@@ -46,7 +59,8 @@ def media_plan(package, settings):
     for item in draft.items:
         candidate, question = item.candidate, item.candidate.question
         if candidate.section == "listening":
-            key = candidate.slot if candidate.slot <= 20 else 21 + (candidate.slot - 21) // 2 * 2
+            profile = profile_for("listening", candidate.question_type, question.get("generation_profile"))
+            key = (candidate.question_type, question.get("set_id")) if profile.shared_script else (candidate.question_type, candidate.slot)
             groups[key].append(candidate)
         options = question.get("visual_options") or []
         for option in options:
@@ -61,7 +75,14 @@ def media_plan(package, settings):
                           "visual_role": "choice", "option_number": number, "prompt": prompt, "chart_spec": spec})
         if options and {o["number"] for o in options} != {1, 2, 3, 4}:
             raise ValueError("선택지 이미지 네 장이 모두 필요합니다.")
-        if candidate.section == "reading" and candidate.slot == 10:
+        reading_profile = profile_for("reading", candidate.question_type, question.get("generation_profile")) if candidate.section == "reading" else None
+        if reading_profile and getattr(reading_profile, "material_kind", "none") == "material_banner":
+            text = (question.get("visual_material") or {}).get("text", "")
+            if not text.strip() or text.strip() != question.get("passage", "").strip():
+                raise ValueError("광고·표어 이미지 문구와 지문이 일치해야 합니다.")
+            tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": item.content_hash,
+                          "visual_role": "material", "option_number": 1, "banner_text": text, "chart_spec": None, "prompt": ""})
+        if reading_profile and ((candidate.exam_format == "pbt" and candidate.slot == 10) or getattr(reading_profile, "material_kind", "none") == "material_combo_chart"):
             material = question.get("visual_material") or {}
             source = question.get("passage") or question.get("stem", "")
             spec = chart_spec(material.get("chart_spec"), source)
@@ -200,11 +221,11 @@ class MediaPipeline:
                 "tts_style": {"speakingRate": s.speaking_rate, "stylePrompt": s.style_prompt}, "duration_ms": result["duration_ms"]}
 
     def _image(self, task):
-        snapshot = {"prompt": task["prompt"], "chart_spec": task["chart_spec"], "model": self.settings.image_model,
+        snapshot = {**({"banner_text": task["banner_text"]} if task.get("banner_text") else {}), "prompt": task["prompt"], "chart_spec": task["chart_spec"], "model": self.settings.image_model,
                     "version": "exam_image_v1"}
 
         def generate(key):
-            data = (render_chart(ChartSpec.model_validate(task["chart_spec"])) if task["chart_spec"] else self.client.image(task["prompt"]))
+            data = (render_banner(task["banner_text"]) if task.get("banner_text") else render_chart(ChartSpec.model_validate(task["chart_spec"])) if task["chart_spec"] else self.client.image(task["prompt"]))
             with Image.open(io.BytesIO(data)) as image:
                 image.load()
                 image = image.convert("RGB")
@@ -214,8 +235,8 @@ class MediaPipeline:
                 image.save(temporary, format="PNG", optimize=True)
             temporary.replace(path)
             return self._artifact(path, mime_type="image/png")
-        result = self._perform("chart" if task["chart_spec"] else "image", snapshot, generate,
-                               artifact=True, network=not bool(task["chart_spec"]))
+        result = self._perform("chart" if task["chart_spec"] or task.get("banner_text") else "image", snapshot, generate,
+                               artifact=True, network=not bool(task["chart_spec"] or task.get("banner_text")))
         row = self._upload(result, "generated-images")
         identity = {k: task[k] for k in ("item_id", "content_hash", "visual_role", "option_number")}
         return {**row, **identity, "kind": "image",

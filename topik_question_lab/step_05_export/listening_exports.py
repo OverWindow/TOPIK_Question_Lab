@@ -20,6 +20,8 @@ def to_txt(items: list[dict]) -> str:
     for item in approved_items(items):
         q = item["question"]
         parts.append(f"[{q['type_slot']}번형] {q.get('question_role', '')}")
+        if q.get("exam_format") == "ibt":
+            parts.append(f"IBT 듣기 · 대본 {q['repeat_count']}회 재생")
         if q.get("topic_id"):
             parts.append(
                 f"소재: {q.get('topic_domain', '')} / {q.get('topic_title', '')}"
@@ -54,7 +56,7 @@ def to_json(items: list[dict]) -> str:
 
 def to_csv(items: list[dict]) -> str:
     output = io.StringIO()
-    fields = ["provider", "model", "type_slot", "question_role", "script", "question_prompt", "choices", "visual_prompts", "answer", "explanation", "target_skill", "repeat_count", "visual_kind", "topic_id", "topic_domain", "topic_title", "topic_angle", "topic_fit"]
+    fields = ["provider", "model", "exam_format", "type_slot", "question_role", "script", "question_prompt", "choices", "visual_prompts", "answer", "explanation", "target_skill", "repeat_count", "visual_kind", "topic_id", "topic_domain", "topic_title", "topic_angle", "topic_fit"]
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for item in approved_items(items):
@@ -63,6 +65,7 @@ def to_csv(items: list[dict]) -> str:
             {
                 "provider": item["provider"],
                 "model": item["model"],
+                "exam_format": q.get("exam_format", "pbt"),
                 "type_slot": q["type_slot"],
                 "question_role": q.get("question_role", ""),
                 "script": _script(q),

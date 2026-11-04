@@ -399,10 +399,10 @@ def test_local_schema_preflight_is_readonly_and_missing_constraint_blocks(local_
         assert c.execute("SELECT count(*) FROM topik_bank.schema_migrations").fetchone()[0] == before
         assert c.execute("SELECT count(*) FROM topik_bank.items").fetchone()[0] == 0
     with service.connect() as c:
-        c.execute("ALTER TABLE topik_bank.question_sets DROP CONSTRAINT question_sets_identity_sequence_key")
+        c.execute("ALTER TABLE topik_bank.question_sets DROP CONSTRAINT question_sets_exam_sequence_key")
     try:
         with pytest.raises(PublicationBlocked, match="필수 제약"):
             service.prepare(ids)
     finally:
         with service.connect() as c:
-            c.execute("ALTER TABLE topik_bank.question_sets ADD CONSTRAINT question_sets_identity_sequence_key UNIQUE(section,generator_provider,generator_model,generator_version,set_sequence)")
+            c.execute("ALTER TABLE topik_bank.question_sets ADD CONSTRAINT question_sets_exam_sequence_key UNIQUE(exam_format,section,generator_provider,generator_model,generator_version,set_sequence)")

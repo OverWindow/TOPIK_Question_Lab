@@ -79,7 +79,7 @@ def test_migration_preserves_published_contents_and_latest_unassigned_item(postg
             source_snapshot_hash,status,requested_set_count) VALUES (%s,%s,'test',%s,'succeeded',1)""",
             (uuid.uuid4(), "b" * 64, "c" * 64))
     bank = PostgresQuestionBank(url)
-    assert bank.ensure_schema() == ["006_unversioned_items", "007_bank_media", "008_s3_media", "009_pending_media_review", "010_exam_format"]
+    assert bank.ensure_schema() == ["006_unversioned_items", "007_bank_media", "008_s3_media", "009_pending_media_review", "010_exam_format", "011_item_audio_only"]
     assert bank.ensure_schema() == []
     with psycopg.connect(url) as connection:
         rows = connection.execute("SELECT source_key,stem,set_id,position FROM topik_bank.items ORDER BY type_slot").fetchall()

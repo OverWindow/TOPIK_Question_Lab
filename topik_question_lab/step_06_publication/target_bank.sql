@@ -55,23 +55,19 @@ CREATE TABLE topik_bank.tts_audio_assets (
     file_sha256 CHAR(64) CHECK (file_sha256 ~ '^[a-f0-9]{64}$')
 );
 CREATE TABLE topik_bank.item_audio_bindings (
-    item_id UUID NOT NULL REFERENCES topik_bank.items(item_id), content_hash CHAR(64) NOT NULL,
+    binding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_id UUID NOT NULL REFERENCES topik_bank.items(item_id), content_hash CHAR(64),
     audio_asset_id UUID NOT NULL REFERENCES topik_bank.tts_audio_assets(audio_asset_id),
     source_hash CHAR(64) NOT NULL, is_current BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (item_id,content_hash,audio_asset_id)
+    origin_set_id UUID, origin_position SMALLINT,
+    CONSTRAINT item_audio_current_hash_check CHECK (NOT is_current OR content_hash IS NOT NULL),
+    CONSTRAINT item_audio_origin_check CHECK ((origin_set_id IS NULL) = (origin_position IS NULL)),
+    CONSTRAINT item_audio_origin_position_check CHECK (origin_position > 0)
 );
-CREATE UNIQUE INDEX item_audio_current_hash_idx ON topik_bank.item_audio_bindings(item_id,content_hash) WHERE is_current;
-CREATE TABLE topik_bank.question_set_item_audio_bindings (
-    set_id UUID NOT NULL, position SMALLINT NOT NULL CHECK (position > 0),
-    audio_asset_id UUID NOT NULL REFERENCES topik_bank.tts_audio_assets(audio_asset_id),
-    source_hash CHAR(64) NOT NULL, is_current BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (set_id,position,audio_asset_id),
-    FOREIGN KEY (set_id,position) REFERENCES topik_bank.items(set_id,position)
-);
-CREATE UNIQUE INDEX question_set_item_audio_current_idx ON topik_bank.question_set_item_audio_bindings(set_id,position) WHERE is_current;
-CREATE INDEX question_set_item_audio_asset_idx ON topik_bank.question_set_item_audio_bindings(audio_asset_id,is_current);
+CREATE UNIQUE INDEX item_audio_current_idx ON topik_bank.item_audio_bindings(item_id) WHERE is_current;
+CREATE INDEX item_audio_item_idx ON topik_bank.item_audio_bindings(item_id);
+CREATE INDEX item_audio_asset_idx ON topik_bank.item_audio_bindings(audio_asset_id,is_current);
 CREATE TABLE topik_bank.item_visual_assets (
     visual_asset_id UUID PRIMARY KEY, item_id UUID NOT NULL REFERENCES topik_bank.items(item_id),
     content_hash CHAR(64) NOT NULL, option_number SMALLINT NOT NULL CHECK (option_number BETWEEN 1 AND 4),

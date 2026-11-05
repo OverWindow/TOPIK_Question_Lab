@@ -28,7 +28,7 @@ from topik_question_lab.step_06_publication.storage_overview import visual_requi
 
 LOCKS = ("topik_bank:production_deployment", "topik_bank:set_membership", "topik_bank:item_sync")
 FIXED_FIELDS = ("question_type", "type_slot", "set_id", "exam_format", "generation_profile")
-MEDIA_TABLES = ("item_audio_bindings", "question_set_item_audio_bindings", "item_visual_assets")
+MEDIA_TABLES = ("item_audio_bindings", "item_visual_assets")
 
 
 def question_profile(row):
@@ -253,9 +253,8 @@ class BankEditor:
         ids = [r["item_id"] for r in rows]
         media = {}
         for table in MEDIA_TABLES:
-            condition, params = ("set_id=%s", (item["set_id"],)) if table == "question_set_item_audio_bindings" else ("item_id=ANY(%s::uuid[])", (ids,))
-            media[table] = [r[0] for r in c.execute(f"SELECT to_jsonb(m) FROM topik_bank.{table} m WHERE is_current AND {condition} ORDER BY to_jsonb(m)::text" + suffix, params).fetchall()]
-        asset_ids = sorted({m["audio_asset_id"] for t in MEDIA_TABLES[:2] for m in media[t]})
+            media[table] = [r[0] for r in c.execute(f"SELECT to_jsonb(m) FROM topik_bank.{table} m WHERE is_current AND item_id=ANY(%s::uuid[]) ORDER BY to_jsonb(m)::text" + suffix, (ids,)).fetchall()]
+        asset_ids = sorted({m["audio_asset_id"] for m in media["item_audio_bindings"]})
         media["tts_audio_assets"] = [r[0] for r in c.execute("SELECT to_jsonb(a) FROM topik_bank.tts_audio_assets a WHERE audio_asset_id=ANY(%s::uuid[]) ORDER BY audio_asset_id" + suffix, (asset_ids,)).fetchall()]
         return {"target": self.target, "item": item, "items": rows, "set": set_row, "media": media}
 
@@ -306,16 +305,15 @@ class BankEditor:
             c.execute("UPDATE topik_bank.question_sets SET review_status='pending_review' WHERE set_id=%s AND review_status<>'retired'", (snapshot["set"]["set_id"],))
 
     def _media(self, c, plan, uploaded, Jsonb):
+        from topik_question_lab.step_06_publication.audio_bindings import bind_audio
+
         snapshot, changes = plan["snapshot"], plan["changes"]
         selected = snapshot["item"]
         old_media = snapshot["media"]
         audio_replacement = next((u for u in uploaded if u["kind"] == "audio"), None)
         audio_ids = [r["item_id"] for r in audio_members(snapshot)]
-        if plan["invalidate_audio"] or audio_replacement:
+        if plan["invalidate_audio"] and not audio_replacement:
             c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=false WHERE item_id=ANY(%s::uuid[])", (audio_ids,))
-            if selected["set_id"]:
-                positions = [r["position"] for r in audio_members(snapshot)]
-                c.execute("UPDATE topik_bank.question_set_item_audio_bindings SET is_current=false WHERE set_id=%s AND position=ANY(%s)", (selected["set_id"], positions))
         for row in snapshot["items"]:
             if row["item_id"] not in changes:
                 continue
@@ -323,10 +321,7 @@ class BankEditor:
             if row["item_id"] not in audio_ids or not (plan["invalidate_audio"] or audio_replacement):
                 for binding in old_media["item_audio_bindings"]:
                     if binding["item_id"] == row["item_id"] and binding["content_hash"] == row["content_hash"]:
-                        c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=false WHERE item_id=%s AND content_hash=%s", (row["item_id"], row["content_hash"]))
-                        c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
-                            VALUES (%s,%s,%s,%s) ON CONFLICT(item_id,content_hash,audio_asset_id) DO UPDATE SET is_current=true""",
-                            (row["item_id"], new["content_hash"], binding["audio_asset_id"], binding["source_hash"]))
+                        bind_audio(c, row["item_id"], new["content_hash"], binding["audio_asset_id"], binding["source_hash"])
             c.execute("UPDATE topik_bank.item_visual_assets SET is_current=false WHERE item_id=%s", (row["item_id"],))
             for asset in old_media["item_visual_assets"]:
                 role, number = asset["visual_role"], asset["option_number"]
@@ -355,13 +350,7 @@ class BankEditor:
                 else:
                     self._insert_asset(c, "tts_audio_assets", value, Jsonb)
                 for row in rows:
-                    c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
-                        VALUES (%s,%s,%s,%s) ON CONFLICT(item_id,content_hash,audio_asset_id) DO UPDATE SET is_current=true""",
-                        (row["item_id"], row["content_hash"], value["audio_asset_id"], source_hash))
-                    if row["set_id"]:
-                        c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
-                            VALUES (%s,%s,%s,%s) ON CONFLICT(set_id,position,audio_asset_id) DO UPDATE SET is_current=true,source_hash=EXCLUDED.source_hash""",
-                            (row["set_id"], row["position"], value["audio_asset_id"], source_hash))
+                    bind_audio(c, row["item_id"], row["content_hash"], value["audio_asset_id"], source_hash)
 
     @staticmethod
     def _insert_asset(c, table, values, Jsonb):
@@ -427,7 +416,6 @@ class BankEditor:
         children = [f"topik_bank.{t}" for t in MEDIA_TABLES]
         if c.execute("SELECT 1 FROM pg_constraint WHERE contype='f' AND confrelid=ANY(%s::regclass[]) LIMIT 1", (children,)).fetchone():
             raise PublicationBlocked("미디어 연결을 참조하는 테이블이 있어 영구 삭제할 수 없습니다. 사용 중지를 이용하세요.")
-        c.execute("DELETE FROM topik_bank.question_set_item_audio_bindings WHERE set_id=%s AND position=%s", (row["set_id"], row["position"]))
         c.execute("DELETE FROM topik_bank.item_audio_bindings WHERE item_id=%s", (row["item_id"],))
         c.execute("DELETE FROM topik_bank.item_visual_assets WHERE item_id=%s", (row["item_id"],))
         c.execute("DELETE FROM topik_bank.items WHERE item_id=%s", (row["item_id"],))
@@ -441,8 +429,7 @@ def media_ready(snapshot, row):
         return False
     if row["section"] == "listening":
         assets = {a["audio_asset_id"] for a in media["tts_audio_assets"] if a["deleted_at"] is None and a["narration_version"] == "exam_track_v4"}
-        return any(b["audio_asset_id"] in assets and b["item_id"] == row["item_id"] and b["content_hash"] == row["content_hash"] for b in media["item_audio_bindings"]) or any(
-            b["audio_asset_id"] in assets and b["set_id"] == row["set_id"] and b["position"] == row["position"] for b in media["question_set_item_audio_bindings"])
+        return any(b["audio_asset_id"] in assets and b["item_id"] == row["item_id"] and b["content_hash"] == row["content_hash"] for b in media["item_audio_bindings"])
     return True
 
 

@@ -8,7 +8,7 @@ import pytest
 def isolated_application_root(tmp_path, monkeypatch):
     """App smoke tests must never open the user's databases or credentials."""
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
-    for name in ("DATABASE_URL", "QUESTION_BANK_LOCAL_DATABASE_URL", "QUESTION_BANK_PRODUCTION_DATABASE_URL", "CHATKHU_API_KEY", "DEEPSEEK_API_KEY"):
+    for name in ("DATABASE_URL", "QUESTION_BANK_LOCAL_DATABASE_URL", "QUESTION_BANK_PRODUCTION_DATABASE_URL", "CHATKHU_API_KEY", "DEEPSEEK_API_KEY", "BIZROUTER_API_KEY"):
         monkeypatch.setenv(name, "")
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
                  "AWS_DEFAULT_PROFILE", "S3_BUCKET", "CLOUDFRONT_BASE_URL"):

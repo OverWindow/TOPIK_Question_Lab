@@ -63,6 +63,10 @@ class PostgresQuestionBank:
                )"""
         )
         unversioned = _uses_unversioned_schema(connection)
+        if unversioned and (MIGRATION_DIR / "011_item_audio_only.sql").is_file():
+            legacy_audio = connection.execute("SELECT to_regclass('topik_bank.question_set_item_audio_bindings') IS NOT NULL").fetchone()[0]
+            if legacy_audio and connection.execute("SELECT EXISTS(SELECT 1 FROM topik_bank.items)").fetchone()[0]:
+                raise ValueError("기존 문항의 음원 통합(011)은 백업 후 item_audio_migration 명령으로 적용해야 합니다.")
         current_set_schema = unversioned or _uses_item_only_set_schema(connection)
         superseded_by_current_schema = {
             "001_question_bank",
@@ -72,6 +76,10 @@ class PostgresQuestionBank:
         }
         if unversioned:
             superseded_by_current_schema.add("006_unversioned_items")
+            if connection.execute("""SELECT to_regclass('topik_bank.question_set_item_audio_bindings') IS NULL
+                AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='topik_bank'
+                    AND table_name='item_audio_bindings' AND column_name='binding_id')""").fetchone()[0]:
+                superseded_by_current_schema.update({"007_bank_media", "011_item_audio_only"})
         for path in sorted(MIGRATION_DIR.glob("*.sql")):
             version = path.stem
             exists = connection.execute(
@@ -235,9 +243,6 @@ class PostgresQuestionBank:
                 for item in values:
                     status = (expected_state.get(item.candidate.source_key) or {}).get("review_status", "reviewed") if expected_state is not None else "reviewed"
                     _, action = _upsert_item(connection, item, Jsonb, review_status=status)
-                    old = expected_state.get(item.candidate.source_key) if expected_state is not None else None
-                    if old and action == "updated" and old["content_hash"] != item.content_hash:
-                        _invalidate_set_audio(connection, old)
                     created += action == "created"
                     updated += action == "updated"
                     reused += action == "reused"
@@ -371,24 +376,45 @@ class PublicationStateChanged(ValueError):
     """Known pre-write conflict; this is not an uncertain commit outcome."""
 
 
-def _invalidate_set_audio(connection, old):
-    if not old["set_id"] or old["section"] != "listening":
+def _invalidate_item_audio(connection, old):
+    if old["section"] != "listening":
         return
-    if not connection.execute("SELECT to_regclass('topik_bank.question_set_item_audio_bindings')").fetchone()[0]:
+    if not connection.execute("SELECT to_regclass('topik_bank.item_audio_bindings')").fetchone()[0]:
         return
-    # A shared track may include both questions; invalidate the whole affected group.
-    rows = connection.execute("""SELECT audio_asset_id FROM topik_bank.question_set_item_audio_bindings
-        WHERE set_id=%s AND position=%s AND is_current
-        UNION SELECT audio_asset_id FROM topik_bank.item_audio_bindings
-        WHERE item_id=%s AND content_hash=%s AND is_current""",
-        (old["set_id"], old["position"], old["item_id"], old["content_hash"])).fetchall()
+    rows = connection.execute("""SELECT audio_asset_id FROM topik_bank.item_audio_bindings
+        WHERE item_id=%s AND is_current""", (old["item_id"],)).fetchall()
     assets = [r[0] for r in rows]
     if assets:
-        connection.execute("""UPDATE topik_bank.question_set_item_audio_bindings SET is_current=false
-            WHERE set_id=%s AND audio_asset_id=ANY(%s::uuid[])""", (old["set_id"], assets))
+        # Identical files in unrelated sets/generation runs are not siblings.
+        provenance, group = old["source_provenance"], old["content_json"].get("set_id", "")
         connection.execute("""UPDATE topik_bank.item_audio_bindings b SET is_current=false
-            FROM topik_bank.items i WHERE b.item_id=i.item_id AND i.set_id=%s AND b.audio_asset_id=ANY(%s::uuid[])""",
-            (old["set_id"], assets))
+            FROM topik_bank.items i WHERE b.item_id=i.item_id AND b.audio_asset_id=ANY(%s::uuid[])
+            AND (i.item_id=%s OR i.set_id=%s OR
+                (%s::uuid IS NULL AND i.set_id IS NULL AND %s<>''
+                 AND i.section=%s AND i.item_type=%s AND i.content_json->>'set_id'=%s
+                 AND i.source_provenance->>'source_db'=%s AND i.source_provenance->>'run_id'=%s))""",
+            (assets, old["item_id"], old["set_id"], old["set_id"], group, old["section"], old["item_type"], group,
+             provenance.get("source_db"), str(provenance.get("run_id", ""))))
+
+
+def _sync_item_audio(connection, old, item):
+    if old["section"] != "listening" or old["content_hash"] == item.content_hash:
+        return
+    if not connection.execute("SELECT to_regclass('topik_bank.item_audio_bindings')").fetchone()[0]:
+        return
+    from topik_question_lab.step_06_publication.audio_bindings import bind_audio
+    before, after = old["content_json"], item.candidate.question
+    def spoken_content(question):
+        return (question.get("dialogue_turns", []), question.get("question_prompt", "").strip(),
+                question.get("repeat_count", 1), question.get("exam_format", "pbt"),
+                question.get("generation_profile") or "")
+    if old["type_slot"] != item.candidate.slot or spoken_content(before) != spoken_content(after):
+        _invalidate_item_audio(connection, old)
+    else:
+        binding = connection.execute("""SELECT audio_asset_id,source_hash FROM topik_bank.item_audio_bindings
+            WHERE item_id=%s AND content_hash=%s AND is_current""", (old["item_id"], old["content_hash"])).fetchone()
+        if binding:
+            bind_audio(connection, old["item_id"], item.content_hash, *binding)
 
 
 def item_state(connection, source_keys, *, lock=False):
@@ -427,7 +453,7 @@ ITEM_COLUMNS = ("item_id", "source_key", *ITEM_CONTENT_COLUMNS,
 def _upsert_item(connection, item: PublicationItemDraft, Jsonb, *, review_status="reviewed") -> tuple[Any, str]:
     candidate = item.candidate
     existing = connection.execute(
-        "SELECT item_id, content_hash, source_provenance, position, review_status FROM topik_bank.items WHERE source_key=%s FOR UPDATE",
+        "SELECT item_id, content_hash, source_provenance, position, review_status, to_jsonb(i) FROM topik_bank.items i WHERE source_key=%s FOR UPDATE",
         (candidate.source_key,),
     ).fetchone()
     if existing and existing[3] is not None and existing[3] != candidate.slot:
@@ -458,6 +484,7 @@ def _upsert_item(connection, item: PublicationItemDraft, Jsonb, *, review_status
             f"UPDATE topik_bank.items SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE item_id=%s",
             (*values, item_id),
         )
+        _sync_item_audio(connection, existing[5], item)
         return item_id, "updated"
     names = ", ".join(("item_id", "source_key", *columns))
     placeholders = ", ".join(["%s"] * (len(columns) + 2))
@@ -489,6 +516,13 @@ def _dict_rows(cursor, rows) -> list[dict]:
 
 def _insert_set_items(connection, rows: list[tuple]) -> None:
     for set_id, position, item_id in rows:
+        if connection.execute("SELECT to_regclass('topik_bank.item_audio_bindings')").fetchone()[0]:
+            recorded = connection.execute("""SELECT to_jsonb(i),a.script_snapshot FROM topik_bank.items i
+                JOIN topik_bank.item_audio_bindings b ON b.item_id=i.item_id AND b.is_current
+                JOIN topik_bank.tts_audio_assets a USING (audio_asset_id) WHERE i.item_id=%s""", (item_id,)).fetchone()
+            if recorded and (position != recorded[0]["type_slot"] or
+                             position not in (recorded[1] or {}).get("positions", [])):
+                _invalidate_item_audio(connection, recorded[0])
         cursor = connection.execute(
             """UPDATE topik_bank.items SET set_id=%s, position=%s
                WHERE item_id=%s AND set_id IS NULL""",

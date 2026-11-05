@@ -19,6 +19,10 @@ CHATKHU_WEB_URL = os.getenv("CHATKHU_WEB_URL", "https://chat.khu.ac.kr")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
 DEEPSEEK_WEB_URL = os.getenv("DEEPSEEK_WEB_URL", "https://chat.deepseek.com")
 DEEPSEEK_API_KEYS_URL = "https://platform.deepseek.com/api_keys"
+BIZROUTER_BASE_URL = os.getenv("BIZROUTER_BASE_URL", "https://api.bizrouter.ai/v1").rstrip("/")
+BIZROUTER_WEB_URL = "https://bizrouter.ai"
+BIZROUTER_PREFIX = "bizrouter:"
+SERVICE_LABELS = {"chatkhu": "ChatKHU", "bizrouter": "BizRouter", "deepseek": "DeepSeek 직접 연결"}
 
 
 @dataclass(frozen=True)
@@ -131,7 +135,20 @@ def has_deepseek_api_key() -> bool:
     return bool(os.getenv("DEEPSEEK_API_KEY"))
 
 
+def has_bizrouter_api_key() -> bool:
+    return bool(os.getenv("BIZROUTER_API_KEY"))
+
+
+def provider_model(provider: str) -> str:
+    if provider.startswith(BIZROUTER_PREFIX):
+        return provider[len(BIZROUTER_PREFIX):]
+    config = DEFAULT_PROVIDERS.get(provider)
+    return config.model if config else provider
+
+
 def provider_backend(provider: str, model: str = "") -> str:
+    if provider.startswith(BIZROUTER_PREFIX):
+        return "bizrouter"
     config = DEFAULT_PROVIDERS.get(provider)
     if config:
         return config.backend
@@ -141,6 +158,8 @@ def provider_backend(provider: str, model: str = "") -> str:
 
 def generation_parameter_family(provider: str, model: str) -> str | None:
     """Return the generation-preset API family supported by this model."""
+    if provider_backend(provider, model) == "bizrouter":
+        return "bizrouter"
     if provider_backend(provider, model) == "deepseek":
         return "deepseek"
     normalized_model = model.strip().lower().rsplit("/", 1)[-1]
@@ -200,11 +219,34 @@ def generation_preset_prompt(system_prompt: str, preset_id: str | None) -> str:
     return system_prompt.rstrip() + suffix
 
 
-def generation_request_parameters(provider: str, model: str, preset_id: str | None) -> dict[str, object]:
+def generation_request_parameters(
+    provider: str, model: str, preset_id: str | None, model_capabilities: dict | None = None,
+) -> dict[str, object]:
     family = generation_parameter_family(provider, model)
     if family is None:
         return {}
     selected = preset_id if preset_id in GENERATION_PRESETS else DEFAULT_GENERATION_PRESET
+    if family == "bizrouter":
+        # Unknown models use prompt instructions only, never another gateway's defaults.
+        capabilities = model_capabilities or {}
+        if capabilities.get("id") != model:
+            return {}
+        supported = capabilities.get("supported_parameters", [])
+        parameters: dict[str, object] = {}
+        limit = capabilities.get("max_output_tokens")
+        if isinstance(limit, int) and limit > 0:
+            token_key = next((key for key in ("max_tokens", "max_completion_tokens") if key in supported), None)
+            if token_key:
+                parameters[token_key] = min(GENERATION_OUTPUT_TOKEN_LIMIT, limit)
+        modes = capabilities.get("response_format_modes", [])
+        bindings = capabilities.get("provider_response_format_modes", {})
+        if ("response_format" in supported and "json_object" in modes
+                and not model.startswith("anthropic/")
+                and all("json_object" in values for values in bindings.values())):
+            parameters["response_format"] = {"type": "json_object"}
+        if "reasoning_effort" in supported:
+            parameters["reasoning_effort"] = "high" if selected == "precise_generation" else "low"
+        return parameters
     if family == "gpt":
         effort = "high" if selected == "precise_generation" else "low"
         return {
@@ -231,14 +273,18 @@ def generation_request_parameters(provider: str, model: str, preset_id: str | No
     return parameters
 
 
-def generation_parameter_preview(provider: str, model: str, preset_id: str | None) -> dict[str, object]:
-    parameters = generation_request_parameters(provider, model, preset_id)
+def generation_parameter_preview(
+    provider: str, model: str, preset_id: str | None, model_capabilities: dict | None = None,
+) -> dict[str, object]:
+    parameters = generation_request_parameters(provider, model, preset_id, model_capabilities)
     if not parameters:
         return {"api_parameters_applied": False, "mode": "기본 API 설정"}
     return {"api_parameters_applied": True, **parameters}
 
 
 def has_api_key(provider: ProviderName) -> bool:
+    if provider_backend(provider) == "bizrouter":
+        return has_bizrouter_api_key()
     return has_deepseek_api_key() if provider_backend(provider) == "deepseek" else has_chatkhu_api_key()
 
 
@@ -248,10 +294,67 @@ def can_gateway_call(provider: ProviderName) -> bool:
 
 
 def provider_label(provider: str) -> str:
+    if provider.startswith(BIZROUTER_PREFIX):
+        return f"BizRouter · {provider_model(provider)}"
     config = DEFAULT_PROVIDERS.get(provider)
     if config:
         return config.label
     return LEGACY_PROVIDER_LABELS.get(provider, provider)
+
+
+def parse_bizrouter_models(raw: str) -> list[dict]:
+    try:
+        models = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(models, list):
+        return []
+    result = {}
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if (not isinstance(model_id, str) or not model_id.strip()
+                or model_id.startswith("bizrouter/")
+                or not isinstance(model.get("input_modalities"), list)
+                or "text" not in model["input_modalities"]
+                or model.get("output_modalities") != ["text"]):
+            continue
+        item = {"id": model_id, "input_modalities": ["text"], "output_modalities": ["text"]}
+        for key in ("supported_parameters", "response_format_modes"):
+            values = model.get(key, [])
+            item[key] = [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
+        bindings = model.get("provider_response_format_modes", {})
+        item["provider_response_format_modes"] = {
+            name: [value for value in values if isinstance(value, str)]
+            for name, values in bindings.items() if isinstance(values, list)
+        } if isinstance(bindings, dict) else {}
+        limit = model.get("max_output_tokens")
+        if isinstance(limit, int) and limit > 0:
+            item["max_output_tokens"] = limit
+        result[model_id] = item
+    return list(result.values())
+
+
+def bizrouter_capabilities(raw: str, model: str) -> dict | None:
+    return next((item for item in parse_bizrouter_models(raw) if item["id"] == model), None)
+
+
+def list_bizrouter_models() -> list[dict]:
+    key = os.getenv("BIZROUTER_API_KEY")
+    if not key:
+        raise ValueError("BIZROUTER_API_KEY가 설정되지 않았습니다.")
+    try:
+        response = httpx.get(f"{BIZROUTER_BASE_URL}/models", headers={"Authorization": f"Bearer {key}"}, timeout=30.0)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+            raise ValueError("Invalid catalog")
+        return parse_bizrouter_models(json.dumps(payload["models"]))
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        suffix = f" (HTTP {status})" if status else ""
+        raise ValueError(f"BizRouter 모델 목록 조회에 실패했습니다{suffix}.") from None
 
 
 def list_chatkhu_models() -> list[str]:
@@ -336,6 +439,7 @@ def call_provider(
     image_paths: list[Path] | None = None,
     generation_preset: str | None = None,
     managed_retries: bool = False,
+    model_capabilities: dict | None = None,
 ) -> ProviderResult:
     started = time.perf_counter()
     raw = ""
@@ -354,7 +458,13 @@ def call_provider(
         if config and not config.gateway_supported:
             raise ValueError(f"{config.label}은 현재 ChatKHU 웹 수동 모드로만 사용할 수 있습니다.")
         backend = provider_backend(provider, model)
-        if backend == "deepseek":
+        if backend == "bizrouter":
+            key = os.getenv("BIZROUTER_API_KEY")
+            base_url = BIZROUTER_BASE_URL
+            missing_key_message = "BIZROUTER_API_KEY가 없습니다. .env에 BizRouter API 키를 입력하세요."
+            if image_paths or operation == "transcription":
+                raise ValueError("BizRouter는 텍스트 문제 생성에만 사용합니다. 이미지 전사는 기존 모델을 선택하세요.")
+        elif backend == "deepseek":
             key = os.getenv("DEEPSEEK_API_KEY")
             base_url = DEEPSEEK_BASE_URL
             missing_key_message = "DEEPSEEK_API_KEY가 없습니다. DeepSeek Platform에서 키를 발급해 .env에 입력하세요."
@@ -387,8 +497,8 @@ def call_provider(
                 if generation_preset in GENERATION_PRESETS
                 else DEFAULT_GENERATION_PRESET
             )
-            api_parameters = generation_request_parameters(provider, model, applied_preset)
-            request_parameters = {"api_parameters_applied": True, **api_parameters}
+            api_parameters = generation_request_parameters(provider, model, applied_preset, model_capabilities)
+            request_parameters = {"api_parameters_applied": bool(api_parameters), **api_parameters}
         messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -406,7 +516,7 @@ def call_provider(
         error_retryable = error_retryable or type(exc).__name__ in ("APITimeoutError", "APIConnectionError")
         error = f"{type(exc).__name__}: 모델 요청 또는 응답 처리에 실패했습니다."
         message = str(exc)
-        if isinstance(exc, ValueError) and (message.startswith(("CHATKHU_API_KEY가 없습니다.", "DEEPSEEK_API_KEY가 없습니다."))
+        if isinstance(exc, ValueError) and (message.startswith(("CHATKHU_API_KEY가 없습니다.", "DEEPSEEK_API_KEY가 없습니다.", "BIZROUTER_API_KEY가 없습니다.", "BizRouter는 텍스트"))
                 or message.endswith("은 현재 ChatKHU 웹 수동 모드로만 사용할 수 있습니다.")):
             error = message
         elif re.fullmatch(r"[45]\d{2} invalid parameter", message, flags=re.IGNORECASE):

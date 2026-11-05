@@ -66,6 +66,7 @@ class FakeGoogle:
     def __init__(self):
         self.speeches = []
         self.images = []
+        self.chart_prompts = []
 
     def speech(self, speaker, text):
         import wave
@@ -76,8 +77,10 @@ class FakeGoogle:
             audio.writeframes(bytes(4800))
         return data.getvalue()
 
-    def image(self, prompt):
+    def image(self, prompt, *, chart=False):
         self.images.append(prompt)
+        if chart:
+            self.chart_prompts.append(prompt)
         data = io.BytesIO()
         Image.new("RGB", (80, 60), "white").save(data, "PNG")
         return data.getvalue()
@@ -216,6 +219,31 @@ def test_chart_data_must_match_each_label_and_number():
         chart_spec(SPEC, "교통 조사 버스: 40%, 지하철: 60%")
     with pytest.raises(ValueError):
         chart_spec({**SPEC, "values": [float("nan"), 40]})
+
+
+@pytest.mark.parametrize("value,written", [
+    (9600000, "9,600,000"), (9600000, "9600000"), (9600, "9,600"),
+    (1234567.89, "1,234,567.89"), (0.123456789, "0.123456789"), (60, "60.000"),
+])
+def test_chart_numbers_allow_grouping_and_preserve_precision(value, written):
+    spec = {**SPEC, "labels": ["버스"], "values": [value], "unit": "명"}
+    assert chart_spec(spec, f"교통 조사 버스: {written}명")["values"] == [value]
+
+
+@pytest.mark.parametrize("source", [
+    "교통 조사 버스: 9,450,000명, 지하철: 9,600,000명",
+    "교통 조사 버스: 9,600,001명, 지하철: 9,450,000명",
+    "교통 조사 버스: 9,600,000% (단위 명), 지하철: 9,450,000명",
+    "교통 조사 버스: 96,00,000명, 지하철: 9,450,000명",
+])
+def test_chart_number_normalization_does_not_hide_mismatches(source):
+    spec = {**SPEC, "values": [9600000, 9450000], "unit": "명"}
+    with pytest.raises(ValueError):
+        chart_spec(spec, source)
+
+
+def test_chart_numbers_without_units_allow_comma_separators():
+    assert chart_spec({**SPEC, "unit": ""}, "교통 조사 버스: 60, 지하철: 40")
 
 
 def test_invalid_speaker_is_blocked_before_media_generation(tmp_path):
@@ -471,7 +499,7 @@ def test_listening_audio_rows_and_all_50_bindings_are_atomic(postgres_database_f
     package = reg.jobs.list()[0]["payload"]["packages"][0]
     with psycopg.connect(url) as c:
         assert c.execute("SELECT count(*) FROM topik_bank.tts_audio_assets").fetchone()[0] == 35
-        assert c.execute("SELECT count(*) FROM topik_bank.question_set_item_audio_bindings WHERE is_current").fetchone()[0] == 50
+        assert c.execute("SELECT count(*) FROM topik_bank.item_audio_bindings WHERE is_current").fetchone()[0] == 50
         check_media(c, package)
     incomplete = {**package, "media": [a for a in package["media"] if a.get("positions") != [49, 50]]}
     with pytest.raises(PublicationBlocked, match="전체|필수"):

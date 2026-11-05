@@ -54,7 +54,7 @@ if "운영 서버" in selection:
     st.warning("운영 서버가 선택되어 있습니다. 아래 작업은 운영 DB에 적용됩니다.")
 
 with st.expander("최초 대상 DB 구조 준비"):
-    st.write("빈 대상 DB에 문제 테이블 6개와 조회 뷰 2개를 생성합니다. 기존 구조가 다르면 변경하지 않고 중단합니다.")
+    st.write("빈 대상 DB에 문제 테이블 5개와 조회 뷰 2개를 생성합니다. 기존 구조가 다르면 변경하지 않고 중단합니다.")
     if st.button("선택 서버 구조 초기화", disabled=not configured):
         for label in selection:
             try:

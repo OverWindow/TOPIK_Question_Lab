@@ -35,6 +35,8 @@ from topik_question_lab.common.models import AnalysisPayload, Review
 from topik_question_lab.ui.navigation import next_sequence_item
 from topik_question_lab.step_02_planning.prompt_profiles import DEFAULT_PROVIDER_INSTRUCTIONS, apply_provider_instruction
 from topik_question_lab.step_03_generation.providers import DEFAULT_ACTIVE_PROVIDERS, DEFAULT_PROVIDERS, GENERATION_PRESETS, call_provider, has_chatkhu_api_key, has_deepseek_api_key, generation_parameter_preview, list_chatkhu_models, manual_result, parse_generation_presets, provider_backend, provider_label, resolve_generation_preset, dump_generation_presets
+from topik_question_lab.step_03_generation.providers import BIZROUTER_PREFIX, SERVICE_LABELS, bizrouter_capabilities, can_gateway_call, has_bizrouter_api_key, parse_bizrouter_models, provider_model
+from topik_question_lab.ui.provider_ui import generation_service, render_bizrouter_sync, service_providers
 from topik_question_lab.step_02_planning.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore, uses_topic_bank
 from topik_question_lab.ui.topic_ui import invalidate_topic_planner, render_topic_planner
 
@@ -75,8 +77,7 @@ def get_topic_store(schema_version: int) -> TopicStore:
 
 
 def model_for(provider: str) -> str:
-    config = DEFAULT_PROVIDERS.get(provider)
-    return config.model if config else provider
+    return provider_model(provider)
 
 
 def active_providers(storage: ListeningStorage) -> list[str]:
@@ -98,7 +99,9 @@ def generation_preset_for(storage: ListeningStorage, provider: str) -> str | Non
 
 def provider_display(provider: str) -> str:
     label = provider_label(provider)
-    backend = "DeepSeek" if provider_backend(provider, model_for(provider)) == "deepseek" else "ChatKHU"
+    if provider_backend(provider) == "bizrouter":
+        return label
+    backend = SERVICE_LABELS[provider_backend(provider, model_for(provider))]
     return f"{label} · {backend}"
 
 
@@ -188,6 +191,8 @@ with st.sidebar.expander("모델 선택", expanded=False):
     except json.JSONDecodeError:
         known_models = []
     options = list(dict.fromkeys([*DEFAULT_PROVIDERS, *known_models, *provider_values]))
+    options = list(dict.fromkeys([*options, *(BIZROUTER_PREFIX + item["id"] for item in parse_bizrouter_models(storage.get_setting("bizrouter_models", "[]")))]))
+    render_bizrouter_sync(storage, key=f"listening-bizrouter-sync-{type_id}")
     selected_models = st.multiselect("사용할 모델", options, default=provider_values, format_func=provider_display)
     col_sync, col_save = st.columns(2)
     if col_sync.button("ChatKHU 동기화", width="stretch"):
@@ -213,6 +218,7 @@ stage = st.sidebar.radio(
 st.sidebar.divider()
 st.sidebar.write(f"ChatKHU: {'API 연결' if has_chatkhu_api_key() else '웹 수동'}")
 st.sidebar.write(f"DeepSeek: {'API 연결' if has_deepseek_api_key() else '웹 수동'}")
+st.sidebar.write(f"BizRouter: {'키 설정됨' if has_bizrouter_api_key() else '키 없음'}")
 
 
 def list_source_examples(approved_only: bool = False):
@@ -327,7 +333,7 @@ if stage == "1. 기출 데이터":
                 st.image(str(page_image), caption=f"{selected_exam} · {page_number}쪽", width=650)
             else:
                 st.warning("원본 페이지 이미지가 없습니다. 해당 PDF를 다시 렌더링하세요.")
-            transcript_models = [value for value in provider_values if provider_backend(value, model_for(value)) != "deepseek"]
+            transcript_models = [value for value in provider_values if provider_backend(value, model_for(value)) == "chatkhu"]
             transcript_provider = st.selectbox("이미지 전사 모델", transcript_models, format_func=provider_display) if transcript_models else None
             prompt = build_transcription_prompt(selected_exam, page_number)
             st.text_area("전사 프롬프트", prompt, height=180)
@@ -544,7 +550,7 @@ if stage == "1. 기출 데이터":
                             st.image(str(answer_image), width=620)
                         else:
                             st.warning("답안 페이지 이미지가 없습니다. 답안 PDF를 다시 렌더링하세요.")
-                        answer_models = [value for value in provider_values if provider_backend(value, model_for(value)) != "deepseek"]
+                        answer_models = [value for value in provider_values if provider_backend(value, model_for(value)) == "chatkhu"]
                         answer_provider = st.selectbox("답안 표 인식 모델", answer_models, format_func=provider_display, key=f"answer-model-{selected.source_exam}") if answer_models else None
                         if st.button("듣기 정답 표 자동 인식", disabled=not answer_provider or not answer_image.is_file()):
                             answer_prompt = """첨부된 TOPIK 답안표에서 '영역: 듣기'에 해당하는 1~50번 정답만 추출하십시오.
@@ -681,7 +687,7 @@ elif stage == "3. 프롬프트 작업실":
             )
             preset = GENERATION_PRESETS[preset_values[provider]]
             st.caption(preset.description)
-            st.json(generation_parameter_preview(provider, model_id, preset_values[provider]))
+            st.json(generation_parameter_preview(provider, model_id, preset_values[provider], bizrouter_capabilities(storage.get_setting("bizrouter_models", "[]"), model_id)))
         if st.form_submit_button("모델별 프리셋 저장", type="primary"):
             saved_presets.update(preset_values)
             storage.set_setting("generation_presets", dump_generation_presets(saved_presets))
@@ -696,13 +702,18 @@ elif stage == "3. 프롬프트 작업실":
 
 elif stage == "4. 문제 생성":
     st.title("문제 생성")
+    service = generation_service(storage, storage.get_setting("generation_service", "all"), key=f"listening-generation-service-{type_id}")
+    generation_providers = service_providers(provider_values, service)
+    if not generation_providers:
+        st.info("모델 선택에서 이 서비스의 모델을 동기화하고 선택하세요.")
+        st.stop()
     approved = list_source_examples(approved_only=True)
     count = int(storage.get_setting("generation_count", str(len(profile.question_numbers))))
     guide = storage.get_setting("analysis_guide", profile.analysis_focus)
     difficulty = storage.get_setting("difficulty", "TOPIK II 듣기")
     st.caption(f"승인 기출 {len(approved)}개 · 선택 모델 {len(provider_values)}개")
-    run_targets = st.multiselect("이번 실행 모델", provider_values, default=provider_values, format_func=provider_display)
-    manual_provider = st.selectbox("웹 수동 응답 모델", provider_values, format_func=provider_display)
+    run_targets = st.multiselect("이번 실행 모델", generation_providers, default=[value for value in generation_providers if can_gateway_call(value)], format_func=provider_display)
+    manual_provider = st.selectbox("웹 수동 응답 모델", generation_providers, format_func=provider_display)
     for provider in run_targets:
         preset_id = generation_preset_for(storage, provider)
         if preset_id:
@@ -756,6 +767,7 @@ elif stage == "4. 문제 생성":
                 system,
                 user,
                 generation_preset=preset_id,
+                model_capabilities=bizrouter_capabilities(storage.get_setting("bizrouter_models", "[]"), model_for(provider)),
             )
             ok, message = save_listening_generation(result, system, user, provider_topics)
             if ok:
@@ -881,7 +893,10 @@ elif stage == "5. 검수·비교":
                     )
                     asset_path = option.asset_path
                     chart_spec = option.chart_spec
-                    if profile.visual_kind == "chart" and chart_spec:
+                    if profile.visual_kind == "chart" and chart_spec and question.exam_format == "ibt":
+                        st.caption("그래프 원본 수치입니다. 이미지는 음원·이미지 생성 단계에서 만들며, 등록 후 문제 편집 화면에서 확인할 수 있습니다.")
+                        st.json(chart_spec.model_dump())
+                    elif profile.visual_kind == "chart" and chart_spec:
                         try:
                             chart_bytes = render_chart(chart_spec)
                             st.image(chart_bytes, width=390)

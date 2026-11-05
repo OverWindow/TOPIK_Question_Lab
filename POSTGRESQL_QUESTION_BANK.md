@@ -120,7 +120,7 @@ QUESTION_BANK_LOCAL_DATABASE_URL=로컬_Django가_사용하는_DB
 QUESTION_BANK_PRODUCTION_DATABASE_URL=운영_Django가_사용하는_DB
 ```
 
-1. **최초 대상 DB 구조 준비 → 선택 서버 구조 초기화**로 빈 DB에 `topik_bank`의 문제 테이블 6개와
+1. **최초 대상 DB 구조 준비 → 선택 서버 구조 초기화**로 빈 DB에 `topik_bank`의 문제 테이블 5개와
    `current_items`, `current_set_contents` 뷰를 만듭니다. 기존에 호환되는 구조가 있으면 재사용하고,
    구조가 다르거나 일부만 존재하면 변경하지 않습니다. 초기화 실패는 전체 롤백됩니다.
 2. 최초에는 **전체 문제은행**을 선택하여 미배정 문항·과거/삭제 표시 미디어 기록까지 복사합니다.
@@ -129,7 +129,8 @@ QUESTION_BANK_PRODUCTION_DATABASE_URL=운영_Django가_사용하는_DB
 4. **선택 서버에 원본으로 덮어쓰기**를 실행합니다. 대상마다 한 트랜잭션으로 처리하며 커밋 후 재조회하여 비교합니다.
 
 복사 대상은 `question_sets`, `items`, `tts_audio_assets`, `item_audio_bindings`,
-`question_set_item_audio_bindings`, `item_visual_assets`입니다. Hub의 `schema_migrations`,
+`item_visual_assets`입니다. 음원 연결은 세트 유무와 관계없이 문항 ID를 기준으로 하며,
+연결 UUID와 과거 연결 이력도 함께 복사합니다. Hub의 `schema_migrations`,
 `deployment_runs`, `deployment_run_sets`, 로컬 SQLite 생성 기록은 전송하지 않습니다.
 대상의 Django 인증·설문·마이그레이션 테이블도 변경하지 않습니다.
 

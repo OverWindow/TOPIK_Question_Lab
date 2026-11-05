@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 ROOT = Path(os.getenv("TOPIK_LAB_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 load_dotenv(ROOT / ".env")
 
-from topik_question_lab.step_03_generation.bulk_generation import custom_model, model_options, prepare_batch, profiles_for
+from topik_question_lab.step_03_generation.bulk_generation import custom_model, model_options, model_capabilities_for, prepare_batch, profiles_for
 from topik_question_lab.step_03_generation.media_generation import preflight
 from topik_question_lab.step_03_generation.media_provider import MediaSettings
 from topik_question_lab.ui.runner_service import get_runner
@@ -21,12 +21,16 @@ from topik_question_lab.step_06_publication.storage_overview import load_overvie
 from topik_question_lab.step_03_generation.providers import (
     DEFAULT_GENERATION_PRESET, GENERATION_PRESETS, can_gateway_call, generation_parameter_preview,
     has_chatkhu_api_key, list_chatkhu_models, provider_backend, provider_label, supports_generation_presets,
+    BIZROUTER_PREFIX, SERVICE_LABELS, parse_bizrouter_models,
 )
+from topik_question_lab.ui.provider_ui import generation_service, render_bizrouter_sync
 
 
 def model_label(value):
     provider, model = value
-    backend = "DeepSeek" if provider_backend(provider, model) == "deepseek" else "ChatKHU"
+    if provider_backend(provider, model) == "bizrouter":
+        return provider_label(provider)
+    backend = SERVICE_LABELS[provider_backend(provider, model)]
     return f"{provider_label(provider)} · {model} · {backend}"
 
 
@@ -58,43 +62,10 @@ def media_config(section):
 
 def is_busy():
     return bool(runner.thread and runner.thread.is_alive())
-options = model_options(ROOT)
-for model in json.loads(settings.get("extra_models", "[]")):
-    try:
-        options.append(custom_model(model))
-    except ValueError:
-        pass
-options = list(dict.fromkeys(options))
-saved = tuple(json.loads(settings.get("last_model", '["gpt_5_6_luna","gpt-5.6-luna"]')))
-if "bulk-model" not in st.session_state:
-    st.session_state["bulk-model"] = saved if saved in options else options[0]
-selected = st.selectbox("모델", options, format_func=model_label, key="bulk-model")
-provider, model = selected
-store.set_setting("last_model", json.dumps(selected))
-presets = json.loads(settings.get("presets", "{}"))
-supported = supports_generation_presets(provider, model)
-saved_preset = presets.get(model, DEFAULT_GENERATION_PRESET)
-if saved_preset not in GENERATION_PRESETS:
-    saved_preset = DEFAULT_GENERATION_PRESET
-preset_key = f"bulk-preset-{model}"
-if preset_key not in st.session_state:
-    st.session_state[preset_key] = saved_preset
-preset_id = st.selectbox(
-    "생성 프리셋", list(GENERATION_PRESETS),
-    format_func=lambda value: GENERATION_PRESETS[value].label, disabled=not supported,
-    key=preset_key,
-)
-preset = preset_id if supported else None
-if supported:
-    presets[model] = preset_id
-    store.set_setting("presets", json.dumps(presets))
-    st.caption(GENERATION_PRESETS[preset_id].description)
-else:
-    st.caption("프리셋 미지원 · 기본 API 설정")
-st.caption(f"실제 모델 ID: {model} · API {'연결됨' if can_gateway_call(provider) else '키 없음'}")
-with st.expander("적용 API 설정"):
-    st.json(generation_parameter_preview(provider, model, preset))
+
+
 with st.expander("모델 목록 관리"):
+    render_bizrouter_sync(store, key="bulk-bizrouter-sync")
     if st.button("ChatKHU 모델 동기화", disabled=not has_chatkhu_api_key()):
         try:
             ids = list_chatkhu_models()
@@ -102,14 +73,62 @@ with st.expander("모델 목록 관리"):
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
-    custom = st.text_input("텍스트 모델 ID 직접 추가")
+    custom = st.text_input("텍스트 모델 ID 직접 추가", help="BizRouter 모델은 위 동기화 버튼으로 불러오세요.")
     if st.button("모델 추가", disabled=not custom.strip()):
         try:
             added = custom_model(custom)
-            store.set_setting("extra_models", json.dumps(list(dict.fromkeys([*json.loads(settings.get("extra_models", "[]")), added[1]]))))
+            saved_id = added[0] if provider_backend(added[0]) == "bizrouter" else added[1]
+            store.set_setting("extra_models", json.dumps(list(dict.fromkeys([*json.loads(settings.get("extra_models", "[]")), saved_id]))))
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
+
+service = generation_service(store, settings.get("generation_service", "all"), key="bulk-generation-service")
+options = model_options(ROOT)
+options.extend((BIZROUTER_PREFIX + item["id"], item["id"])
+               for item in parse_bizrouter_models(settings.get("bizrouter_models", "[]")))
+for model in json.loads(settings.get("extra_models", "[]")):
+    try:
+        options.append(custom_model(model))
+    except ValueError:
+        pass
+options = list(dict.fromkeys(options))
+options = [value for value in options if service == "all" or provider_backend(*value) == service]
+if not options:
+    st.info("모델 목록 관리에서 이 서비스의 모델을 동기화하세요.")
+    provider, model, preset = "", "", None
+else:
+    saved = tuple(json.loads(settings.get("last_model", '["gpt_5_6_luna","gpt-5.6-luna"]')))
+    if st.session_state.get("bulk-model") not in options:
+        st.session_state["bulk-model"] = saved if saved in options else options[0]
+    selected = st.selectbox("모델", options, format_func=model_label, key="bulk-model")
+    provider, model = selected
+    store.set_setting("last_model", json.dumps(selected))
+    presets = json.loads(settings.get("presets", "{}"))
+    supported = supports_generation_presets(provider, model)
+    preset_identity = provider if provider_backend(provider) == "bizrouter" else model
+    saved_preset = presets.get(preset_identity, DEFAULT_GENERATION_PRESET)
+    if saved_preset not in GENERATION_PRESETS:
+        saved_preset = DEFAULT_GENERATION_PRESET
+    preset_key = f"bulk-preset-{preset_identity}"
+    if preset_key not in st.session_state:
+        st.session_state[preset_key] = saved_preset
+    preset_id = st.selectbox(
+        "생성 프리셋", list(GENERATION_PRESETS),
+        format_func=lambda value: GENERATION_PRESETS[value].label, disabled=not supported,
+        key=preset_key,
+    )
+    preset = preset_id if supported else None
+    if supported:
+        presets[preset_identity] = preset_id
+        store.set_setting("presets", json.dumps(presets))
+        st.caption(GENERATION_PRESETS[preset_id].description)
+    else:
+        st.caption("프리셋 미지원 · 기본 API 설정")
+    st.caption(f"실제 모델 ID: {model} · API {'연결됨' if can_gateway_call(provider) else '키 없음'}")
+    with st.expander("적용 API 설정"):
+        capabilities = model_capabilities_for(ROOT, model) if provider_backend(provider) == "bizrouter" else None
+        st.json(generation_parameter_preview(provider, model, preset, capabilities))
 
 
 STATUS_LABELS = {"pending": "대기", "processing": "생성 중", "succeeded": "저장 완료",
@@ -249,6 +268,8 @@ def render_progress():
 listening_tab, reading_tab = st.tabs([f"듣기 {expected_count}문제", f"읽기 {expected_count}문제"])
 for section, tab in (("listening", listening_tab), ("reading", reading_tab)):
     with tab:
+        if not model:
+            continue
         label = "듣기" if section == "listening" else "읽기"
         type_count = len(profiles_for(section, exam_format))
         st.caption(f"{type_count}개 유형을 순서대로 실행합니다. 문제·보기·정답·해설과 필요한 대본·이미지 설명을 생성합니다.")
@@ -256,7 +277,7 @@ for section, tab in (("listening", listening_tab), ("reading", reading_tab)):
             st.session_state.pop(f"bulk-plan-{section}", None)
         files = list((ROOT / "data/types").glob("*.db")) if section == "reading" else list((ROOT / "data/listening/types").glob("*.db"))
         topic_path = ROOT / "data/topic_bank.db"
-        signature = (exam_format, MAPPING_PATH.stat().st_mtime_ns if exam_format == "ibt" else 0, provider, model, preset, tuple((str(path), path.stat().st_mtime_ns) for path in sorted(files)),
+        signature = (exam_format, MAPPING_PATH.stat().st_mtime_ns if exam_format == "ibt" else 0, provider, model, preset, json.dumps(capabilities, sort_keys=True), tuple((str(path), path.stat().st_mtime_ns) for path in sorted(files)),
                      topic_path.stat().st_mtime_ns if topic_path.exists() else 0)
         cached = st.session_state.get(f"bulk-plan-{section}")
         if cached is None or cached[0] != signature:

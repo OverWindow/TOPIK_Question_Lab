@@ -4,7 +4,7 @@ from topik_question_lab.step_06_publication.media_validation import LocalMediaVa
 
 
 def completed_reading(root):
-    rows={name:[] for name in ['items','question_sets','tts_audio_assets','item_audio_bindings','question_set_item_audio_bindings','item_visual_assets']}
+    rows={name:[] for name in ['items','question_sets','tts_audio_assets','item_audio_bindings','item_visual_assets']}
     rows['question_sets']=[{'set_id':'set','review_status':'reviewed'}]
     rows['items']=[{'item_id':str(n),'set_id':'set','position':n,'content_hash':'a'*64,
         'section':'reading','review_status':'reviewed','content_json':{},'choices':['a','b','c','d'],'correct_answer':1} for n in range(1,51)]
@@ -50,6 +50,6 @@ def test_shared_listening_recording_is_counted_only_once(tmp_path):
         'storage_backend':'local','storage_bucket':'audio','storage_path':'shared.mp3','file_sha256':file_digest(data),
         'mime_type':'audio/mpeg','byte_size':len(data)}
     rows['tts_audio_assets']=[audio]
-    rows['question_set_item_audio_bindings']=[{'set_id':'set','position':i,'audio_asset_id':'audio'} for i in range(1,51)]
+    rows['item_audio_bindings']=[{'item_id':str(i),'content_hash':'a'*64,'audio_asset_id':'audio','is_current':True} for i in range(1,51)]
     path=object_path(tmp_path/'source','audio','shared.mp3');path.parent.mkdir(parents=True);path.write_bytes(data)
     assert len(LocalMediaValidator(tmp_path/'source').prepare(rows).files)==1

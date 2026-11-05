@@ -195,14 +195,16 @@ class GoogleMediaClient:
         except (KeyError, ValueError):
             raise MediaError("음성 응답에 올바른 음원 파일이 없습니다.") from None
 
-    def image(self, prompt):
+    def image(self, prompt, *, chart=False):
         from urllib.parse import quote
         s = self.settings
         host = "aiplatform.googleapis.com" if s.image_location == "global" else f"{s.image_location}-aiplatform.googleapis.com"
         url = f"https://{host}/v1/projects/{quote(s.project, safe='')}/locations/{quote(s.image_location, safe='')}/publishers/google/models/{quote(s.image_model, safe='')}:generateContent"
-        result = self.post(url, {"contents": [{"role": "USER", "parts": [{"text":
+        # Chart prompts explicitly require the text and numbers that scene prompts prohibit.
+        text = prompt if chart else (
             "Create one TOPIK Korean exam answer-choice illustration. Black-and-white line art, white background, "
-            "4:3 composition, no text, labels, numbers, borders or watermarks. Show exactly this scene: " + prompt}]}],
+            "4:3 composition, no text, labels, numbers, borders or watermarks. Show exactly this scene: " + prompt)
+        result = self.post(url, {"contents": [{"role": "USER", "parts": [{"text": text}]}],
             "generationConfig": {"responseModalities": ["TEXT", "IMAGE"], "candidateCount": 1,
                                  "imageConfig": {"aspectRatio": "4:3"}}})
         for candidate in result.get("candidates", []):

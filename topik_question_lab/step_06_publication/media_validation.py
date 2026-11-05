@@ -10,7 +10,7 @@ from pathlib import Path
 
 from topik_question_lab.step_06_publication.postgres_storage import _psycopg, _dict_rows
 
-MEDIA_TABLES = ("tts_audio_assets", "item_audio_bindings", "item_visual_assets", "question_set_item_audio_bindings")
+MEDIA_TABLES = ("tts_audio_assets", "item_audio_bindings", "item_visual_assets")
 ASSET_TABLES = ("tts_audio_assets", "item_visual_assets")
 
 
@@ -46,8 +46,7 @@ class LocalMediaValidator:
         """Validate every selected set, including required assets and local file bytes."""
         items = rows["items"]
         audio = {str(r["audio_asset_id"]): r for r in rows["tts_audio_assets"] if r["deleted_at"] is None}
-        set_audio = {(str(r["set_id"]), r["position"]): r for r in rows["question_set_item_audio_bindings"]}
-        item_audio = {(str(r["item_id"]), r["content_hash"]): r for r in rows["item_audio_bindings"]}
+        item_audio = {(str(r["item_id"]), r["content_hash"]): r for r in rows["item_audio_bindings"] if r["is_current"]}
         visuals = {(str(r["item_id"]), r["content_hash"], r["visual_role"], r["option_number"]): r for r in rows["item_visual_assets"]}
         for set_row in rows["question_sets"]:
             members = [i for i in items if i["set_id"] == set_row["set_id"]]
@@ -62,7 +61,7 @@ class LocalMediaValidator:
                 if item["review_status"] == "retired" or item["correct_answer"] not in (1, 2, 3, 4) or (len(item["choices"]) != 4 and len(options) != 4):
                     raise ValueError("유효한 보기·정답과 검수된 문항이 필요합니다.")
                 if item["section"] == "listening":
-                    binding = set_audio.get((str(item["set_id"]), item["position"])) or item_audio.get((str(item["item_id"]), item["content_hash"]))
+                    binding = item_audio.get((str(item["item_id"]), item["content_hash"]))
                     asset = audio.get(str(binding["audio_asset_id"])) if binding else None
                     if not asset or asset["narration_version"] != "exam_track_v4":
                         raise ValueError(f"듣기 {item['position']}번의 현재 시험 음성이 준비되지 않았습니다.")
@@ -120,8 +119,6 @@ def preview_media(database_url, set_ids, validator):
             rows = {
                 "question_sets": query("SELECT * FROM topik_bank.question_sets WHERE set_id=ANY(%s::uuid[])", (selected,)),
                 "items": query("SELECT * FROM topik_bank.items WHERE set_id=ANY(%s::uuid[])", (selected,)),
-                "question_set_item_audio_bindings": query(
-                    "SELECT * FROM topik_bank.question_set_item_audio_bindings WHERE is_current AND set_id=ANY(%s::uuid[])", (selected,)),
             }
             if len(rows["question_sets"]) != len(selected):
                 raise ValueError("로컬에 없는 세트가 선택되었습니다.")
@@ -130,8 +127,7 @@ def preview_media(database_url, set_ids, validator):
                     f"""SELECT a.* FROM topik_bank.{table} a JOIN topik_bank.items i
                         ON i.item_id=a.item_id AND i.content_hash=a.content_hash
                         WHERE a.is_current AND i.set_id=ANY(%s::uuid[])""", (selected,))
-            asset_ids = list({str(row["audio_asset_id"]) for table in
-                             ("item_audio_bindings", "question_set_item_audio_bindings") for row in rows[table]})
+            asset_ids = list({str(row["audio_asset_id"]) for row in rows["item_audio_bindings"]})
             rows["tts_audio_assets"] = query(
                 "SELECT * FROM topik_bank.tts_audio_assets WHERE audio_asset_id=ANY(%s::uuid[]) AND deleted_at IS NULL", (asset_ids,))
     except psycopg.Error as exc:

@@ -36,10 +36,8 @@ def seed(source,root):
           storage_bucket,storage_path,storage_url,byte_size,created_by,narration_version,script_snapshot,file_sha256)
           VALUES (%s,%s,'test','female','male','audio','shared.mp3','http://localhost:4000/shared.mp3',%s,%s,'exam_track_v4','{}',%s)""",
           (audio_id,'a'*64,len(audio),author,file_digest(audio)))
-        c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
-          SELECT set_id,position,%s,%s FROM topik_bank.items WHERE set_id=%s""",(audio_id,'b'*64,sets[1]))
         c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
-          SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE set_id=%s AND position IN (21,22)""",(audio_id,'b'*64,sets[1]))
+          SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE set_id=%s""",(audio_id,'b'*64,sets[1]))
     for bucket,path,data in [('images','graph.png',image),('audio','shared.mp3',audio)]:
         p=object_path(root,bucket,path);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
     return sets

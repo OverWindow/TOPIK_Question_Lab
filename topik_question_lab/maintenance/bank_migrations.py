@@ -31,14 +31,14 @@ def _local_config(root: Path, url: str):
     return config
 
 
-def _backup_database(root: Path, url: str, config: dict) -> Path:
+def _backup_database(root: Path, url: str, config: dict, *, label="010", snapshot=None) -> Path:
     directory = root / "backups" / "postgres"
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"before_010_{stamp}_{uuid.uuid4().hex[:8]}.dump"
+    path = directory / f"before_{label}_{stamp}_{uuid.uuid4().hex[:8]}.dump"
     binaries = Path(config["bin_directory"])
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("PG", "AWS_", "CHATKHU_", "DEEPSEEK_")) and "DATABASE_URL" not in k}
+           if not k.startswith(("PG", "AWS_", "CHATKHU_", "DEEPSEEK_", "BIZROUTER_")) and "DATABASE_URL" not in k}
     # Credentials stay out of process arguments and error messages.
     params = conninfo_to_dict(url)
     password = params.pop("password", None)
@@ -48,7 +48,8 @@ def _backup_database(root: Path, url: str, config: dict) -> Path:
     try:
         for arguments in (
             [str(binaries / "pg_dump.exe"), "--dbname", make_conninfo(**params),
-             "--format=custom", "--no-password", "--file", str(path)],
+             "--format=custom", "--no-password", "--file", str(path),
+             *(["--snapshot", snapshot] if snapshot else [])],
             [str(binaries / "pg_restore.exe"), "--list", str(path)],
         ):
             result = subprocess.run(arguments, env=env, stdout=subprocess.DEVNULL,
@@ -80,6 +81,8 @@ def migrate_local_bank(root: Path, url: str) -> tuple[list[str], Path | None]:
             applied = {row[0] for row in c.execute("SELECT version FROM topik_bank.schema_migrations").fetchall()}
             paths = sorted(MIGRATION_DIR.glob("*.sql"))
             pending = [path.stem for path in paths if path.stem not in applied]
+            if "011_item_audio_only" in pending:
+                raise StartupMigrationError("문항 음원 통합(011)은 백업·검증 후 수동 적용해야 합니다. 자동 변경하지 않았습니다.")
             if pending and pending != [AUTO_VERSION]:
                 raise StartupMigrationError("자동 적용 범위는 009 → 010입니다. 다른 미적용 마이그레이션은 수동 검토가 필요합니다.")
             if not pending:

@@ -133,7 +133,7 @@ def test_live_bank_pending_50_questions_35_audio_and_missing_media(postgres_data
         with psycopg.connect(url) as c:
             return {t: c.execute(f"SELECT to_jsonb(r) FROM topik_bank.{t} r ORDER BY 1::text").fetchall()
                     for t in ("items", "question_sets", "tts_audio_assets", "item_visual_assets",
-                              "question_set_item_audio_bindings", "schema_migrations")}
+                              "item_audio_bindings", "schema_migrations")}
 
     pg_before = database_rows()
     snapshot = overview.load_overview(tmp_path, url)
@@ -160,7 +160,7 @@ def test_live_bank_pending_50_questions_35_audio_and_missing_media(postgres_data
     assert files(tmp_path) == before and database_rows() == pg_before
 
     with psycopg.connect(url) as c:
-        c.execute("UPDATE topik_bank.question_set_item_audio_bindings SET is_current=false WHERE position=1")
+        c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=false WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE position=1)")
         c.execute("""UPDATE topik_bank.item_visual_assets SET content_hash=%s WHERE visual_asset_id=
             (SELECT visual_asset_id FROM topik_bank.item_visual_assets LIMIT 1)""", ("0" * 64,))
     coverage = overview.load_overview(tmp_path, url)["batches"][0]["coverage"]

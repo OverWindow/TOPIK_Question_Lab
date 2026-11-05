@@ -47,6 +47,8 @@ from topik_question_lab.step_02_planning.prompt_profiles import (
     question_type_profile,
 )
 from topik_question_lab.step_03_generation.providers import CHATKHU_BASE_URL, CHATKHU_WEB_URL, DEEPSEEK_API_KEYS_URL, DEEPSEEK_BASE_URL, DEEPSEEK_WEB_URL, DEFAULT_ACTIVE_PROVIDERS, DEFAULT_PROVIDERS, GENERATION_PRESETS, can_gateway_call, call_provider, get_chatkhu_credits, generation_parameter_preview, has_chatkhu_api_key, has_deepseek_api_key, list_chatkhu_models, manual_result, parse_generation_presets, provider_backend, provider_label, resolve_generation_preset, dump_generation_presets
+from topik_question_lab.step_03_generation.providers import BIZROUTER_PREFIX, BIZROUTER_WEB_URL, SERVICE_LABELS, bizrouter_capabilities, has_bizrouter_api_key, parse_bizrouter_models, provider_model
+from topik_question_lab.ui.provider_ui import generation_service, render_bizrouter_sync, service_providers
 from topik_question_lab.common.storage import Storage
 from topik_question_lab.step_02_planning.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore, uses_topic_bank
 from topik_question_lab.ui.topic_ui import invalidate_topic_planner, render_topic_planner
@@ -181,8 +183,7 @@ def active_provider_ids() -> list[str]:
 
 
 def model_for(provider: str) -> str:
-    config = DEFAULT_PROVIDERS.get(provider)
-    default_model = config.model if config else provider
+    default_model = provider_model(provider)
     saved_model = storage.get_setting(f"model_{provider}", default_model).strip()
     return saved_model or default_model
 
@@ -196,11 +197,17 @@ def generation_preset_for(provider: str) -> str | None:
 
 
 def provider_service_name(provider: str) -> str:
-    return "DeepSeek 공식 API" if provider_backend(provider, model_for(provider)) == "deepseek" else "ChatKHU"
+    return SERVICE_LABELS[provider_backend(provider, model_for(provider))]
 
 
 def provider_web_url(provider: str) -> str:
+    if provider_backend(provider) == "bizrouter":
+        return BIZROUTER_WEB_URL
     return DEEPSEEK_WEB_URL if provider_backend(provider, model_for(provider)) == "deepseek" else CHATKHU_WEB_URL
+
+
+def capabilities_for(provider: str) -> dict | None:
+    return bizrouter_capabilities(storage.get_setting("bizrouter_models", "[]"), model_for(provider))
 
 
 def default_instruction_for(provider: str) -> str:
@@ -352,6 +359,7 @@ def available_provider_options() -> list[str]:
         synced_models = []
     known_models = {config.model: provider for provider, config in DEFAULT_PROVIDERS.items()}
     options = list(DEFAULT_PROVIDERS)
+    options.extend(BIZROUTER_PREFIX + item["id"] for item in parse_bizrouter_models(storage.get_setting("bizrouter_models", "[]")))
     for model_id in [*synced_models, *active_provider_ids()]:
         option = known_models.get(model_id, model_id)
         if isinstance(option, str) and option.strip() and option not in options:
@@ -374,6 +382,7 @@ def show_model_picker() -> None:
         st.info("API 키가 없으면 아래 직접 추가란에 ChatKHU 웹의 모델 ID를 입력할 수 있습니다.")
     deepseek_status = "API 연결" if has_deepseek_api_key() else "키 없음"
     st.caption(f"DeepSeek V4.1 Flash / V4 Flash / V4 Pro · {deepseek_status} · 공식 API는 ChatKHU와 별도 과금")
+    render_bizrouter_sync(storage, key=f"reading-bizrouter-sync-{selected_type_id}")
 
     options = available_provider_options()
     picker_key = f"model-picker-values-{selected_type_id}"
@@ -483,6 +492,7 @@ st.sidebar.markdown(f"**ChatKHU** · <span class='{gateway_class}'>{gateway_stat
 deepseek_status = "API 연결" if has_deepseek_api_key() else "키 없음"
 deepseek_class = "status-ok" if has_deepseek_api_key() else "status-warn"
 st.sidebar.markdown(f"**DeepSeek** · <span class='{deepseek_class}'>{deepseek_status}</span>", unsafe_allow_html=True)
+st.sidebar.write(f"BizRouter · {'키 설정됨' if has_bizrouter_api_key() else '키 없음'}")
 st.sidebar.link_button("ChatKHU 열기", CHATKHU_WEB_URL, width="stretch")
 st.sidebar.caption("선택된 비교 모델")
 for provider in active_providers:
@@ -1067,7 +1077,7 @@ elif stage == "3. 프롬프트 작업실":
         model_values = {}
         cols = st.columns(2)
         for index, provider in enumerate(active_providers):
-            model_values[provider] = cols[index % 2].text_input(provider_label(provider), model_for(provider))
+            model_values[provider] = cols[index % 2].text_input(provider_label(provider), model_for(provider), disabled=provider_backend(provider) == "bizrouter")
         if st.form_submit_button("모델 ID 저장"):
             for provider, value in model_values.items():
                 storage.set_setting(f"model_{provider}", value.strip() or model_for(provider))
@@ -1099,7 +1109,7 @@ elif stage == "3. 프롬프트 작업실":
             )
             preset = GENERATION_PRESETS[preset_values[provider]]
             st.caption(preset.description)
-            st.json(generation_parameter_preview(provider, model_id, preset_values[provider]))
+            st.json(generation_parameter_preview(provider, model_id, preset_values[provider], capabilities_for(provider)))
         if st.form_submit_button("모델별 프리셋 저장", type="primary"):
             saved_presets.update(preset_values)
             storage.set_setting("generation_presets", dump_generation_presets(saved_presets))
@@ -1157,19 +1167,24 @@ elif stage == "3. 프롬프트 작업실":
 
 elif stage == "4. 문제 생성":
     st.title("문제 생성")
+    service = generation_service(storage, storage.get_setting("generation_service", "all"), key=f"reading-generation-service-{selected_type_id}")
+    generation_providers = service_providers(active_providers, service)
+    if not generation_providers:
+        st.info("모델 선택에서 이 서비스의 모델을 동기화하고 선택하세요.")
+        st.stop()
     examples = storage.list_examples(approved_only=True)
     expected_count = int(storage.get_setting("generation_count", "2"))
     st.caption(f"승인 예시 {len(examples)}개로 모델별 {expected_count}개를 생성합니다. API 실행 버튼을 누를 때만 크레딧 또는 API 잔액을 사용합니다.")
     preview_provider = st.selectbox(
         "프롬프트·웹 응답 모델",
-        active_providers,
+        generation_providers,
         format_func=provider_label,
         key=f"generation-preview-provider-{selected_type_id}",
     )
     selected_providers = st.multiselect(
         "API로 자동 생성할 모델",
-        active_providers,
-        default=[provider for provider in active_providers if can_gateway_call(provider)],
+        generation_providers,
+        default=[provider for provider in generation_providers if can_gateway_call(provider)],
         format_func=provider_label,
     )
     for provider in selected_providers:
@@ -1207,8 +1222,11 @@ elif stage == "4. 문제 생성":
         st.text_area("User", user_prompt, height=420, disabled=True)
         st.code(f"SYSTEM\n{system_prompt}\n\nUSER\n{user_prompt}", language=None)
 
-    st.info("권장 무료 흐름: 프롬프트를 복사하고 선택 모델의 웹 채팅에서 실행한 뒤 응답을 가져오세요. DeepSeek 공식 API 자동 호출은 별도 과금됩니다.")
-    st.link_button(f"{provider_service_name(preview_provider)} 웹에서 문제 생성하기", provider_web_url(preview_provider))
+    if provider_backend(preview_provider) == "bizrouter":
+        st.caption("BizRouter API 사용량은 BizRouter 계정에 과금됩니다.")
+    else:
+        st.info("프롬프트를 복사하고 선택 모델의 웹 채팅에서 실행한 뒤 응답을 가져올 수 있습니다. 외부 API 자동 호출은 별도 과금됩니다.")
+        st.link_button(f"{provider_service_name(preview_provider)} 웹에서 문제 생성하기", provider_web_url(preview_provider))
 
     if st.button(
         "선택한 API 모델로 생성",
@@ -1236,6 +1254,7 @@ elif stage == "4. 문제 생성":
                             provider_user,
                             None,
                             provider_preset,
+                            model_capabilities=capabilities_for(provider),
                         )
                         futures[future] = (provider, provider_system, provider_user, provider_topics)
                     for future in as_completed(futures):
@@ -1345,8 +1364,12 @@ elif stage == "5. 검수·비교":
             from topik_question_lab.common.listening_visuals import render_chart, render_banner
             try:
                 material = question.visual_material or {}
-                preview = render_banner(material.get("text", "")) if material_kind == "material_banner" else render_chart(ChartSpec.model_validate(material.get("chart_spec")))
-                st.image(preview, caption="생성 자료 미리보기", width=640)
+                if question.exam_format == "ibt" and material_kind == "material_combo_chart":
+                    st.caption("그래프 원본 수치입니다. 이미지는 음원·이미지 생성 단계에서 만들며, 등록 후 문제 편집 화면에서 확인할 수 있습니다.")
+                    st.json(material.get("chart_spec"))
+                else:
+                    preview = render_banner(material.get("text", "")) if material_kind == "material_banner" else render_chart(ChartSpec.model_validate(material.get("chart_spec")))
+                    st.image(preview, caption="생성 자료 미리보기", width=640)
             except (ValueError, TypeError) as exc:
                 st.warning(f"자료 이미지 확인 필요: {exc}")
 

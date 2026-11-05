@@ -94,7 +94,7 @@ def test_auth_failure_on_live_port_does_not_stop_or_start_server(config, monkeyp
 
 
 def test_child_process_does_not_receive_credentials_or_capture_background_pipes(config, monkeypatch):
-    for key in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'CHATKHU_API_KEY', 'DEEPSEEK_API_KEY'):
+    for key in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'CHATKHU_API_KEY', 'DEEPSEEK_API_KEY', 'BIZROUTER_API_KEY'):
         monkeypatch.setenv(key, 'synthetic-secret')
     calls = []
 

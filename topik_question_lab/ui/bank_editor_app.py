@@ -42,7 +42,6 @@ def media_url(value):
 def show_media(snapshot):
     row, media = snapshot["item"], snapshot["media"]
     audio_ids = {b["audio_asset_id"] for b in media["item_audio_bindings"] if b["item_id"] == row["item_id"] and b["content_hash"] == row["content_hash"]}
-    audio_ids.update(b["audio_asset_id"] for b in media["question_set_item_audio_bindings"] if b["set_id"] == row["set_id"] and b["position"] == row["position"])
     assets = [a for a in media["tts_audio_assets"] if a["audio_asset_id"] in audio_ids and a["deleted_at"] is None]
     assets += [a for a in media["item_visual_assets"] if a["item_id"] == row["item_id"] and a["content_hash"] == row["content_hash"]]
     st.caption("필수 미디어 연결 완료" if media_ready(snapshot, row) else "필수 음원·이미지 교체 필요")

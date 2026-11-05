@@ -23,7 +23,16 @@
 - 읽기 4~6번 광고·표어와 7번 복합 도표는 코드로 이미지를 렌더링합니다. 듣기 1~2번은 각 네 개의 시각 선택지를 사용합니다.
 - SQLite는 기존 유형별 구조를 재사용하며 IBT 기록을 `ibt_*.db`에 구분해 저장합니다. PostgreSQL은 기존 `items`, `question_sets` 테이블에 `exam_format`을 추가합니다. 기존 데이터는 `pbt`로 유지하고 시험 형식별 세트 번호·문항 수·미디어 연결을 검사합니다.
 
-기존 PostgreSQL에는 `010_exam_format.sql` 마이그레이션이 필요합니다. 기본 앱(`topik_question_lab/main.py`) 시작 시 이 저장소가 관리하는 로컬 Bank를 확인하고, 009까지 적용된 경우 전체 PostgreSQL 백업을 `backups/postgres/`에 저장·검사한 뒤 010을 자동 적용합니다. DB 잠금으로 동시 적용을 막으며, 적용·스키마 검증에 실패하면 트랜잭션을 롤백하고 작업 시작·재개를 중단합니다. 성공한 준비 결과는 앱 프로세스에서 재사용하므로 화면을 조작할 때마다 백업하거나 적용하지 않습니다. DB 설정이 없으면 기존 로컬 생성 모드로 실행합니다. 다른 미적용 마이그레이션은 자동 실행하지 않으며 수동 검토·준비가 필요합니다. 개별 페이지를 직접 실행하면 자동 준비를 거치지 않습니다. 새 HTTP API, 새 테이블, 추가 의존성은 없습니다.
+기존 PostgreSQL에는 `010_exam_format.sql`과 `011_item_audio_only.sql`이 필요합니다. 음원 연결은 `item_audio_bindings` 하나로 통합하며, 세트 없는 문항도 문항 ID로 연결합니다. 문항당 현재 연결은 최대 하나이고, 교체 전 연결은 고유 `binding_id`와 생성 시각을 유지해 보관합니다. 이관한 과거 세트 연결은 `origin_set_id`·`origin_position`에 당시 위치를 남기며, 알 수 없는 과거 문항 해시는 `NULL`로 보존합니다. 현재 연결을 조회할 때는 `is_current`와 문항의 `content_hash`를 함께 확인합니다.
+
+011은 테이블 제거를 포함하므로 앱 시작 시 자동 적용하지 않습니다. 미적용 상태이면 작업 시작·재개를 중단하고 수동 이관을 안내합니다. 아래 명령은 선택한 로컬 DB의 쓰기를 잠그고, 일관된 전체 백업을 `backups/postgres/`에 저장·검사한 후 연결 이관, 기존 문항·세트·미디어 및 전체 연결 기록 검증, `question_set_item_audio_bindings` 제거를 한 트랜잭션으로 수행합니다. 실패하면 커밋 전 변경을 롤백합니다. 두 설정이 서로 다른 DB를 가리키면 각각 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m topik_question_lab.maintenance.item_audio_migration --database-env DATABASE_URL
+.\.venv\Scripts\python.exe -m topik_question_lab.maintenance.item_audio_migration --database-env QUESTION_BANK_LOCAL_DATABASE_URL
+```
+
+현재 유효한 세트 음원 연결을 우선 유지하고, 세트 연결이 없을 때 유효한 문항 연결을 사용합니다. 기존 음원 파일과 문항 내용은 변경하지 않습니다. 신규 API·업무 테이블·의존성은 없습니다.
 
 > 아래 내용은 읽기 영역의 기존 기능과 데이터 구조에 대한 설명입니다.
 
@@ -188,12 +197,38 @@ V4.1 Flash의 공식 모델 ID는 `deepseek-flash`이며, 네 가지 생성 프�
 
 DeepSeek 공식 API는 유료이며 ChatKHU 크레딧과 별도로 과금됩니다. 키는 `.env`에서만 읽고 UI나 DB에는 저장하지 않습니다. 앱은 사용자가 API 실행 버튼을 눌렀을 때만 요청합니다.
 
+### BizRouter 문제 생성
+
+ChatKHU와 별도로 BizRouter의 텍스트 모델을 읽기·듣기 개별 및 일괄 생성에 사용할 수 있습니다.
+프로젝트 루트 `.env`에 아래 설정을 추가하고 앱을 재시작합니다. 키는 UI나 DB에 저장하지 않습니다.
+
+```dotenv
+BIZROUTER_API_KEY=발급받은_키
+BIZROUTER_BASE_URL=https://api.bizrouter.ai/v1
+```
+
+1. 읽기·듣기의 `모델 선택`에서 `BizRouter 텍스트 모델 동기화`를 누르고 사용할 모델을 선택·적용합니다.
+2. `문제 생성`의 `생성 서비스`를 `BizRouter`로 선택하고 생성 버튼을 누릅니다. `모든 서비스`에서는 ChatKHU와 함께 비교할 수 있습니다.
+3. 일괄 생성은 `모델 목록 관리`에서 동기화한 뒤 `생성 서비스 → BizRouter`, 모델, 프리셋을 선택합니다. 서비스·모델 선택은 저장됩니다.
+
+모델 목록은 인증된 `GET /v1/models`의 `models` 배열에서 텍스트 입출력 모델만 가져옵니다.
+실제 요청은 `POST /v1/chat/completions`로 보내며 카탈로그의 모델 ID를 그대로 사용합니다.
+생성 기록은 `bizrouter:` 접두사가 있는 내부 식별자로 기존 ChatKHU·DeepSeek 기록과 구분합니다.
+동기화한 지원 정보에 따라 출력 토큰 한도와 추론 강도를 적용하고, 모든 활성 경로가 지원하는 경우에만 JSON 모드를 사용합니다.
+Anthropic 계열이나 JSON 모드를 지원하지 않는 모델은 JSON 출력 지시와 기존 문항 검증을 사용합니다.
+지원 정보를 확인할 수 없는 직접 추가 모델은 프리셋의 프롬프트 지시만 적용합니다.
+일괄 생성은 모델 지원 정보를 작업 스냅샷에 보관해 재시도에서도 동일하게 사용합니다.
+
+BizRouter 호출은 해당 계정에 별도로 과금됩니다. 음원·이미지 생성, 이미지 전사, S3 저장은 기존 경로를 사용합니다.
+일괄 생성의 `음원·이미지 생성 및 DB 자동 등록` 옵션도 기존 방식대로 동작합니다.
+관련 문서: [인증](https://bizrouter.ai/docs/authentication), [모델 목록](https://bizrouter.ai/docs/models), [Chat Completions](https://bizrouter.ai/docs/chat-completions).
+
 ## 50문제 일괄 생성
 
 사이드바의 `50문제 일괄 생성`에서 모델 하나와 생성 프리셋 하나를 고른 뒤
 `듣기 50문제 생성` 또는 `읽기 50문제 생성`을 누릅니다. 듣기 21개 유형,
 읽기 18개 유형을 순서대로 호출해 1~50번을 각각 한 문항씩 저장합니다.
-자동 실행에는 선택 모델에 맞는 기존 ChatKHU 또는 DeepSeek API 키가 필요합니다.
+자동 실행에는 선택 모델에 맞는 ChatKHU, BizRouter 또는 DeepSeek API 키가 필요합니다.
 
 - 프리셋: 빠른 초안, 다양한 초안, 정밀 생성, 형식 오류 수정. GPT·DeepSeek에 적용하며,
   미지원 모델은 기본 API 설정을 사용합니다. 최초 선택은 GPT-5.6 Luna와 정밀 생성입니다.

@@ -70,7 +70,7 @@ def server_running(config):
 def child_environment():
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith(("AWS_", "CHATKHU_", "DEEPSEEK_", "PG")) or "DATABASE_URL" in key:
+        if key.startswith(("AWS_", "CHATKHU_", "DEEPSEEK_", "BIZROUTER_", "PG")) or "DATABASE_URL" in key:
             env.pop(key, None)
     scratch = MANAGED / "temp"
     scratch.mkdir(parents=True, exist_ok=True)

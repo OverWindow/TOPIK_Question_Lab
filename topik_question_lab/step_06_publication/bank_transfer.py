@@ -12,14 +12,14 @@ import uuid
 import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
+from topik_question_lab.step_06_publication.audio_bindings import require_item_audio_schema
 
 
 KEYS = {
     "question_sets": ("set_id",),
     "items": ("item_id",),
     "tts_audio_assets": ("audio_asset_id",),
-    "item_audio_bindings": ("item_id", "content_hash", "audio_asset_id"),
-    "question_set_item_audio_bindings": ("set_id", "position", "audio_asset_id"),
+    "item_audio_bindings": ("binding_id",),
     "item_visual_assets": ("visual_asset_id",),
 }
 TABLES = tuple(KEYS)
@@ -150,9 +150,7 @@ def _selected_rows(c, set_ids):
     item_ids = [r["item_id"] for r in rows["items"]]
     for t in ("item_audio_bindings", "item_visual_assets"):
         rows[t] = _read_rows(c, t, "WHERE item_id=ANY(%s::uuid[])", (item_ids,))
-    rows["question_set_item_audio_bindings"] = _read_rows(
-        c, "question_set_item_audio_bindings", "WHERE set_id=ANY(%s::uuid[])", (set_ids,))
-    audio_ids = sorted({r["audio_asset_id"] for t in ("item_audio_bindings", "question_set_item_audio_bindings") for r in rows[t]})
+    audio_ids = sorted({r["audio_asset_id"] for r in rows["item_audio_bindings"]})
     rows["tts_audio_assets"] = _read_rows(c, "tts_audio_assets", "WHERE audio_asset_id=ANY(%s::uuid[])", (audio_ids,))
     return rows
 
@@ -179,10 +177,14 @@ def capture_source(source_url, set_ids=None):
         if not set_ids:
             raise TransferError("세트를 하나 이상 선택하세요.")
     with connection(source_url) as c:
+        try:
+            require_item_audio_schema(c)
+        except ValueError as exc:
+            raise TransferError(str(exc)) from None
         schema = schema_description(c)
         present = {r[0] for r in schema["columns"]}
         if not set(TABLES + VIEWS).issubset(present):
-            raise TransferError("원본 문제은행의 6개 테이블·2개 뷰가 준비되지 않았습니다.")
+            raise TransferError("원본 문제은행의 5개 테이블·2개 뷰가 준비되지 않았습니다.")
         rows = _all_rows(c) if set_ids is None else _selected_rows(c, set_ids)
         return Snapshot(database_identity(c), schema, rows, set_ids)
 
@@ -236,14 +238,15 @@ def transfer_effects(source, target):
     visual_ids = _ids(source, "item_visual_assets")
     if any(r["visual_asset_id"] in visual_ids and r["item_id"] not in items for r in target["item_visual_assets"]):
         effects["blockers"].append("다른 문항이 같은 이미지 ID를 사용하고 있습니다.")
+    binding_ids = _ids(source, "item_audio_bindings")
+    if any(r["binding_id"] in binding_ids and r["item_id"] not in items for r in target["item_audio_bindings"]):
+        effects["blockers"].append("다른 문항이 같은 음원 연결 ID를 사용하고 있습니다.")
     source_audio = {r["audio_asset_id"]: r for r in source["tts_audio_assets"]}
     changed_audio = set(effects["replace"]["tts_audio_assets"]) | {
         r["audio_asset_id"] for r in target["tts_audio_assets"]
         if r["audio_asset_id"] in source_audio and r != source_audio[r["audio_asset_id"]]}
-    for table, owner, scope in (("item_audio_bindings", "item_id", items),
-                                ("question_set_item_audio_bindings", "set_id", sets)):
-        if any(r["audio_asset_id"] in changed_audio and r[owner] not in scope for r in target[table]):
-            effects["blockers"].append("선택 범위 밖에서도 사용하는 음원이 변경됩니다. 관련 세트도 선택하세요.")
+    if any(r["audio_asset_id"] in changed_audio and r["item_id"] not in items for r in target["item_audio_bindings"]):
+        effects["blockers"].append("선택 범위 밖에서도 사용하는 음원이 변경됩니다. 관련 세트도 선택하세요.")
     effects["detached"].sort()
     effects["blockers"] = sorted(set(effects["blockers"]))
     return effects
@@ -261,10 +264,8 @@ def _external_references(c):
 
 def _effect_blockers(c, rows, target, effects):
     deletes = {t for t, ids in effects["replace"].items() if ids}
-    for table, owner, scope in (("item_audio_bindings", "item_id", effects["scope"]["items"]),
-                                ("question_set_item_audio_bindings", "set_id", effects["scope"]["question_sets"])):
-        if any(r[owner] in scope for r in target[table]):
-            deletes.add(table)
+    if any(r["item_id"] in effects["scope"]["items"] for r in target["item_audio_bindings"]):
+        deletes.add("item_audio_bindings")
     source_visual_ids = _ids(rows, "item_visual_assets")
     if any(r["item_id"] in effects["scope"]["items"] and
            (r["visual_asset_id"] not in source_visual_ids or r["item_id"] in effects["replace"]["items"])
@@ -280,7 +281,6 @@ def _projection(rows, desired):
     return {t: [r for r in rows[t] if (
         (r["item_id"] in items or r["set_id"] in sets) if t == "items" else
         r["item_id"] in items if t in ("item_audio_bindings", "item_visual_assets") else
-        r["set_id"] in sets if t == "question_set_item_audio_bindings" else
         r[KEYS[t][0]] in _ids(desired, t))] for t in TABLES}
 
 
@@ -330,7 +330,6 @@ def _upsert(c, table, rows):
 
 def _apply(c, rows, effects):
     sets, items = effects["scope"]["question_sets"], effects["scope"]["items"]
-    c.execute("DELETE FROM topik_bank.question_set_item_audio_bindings WHERE set_id=ANY(%s::uuid[])", (sets,))
     c.execute("DELETE FROM topik_bank.item_audio_bindings WHERE item_id=ANY(%s::uuid[])", (items,))
     c.execute("""DELETE FROM topik_bank.item_visual_assets WHERE item_id=ANY(%s::uuid[])
         AND (NOT (visual_asset_id=ANY(%s::uuid[])) OR item_id=ANY(%s::uuid[]))""",
@@ -398,7 +397,6 @@ def check_shared_media(snapshot, cloudfront_base_url):
     items = {r["item_id"]: r for r in snapshot.rows["items"]}
     audio_ids = {r["audio_asset_id"] for r in snapshot.rows["item_audio_bindings"]
                  if r["is_current"] and r["content_hash"] == items[r["item_id"]]["content_hash"]}
-    audio_ids.update(r["audio_asset_id"] for r in snapshot.rows["question_set_item_audio_bindings"] if r["is_current"])
     active = [r for r in snapshot.rows["tts_audio_assets"] if r["audio_asset_id"] in audio_ids and not r["deleted_at"]]
     active += [r for r in snapshot.rows["item_visual_assets"] if r["is_current"] and r["content_hash"] == items[r["item_id"]]["content_hash"]]
     files = {(r["storage_url"], r["byte_size"], r["mime_type"]): r for r in active}

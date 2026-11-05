@@ -8,10 +8,15 @@ from topik_question_lab.step_06_publication.direct_publication import (
     make_package, package_draft, read_batches, require_target_schema,
 )
 from topik_question_lab.step_06_publication.postgres_storage import _psycopg, _upsert_item
+from topik_question_lab.step_06_publication.audio_bindings import bind_audio, require_item_audio_schema
 
 
 def require_media_schema(c):
     require_target_schema(c)
+    try:
+        require_item_audio_schema(c)
+    except ValueError as exc:
+        raise PublicationBlocked(str(exc)) from None
     for table in ("items", "question_sets"):
         checks = c.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=%s::regclass AND contype='c'",
                            (f"topik_bank.{table}",)).fetchall()
@@ -69,7 +74,9 @@ def check_media(c, package):
         expected_script = narration_script([i.candidate for i in draft.items if i.candidate.slot in positions])
         if any(asset["script_snapshot"].get(k) != v for k, v in expected_script.items()):
             raise PublicationBlocked("음원 생성 대본이 현재 문항과 다릅니다.")
-    bindings = c.execute("SELECT position,audio_asset_id,source_hash FROM topik_bank.question_set_item_audio_bindings WHERE set_id=%s AND is_current",
+    bindings = c.execute("""SELECT i.position,b.audio_asset_id,b.source_hash
+        FROM topik_bank.item_audio_bindings b JOIN topik_bank.items i ON i.item_id=b.item_id
+        WHERE i.set_id=%s AND b.is_current AND b.content_hash=i.content_hash""",
                          (package["set_id"],)).fetchall()
     if {r[0]: (str(r[1]), r[2]) for r in bindings} != expected_audio:
         raise PublicationBlocked("DB의 음원 연결이 준비한 전체 목록과 다릅니다.")
@@ -183,7 +190,6 @@ class MediaRegistration(DirectPublicationService):
         for item in package_draft(package).items:
             _upsert_item(c, item, Jsonb, review_status=package.get("review_status", "pending_review"))
         c.execute("UPDATE topik_bank.question_sets SET default_target_level=%s,review_status=%s WHERE set_id=%s", (package["level"], package.get("review_status", "pending_review"), package["set_id"]))
-        c.execute("UPDATE topik_bank.question_set_item_audio_bindings SET is_current=FALSE WHERE set_id=%s", (package["set_id"],))
         c.execute("""UPDATE topik_bank.item_visual_assets SET is_current=FALSE WHERE item_id IN
                      (SELECT item_id FROM topik_bank.items WHERE set_id=%s)""", (package["set_id"],))
         self._bind(c, package)
@@ -198,9 +204,10 @@ class MediaRegistration(DirectPublicationService):
             c.execute(f"INSERT INTO topik_bank.{table}({','.join(values)}) VALUES ({','.join(['%s'] * len(values))}) ON CONFLICT ({id_name}) DO NOTHING", parameters)
             if audio:
                 for position in asset["positions"]:
-                    c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
-                        VALUES (%s,%s,%s,%s) ON CONFLICT(set_id,position,audio_asset_id)
-                        DO UPDATE SET is_current=TRUE,source_hash=EXCLUDED.source_hash""",
-                        (package["set_id"], position, asset[id_name], asset["binding_source_hash"]))
+                    row = c.execute("SELECT item_id,content_hash FROM topik_bank.items WHERE set_id=%s AND position=%s",
+                                    (package["set_id"], position)).fetchone()
+                    if row is None:
+                        raise PublicationBlocked("음원을 연결할 문항이 세트에 없습니다.")
+                    bind_audio(c, row[0], row[1], asset[id_name], asset["binding_source_hash"])
             else:
                 c.execute("UPDATE topik_bank.item_visual_assets SET is_current=TRUE WHERE visual_asset_id=%s", (asset[id_name],))

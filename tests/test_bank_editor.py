@@ -55,8 +55,6 @@ def audio_binding(editor, positions):
             (aid, uuid.uuid4().hex * 2, "a" * 64))
         c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
             SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE section='listening' AND type_slot=ANY(%s)""", (aid, "b" * 64, positions))
-        c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
-            SELECT set_id,position,%s,%s FROM topik_bank.items WHERE section='listening' AND type_slot=ANY(%s)""", (aid, "b" * 64, positions))
     return str(aid)
 
 
@@ -159,7 +157,7 @@ def test_listening_shared_audio_invalidation_and_replacement(bank, tmp_path):
     bank.save(plan, uploader=fake_uploaded)
     latest = pick(bank, 21, "listening")
     assert media_ready(latest, latest["item"])
-    assert len(latest["media"]["question_set_item_audio_bindings"]) == 2
+    assert len(latest["media"]["item_audio_bindings"]) == 2
     assert latest["media"]["tts_audio_assets"][0]["script_snapshot"]["positions"] == [21, 22]
 
 

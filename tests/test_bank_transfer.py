@@ -44,7 +44,6 @@ def add_media(url, set_id):
             female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,storage_backend,file_sha256)
             VALUES (%s,%s,'synthetic','female','male','test-bucket','audio.mp3','https://media.example/audio.mp3',1,'s3',%s)""", (audio, 'a'*64, 'b'*64))
         c.execute("INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash) VALUES (%s,%s,%s,%s)", (item_id, content_hash, audio, 'a'*64))
-        c.execute("INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash) VALUES (%s,1,%s,%s)", (set_id, audio, 'a'*64))
         visual = str(uuid.uuid4())
         c.execute("""INSERT INTO topik_bank.item_visual_assets(visual_asset_id,item_id,content_hash,option_number,
             storage_bucket,storage_path,storage_url,mime_type,byte_size,storage_backend,file_sha256)
@@ -115,7 +114,7 @@ def test_position_swap_preserves_ids_and_external_item_references(banks):
         assert c.execute("SELECT count(*) FROM public.synthetic_answers").fetchone()[0] == 50
 
 
-def test_unique_collisions_replace_old_ids_in_all_six_tables(banks):
+def test_unique_collisions_replace_old_ids_in_all_five_tables(banks):
     source, target, first, _ = banks
     add_media(source, first)
     original = capture_source(source, [first])
@@ -229,7 +228,6 @@ def test_replacing_item_id_preserves_reused_visual_id(banks):
         new_item = uuid.uuid4()
         c.execute("UPDATE topik_bank.items SET source_key='temporary' WHERE item_id=%s", (old_item,))
         original = next(r for r in capture_source(source, [first]).rows['items'] if r['item_id'] == str(old_item))
-        c.execute("DELETE FROM topik_bank.question_set_item_audio_bindings WHERE set_id=%s AND position=1", (first,))
         c.execute("UPDATE topik_bank.items SET set_id=NULL,position=NULL WHERE item_id=%s", (old_item,))
         original['item_id'] = str(new_item)
         _upsert(c, 'items', [original])
@@ -264,7 +262,8 @@ def test_shared_audio_changes_do_not_modify_unselected_sets(banks):
     source, target, first, second = banks
     _, audio, _ = add_media(source, first)
     with psycopg.connect(source) as c:
-        c.execute("INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash) VALUES (%s,1,%s,%s)", (second, audio, 'a'*64))
+        c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
+            SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE set_id=%s AND position=1""", (audio, 'a'*64, second))
     send(source, target)
     with psycopg.connect(source) as c:
         c.execute("UPDATE topik_bank.tts_audio_assets SET duration_ms=100 WHERE audio_asset_id=%s", (audio,))

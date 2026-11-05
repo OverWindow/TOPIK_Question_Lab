@@ -134,6 +134,18 @@ def test_ibt_roles_and_invalid_count_are_rejected(tmp_path, monkeypatch):
     assert any(i.code == "chart_spec" for group in issues for i in group)
 
 
+def test_ibt_combo_chart_accepts_grouped_population_values():
+    spec = {**COMBO, "title": "도시 인구 현황", "labels": ["2020년", "2022년", "2024년"],
+            "values": [9600000, 9450000, 9300000], "unit": "명", "series_name": "인구 수",
+            "line_values": [16, 18, 20], "line_name": "65세 이상 인구 비율", "line_unit": "%"}
+    source = ("도시 인구 현황\n인구 수: 2020년: 9,600,000명\n인구 수: 2022년: 9,450,000명\n"
+              "인구 수: 2024년: 9,300,000명\n65세 이상 인구 비율: 2020년: 16%\n"
+              "65세 이상 인구 비율: 2022년: 18%\n65세 이상 인구 비율: 2024년: 20%")
+    assert chart_spec(spec, source) == spec
+    with pytest.raises(ValueError):
+        chart_spec(spec, source.replace("2022년: 18%", "2022년: 20%"))
+
+
 def test_mapping_and_renderers():
     assert len(ibt_profiles("reading")) == 13
     assert len(ibt_profiles("listening")) == 14

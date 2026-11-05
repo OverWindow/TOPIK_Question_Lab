@@ -101,15 +101,13 @@ def read_bank(database_url):
                 WHERE table_schema='topik_bank'""")}
             required = {(t, col) for t in ("tts_audio_assets", "item_visual_assets")
                         for col in ("storage_url", "storage_backend", "file_sha256")}
-            required |= {("item_audio_bindings", "is_current"), ("question_set_item_audio_bindings", "is_current")}
+            required |= {("item_audio_bindings", "is_current"), ("item_audio_bindings", "binding_id")}
             if required <= columns:
                 audio = query("""SELECT i.item_id,a.audio_asset_id,a.storage_url,a.narration_version,a.storage_backend,a.file_sha256
                     FROM topik_bank.items i
-                    LEFT JOIN topik_bank.question_set_item_audio_bindings sb
-                      ON sb.set_id=i.set_id AND sb.position=i.position AND sb.is_current
-                    LEFT JOIN topik_bank.item_audio_bindings ib
+                    JOIN topik_bank.item_audio_bindings ib
                       ON ib.item_id=i.item_id AND ib.content_hash=i.content_hash AND ib.is_current
-                    JOIN topik_bank.tts_audio_assets a ON a.audio_asset_id=COALESCE(sb.audio_asset_id,ib.audio_asset_id)
+                    JOIN topik_bank.tts_audio_assets a ON a.audio_asset_id=ib.audio_asset_id
                     WHERE a.deleted_at IS NULL""")
                 visuals = query("""SELECT i.item_id,a.visual_asset_id,a.visual_role,a.option_number,a.storage_url,a.storage_backend,a.file_sha256
                     FROM topik_bank.items i JOIN topik_bank.item_visual_assets a

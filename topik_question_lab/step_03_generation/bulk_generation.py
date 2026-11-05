@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections import Counter
 from topik_question_lab.step_02_planning.exam_profiles import profiles_for_exam, exam_for_type, question_count, profile_for
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from topik_question_lab.step_03_generation.generation_service import build_generation_snapshot, record_generation_topics, save_generation
@@ -17,7 +17,7 @@ from topik_question_lab.step_02_planning.listening_profiles import LISTENING_TYP
 from topik_question_lab.common.listening_storage import ListeningStorage
 from topik_question_lab.common.models import ProviderResult, QuestionExample
 from topik_question_lab.step_02_planning.prompt_profiles import QUESTION_TYPE_PROFILES
-from topik_question_lab.step_03_generation.providers import DEFAULT_GENERATION_PRESET, DEFAULT_PROVIDERS, GENERATION_PRESETS, can_gateway_call, call_provider, supports_generation_presets
+from topik_question_lab.step_03_generation.providers import DEFAULT_GENERATION_PRESET, DEFAULT_PROVIDERS, GENERATION_PRESETS, BIZROUTER_PREFIX, bizrouter_capabilities, parse_bizrouter_models, provider_backend, provider_model, can_gateway_call, call_provider, supports_generation_presets
 from topik_question_lab.common.storage import Storage
 from topik_question_lab.step_02_planning.topic_bank import TopicBrief, TopicStore, generation_units
 
@@ -49,8 +49,10 @@ def model_options(root: Path) -> list[tuple[str, str]]:
     for section, directory in (("reading", root / "data/types"), ("listening", root / "data/listening/types")):
         for path in directory.glob("*.db"):
             try:
-                with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+                with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
                     settings = dict(connection.execute("SELECT key,value FROM settings"))
+                options.update((BIZROUTER_PREFIX + item["id"], item["id"])
+                               for item in parse_bizrouter_models(settings.get("bizrouter_models", "[]")))
                 for key in ("active_providers", "chatkhu_models", "known_models"):
                     try:
                         values = json.loads(settings.get(key, "[]"))
@@ -62,16 +64,37 @@ def model_options(root: Path) -> list[tuple[str, str]]:
                         if not isinstance(value, str) or not value.strip():
                             continue
                         provider = known.get(value, value)
-                        config = DEFAULT_PROVIDERS.get(provider)
-                        model = settings.get(f"model_{provider}", config.model if config else value).strip()
+                        model = settings.get(f"model_{provider}", provider_model(provider)).strip()
                         options.add((provider, model))
             except sqlite3.Error:
                 continue
     return sorted((provider, model) for provider, model in options if model and is_text_model(model))
 
 
+def model_capabilities_for(root: Path, model: str) -> dict | None:
+    paths = [root / "data/bulk_generation.db", *sorted((root / "data/types").glob("*.db")),
+             *sorted((root / "data/listening/types").glob("*.db"))]
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+                row = connection.execute("SELECT value FROM settings WHERE key='bizrouter_models'").fetchone()
+            capabilities = bizrouter_capabilities(row[0], model) if row else None
+            if capabilities:
+                return capabilities
+        except sqlite3.Error:
+            continue
+    return None
+
+
 def custom_model(model: str) -> tuple[str, str]:
     model = model.strip()
+    if model.startswith(BIZROUTER_PREFIX):
+        actual = provider_model(model)
+        if not actual or not is_text_model(actual) or "/" not in actual or actual.startswith("bizrouter/"):
+            raise ValueError("BizRouter 카탈로그의 텍스트 모델 ID를 입력하세요.")
+        return model, actual
     if not model or not is_text_model(model):
         raise ValueError("문제 생성에 사용할 텍스트 모델 ID를 입력하세요.")
     provider = next((key for key, config in DEFAULT_PROVIDERS.items() if config.model == model), model)
@@ -95,6 +118,7 @@ def prepare_batch(root: Path, section: str, provider: str, model: str, preset: s
         preset = DEFAULT_GENERATION_PRESET
     store = TopicStore(root / "data/topic_bank.db")
     reserved, counts, snapshots = set(), Counter(), []
+    capabilities = model_capabilities_for(root, model) if provider_backend(provider, model) == "bizrouter" else None
     for type_id, profile in sorted(profiles.items(), key=lambda pair: min(pair[1].question_numbers)):
         try:
             storage = storage_for(root, section, type_id)
@@ -110,6 +134,8 @@ def prepare_batch(root: Path, section: str, provider: str, model: str, preset: s
             counts.update(brief.pair for brief in topics)
             snapshot = build_generation_snapshot(storage, section, type_id, provider, model, preset,
                                                  len(profile.question_numbers), topics)
+            if provider_backend(provider, model) == "bizrouter":
+                snapshot["model_capabilities"] = capabilities
             snapshots.append(snapshot)
         except Exception as exc:
             errors.append(f"{profile.number_range}번 · {profile.label}: {exc}")
@@ -421,6 +447,8 @@ class BulkRunner:
                     def invoke():
                         self.store.update_task(batch_id, type_id, "processing")
                         extra = {"managed_retries": True} if config and self.provider_call is call_provider else {}
+                        if "model_capabilities" in snapshot:
+                            extra["model_capabilities"] = snapshot["model_capabilities"]
                         value = self.provider_call(snapshot["provider"], snapshot["model"], "generation",
                             snapshot["system"], snapshot["user"], generation_preset=snapshot["preset"], **extra)
                         if config and value.error_retryable:

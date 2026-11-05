@@ -72,6 +72,16 @@ def old_bank(postgres_database_factory, tmp_path, monkeypatch):
     binaries = os.getenv("TEST_PG_BIN_DIR")
     if not binaries:
         pytest.skip("TEST_PG_BIN_DIR supplies local pg_dump/pg_restore")
+    # Exercise the historical 009 -> 010 release independently of manual 011.
+    reviewed = tmp_path / "reviewed_migrations"
+    reviewed.mkdir()
+    for path in migration.MIGRATION_DIR.glob("*.sql"):
+        if path.stem <= migration.AUTO_VERSION:
+            (reviewed / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(migration, "MIGRATION_DIR", reviewed)
+    monkeypatch.setattr(postgres_storage, "MIGRATION_DIR", reviewed)
+    from topik_question_lab.step_06_publication.direct_publication import require_target_schema
+    monkeypatch.setattr(migration, "require_media_schema", require_target_schema)
     url = postgres_database_factory()
     with psycopg.connect(url) as c:
         data_directory = c.execute("SHOW data_directory").fetchone()[0]

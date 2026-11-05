@@ -206,7 +206,7 @@ def test_reading_and_listening_multiple_sets_require_all_media(cleanup_bank, mon
     with service.reader.connect() as c:
         c.execute("UPDATE topik_bank.items SET review_status='reviewed'")
         c.execute("UPDATE topik_bank.question_sets SET review_status='reviewed'")
-        c.execute("UPDATE topik_bank.question_set_item_audio_bindings SET is_current=false WHERE position=1")
+        c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=false WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE position=1)")
     rows = service.candidates()
     assert next(r for r in rows if r['section'] == 'listening')['reasons']
     before = db_files(service.root)
@@ -214,7 +214,7 @@ def test_reading_and_listening_multiple_sets_require_all_media(cleanup_bank, mon
         service.prepare([r['set_id'] for r in rows])
     assert db_files(service.root) == before
     with service.reader.connect() as c:
-        c.execute("UPDATE topik_bank.question_set_item_audio_bindings SET is_current=true WHERE position=1")
+        c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=true WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE position=1)")
     def forbidden(*args, **kwargs):
         raise AssertionError('No S3 requests during cleanup')
     monkeypatch.setattr('topik_question_lab.step_06_publication.media_cloud.S3MediaStore.__init__', forbidden)

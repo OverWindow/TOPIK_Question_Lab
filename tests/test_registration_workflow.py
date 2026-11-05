@@ -247,8 +247,8 @@ def test_changed_listening_question_invalidates_shared_track_only(setup_bank):
             storage_bucket,storage_path,storage_url,byte_size,narration_version,script_snapshot)
             VALUES (%s,%s,'synthetic','a','b','synthetic','audio.mp3','https://example.invalid/audio.mp3',1,'exam_track_v4','{}')""", (aid, "a"*64))
         for position in (21, 22):
-            c.execute("""INSERT INTO topik_bank.question_set_item_audio_bindings(set_id,position,audio_asset_id,source_hash)
-                VALUES (%s,%s,%s,%s)""", (sid, position, aid, "b"*64))
+            c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
+                SELECT item_id,content_hash,%s,%s FROM topik_bank.items WHERE set_id=%s AND position=%s""", (aid, "b"*64, sid, position))
     edited = next(c for c in candidates if c.slot == 21)
     with sqlite3.connect(w.root / edited.source_db) as c:
         raw = c.execute("SELECT data_json FROM generated_questions WHERE id=?", (edited.generated_id,)).fetchone()[0]
@@ -257,5 +257,5 @@ def test_changed_listening_question_invalidates_shared_track_only(setup_bank):
         c.execute("UPDATE generated_questions SET edited_json=? WHERE id=?", (json.dumps(q), edited.generated_id))
     assert w.execute(w.prepare("update", [edited.source_key], META))["status"] == "succeeded"
     with w.reader.connect(True) as c:
-        assert c.execute("SELECT count(*) FROM topik_bank.question_set_item_audio_bindings WHERE is_current").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM topik_bank.item_audio_bindings WHERE is_current").fetchone()[0] == 0
         assert c.execute("SELECT count(*) FROM topik_bank.tts_audio_assets").fetchone()[0] == 1

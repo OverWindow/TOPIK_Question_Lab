@@ -17,6 +17,7 @@ from topik_question_lab.step_03_generation.media_generation import preflight
 from topik_question_lab.step_03_generation.media_provider import MediaSettings
 from topik_question_lab.ui.runner_service import get_runner
 from topik_question_lab.ui.bulk_progress import completed_batches
+from topik_question_lab.ui.set_identity import set_view, set_label, set_list_row, render_set_summary
 from topik_question_lab.step_06_publication.storage_overview import load_overview
 from topik_question_lab.step_03_generation.providers import (
     DEFAULT_GENERATION_PRESET, GENERATION_PRESETS, can_gateway_call, generation_parameter_preview,
@@ -151,6 +152,7 @@ def render_progress():
     if not batches:
         return
     st.subheader("생성 진행")
+    st.caption("세트 이름의 생성 시각은 한국 시간(KST)입니다. 식별코드는 등록 후에도 유지됩니다.")
     refresh = st.button("등록 상태 새로 확인", key="bulk-refresh-registration")
     identity = (str(ROOT), os.getenv("DATABASE_URL", ""), signature)
     cached = st.session_state.get("bulk-registration-snapshot")
@@ -158,6 +160,9 @@ def render_progress():
         cached = (identity, time.monotonic(), load_overview(ROOT, os.getenv("DATABASE_URL", "")))
         st.session_state["bulk-registration-snapshot"] = cached
     snapshot = cached[2]
+    snapshots = {b["id"]: b for b in snapshot["batches"]}
+    views = {b["id"]: set_view({**b, **snapshots.get(b["id"], {})}, sets=snapshot["bank"]["sets"],
+                             bank_available=snapshot["bank"]["available"]) for b in batches}
     from topik_question_lab.common.local_cleanup import batch_was_cleaned
     completed = completed_batches(snapshot)
     completed_ids = {b["id"] for b in completed}
@@ -168,14 +173,13 @@ def render_progress():
             st.session_state.pop("bulk-completed-history", None)
         with st.expander(f"완료된 생성 이력 · {len(completed)}개", expanded=False):
             st.caption("PostgreSQL의 전체 문항과 필수 미디어 URL 연결이 확인된 묶음입니다. 검수 상태와 실제 파일 검증은 등록 화면에서 확인하세요.")
-            st.dataframe([{"영역": "듣기" if b["section"] == "listening" else "읽기", "모델": b["model"],
-                           "생성 시각 (UTC)": b["created_at"], "시험": b.get("exam_format", "pbt").upper(), "문항": str(question_count(b.get("exam_format", "pbt"))), "검수": b["review_status"],
+            st.dataframe([{**set_list_row(views[b["id"]]),
                            "음원 연결": f"{b['coverage']['audio_bound']}/{b['coverage']['audio_required']}",
                            "이미지 연결": f"{b['coverage']['images_ready']}/{b['coverage']['images_required']}"}
                           for b in completed], hide_index=True, width="stretch")
             completed_id = st.selectbox("완료된 생성 묶음", [b["id"] for b in completed],
-                format_func=lambda value: next(f"{'듣기' if b['section']=='listening' else '읽기'} · {b['model']} · {b['created_at']} UTC"
-                                              for b in completed if b["id"] == value), key="bulk-completed-history")
+                format_func=lambda value: set_label(views[value]), key="bulk-completed-history")
+            render_set_summary(views[completed_id])
             if st.button("완료된 묶음 등록·승인 확인", key="bulk-completed-publication"):
                 st.session_state["publication-batch-link"] = completed_id
                 st.switch_page(str(Path(__file__).resolve().parent / "postgres_publish_app.py"))
@@ -187,12 +191,12 @@ def render_progress():
     active_ids = [b["id"] for b in batches]
     if st.session_state.get("bulk-history") not in active_ids:
         st.session_state.pop("bulk-history", None)
+    st.dataframe([set_list_row(views[bid]) for bid in active_ids], hide_index=True, width="stretch")
     selected_id = st.selectbox(
         "생성 묶음", active_ids, key="bulk-history",
-        format_func=lambda value: next(
-            f"{'듣기' if batch['section'] == 'listening' else '읽기'} · {batch['created_at']} UTC · {batch['model']} · {value[:8]}"
-            for batch in batches if batch["id"] == value),
+        format_func=lambda value: set_label(views[value]),
     )
+    render_set_summary(views[selected_id])
     batch = next(value for value in batches if value["id"] == selected_id)
     batch_format = batch.get("exam_format", "pbt")
     total = question_count(batch_format)

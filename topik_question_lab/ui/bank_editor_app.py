@@ -12,9 +12,10 @@ from topik_question_lab.step_06_publication.bank_editor import (
     BankEditor, item_metadata, prepare_edit, question_profile, shared_members,
     audio_members, media_ready, set_health,
 )
-from topik_question_lab.step_06_publication.direct_publication import _hash
-from topik_question_lab.step_06_publication.storage_overview import read_bank, REVIEW_LABELS, visual_requirements
+from topik_question_lab.step_06_publication.direct_publication import _hash, read_batches, PublicationBlocked
+from topik_question_lab.step_06_publication.storage_overview import read_bank, bank_coverage, REVIEW_LABELS, visual_requirements
 from topik_question_lab.ui.registration_ui import show_question
+from topik_question_lab.ui.set_identity import set_view, set_label, render_set_summary
 
 
 SECTION = {"reading": "읽기", "listening": "듣기", "writing": "쓰기"}
@@ -242,14 +243,26 @@ def render_app(url):
         saved = st.session_state.get("bank-editor-list")
         if not saved or saved["target"] != editor.target:
             refresh()
-            saved = {"target": editor.target, "bank": read_bank(url)}
+            try:
+                batches = read_batches(ROOT)
+            except PublicationBlocked:
+                batches = []
+            saved = {"target": editor.target, "bank": read_bank(url), "batches": batches}
             st.session_state["bank-editor-list"] = saved
         bank = saved["bank"]
         if not bank["available"]:
             st.error(bank["message"])
             return
+        views = {}
+        for s in bank["sets"]:
+            members = [i for i in bank["items"] if str(i["set_id"]) == str(s["set_id"])]
+            views[str(s["set_id"])] = set_view({**s, "item_count": len(members),
+                "coverage": bank_coverage(members) if bank["media_available"] else None}, batches=saved.get("batches", []))
         prepared = st.session_state.get("bank-editor-plan")
         if prepared:
+            snapshot = prepared["plan"]["snapshot"] if prepared["action"] == "edit" else prepared["snapshot"]
+            if str(snapshot["item"]["set_id"]) in views:
+                render_set_summary(views[str(snapshot["item"]["set_id"])])
             confirm_plan(editor, prepared)
             return
         exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key="bank-editor-exam")
@@ -260,7 +273,7 @@ def render_app(url):
         types = sorted({r["item_type"] for r in items if section == "all" or r["section"] == section})
         selected_type = filters[1].selectbox("유형 필터", ["all", *types], format_func=lambda v: "전체" if v == "all" else v)
         set_options = ["all", "none", *sorted(sets)]
-        selected_set = filters[2].selectbox("세트 필터", set_options, format_func=lambda v: "전체" if v == "all" else "미배정" if v == "none" else f"{SECTION.get(sets[v]['section'])} · {sets[v]['generator_version']} · 세트 {sets[v]['set_sequence']}")
+        selected_set = filters[2].selectbox("세트 필터", set_options, format_func=lambda v: "전체" if v == "all" else "미배정" if v == "none" else set_label(views[v]))
         search = st.text_input("문제 내용 검색").strip().lower()
         show_retired = st.checkbox("사용 중지 문항 포함")
         focus = st.session_state.pop("bank-editor-open-item", None)
@@ -275,9 +288,12 @@ def render_app(url):
                 rows.append(focused)
         st.caption(f"{len(rows)}문항")
         if not rows:
+            if selected_set in views:
+                render_set_summary(views[selected_set])
             st.info("조건에 맞는 문제가 없습니다.")
             return
         st.dataframe([{"시험": r.get("exam_format", "pbt").upper(), "영역": SECTION.get(r["section"]), "번호": r["type_slot"], "유형": r["item_type"],
+                       "세트": set_label(views[str(r["set_id"])]) if str(r["set_id"]) in views else "미배정",
                        "상태": REVIEW_LABELS.get(r["review_status"], r["review_status"]), "문제": r["stem"][:90],
                        "문항 ID": str(r["item_id"])} for r in rows], hide_index=True, width="stretch")
         options = [str(r["item_id"]) for r in rows]
@@ -292,6 +308,10 @@ def render_app(url):
             cached = editor.load(item_id)
             st.session_state["bank-editor-snapshot"] = cached
         row = cached["item"]
+        if str(row["set_id"]) in views:
+            render_set_summary(views[str(row["set_id"])])
+        else:
+            st.info("선택한 문항: 세트 미배정")
         st.caption(f"문항 ID: {row['item_id']} · 유형: {row['item_type']} · 번호: {row['type_slot']} · 상태: {REVIEW_LABELS.get(row['review_status'])}")
         if cached["set"]:
             health = set_health(cached["items"])

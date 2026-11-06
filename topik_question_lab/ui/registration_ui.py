@@ -14,6 +14,7 @@ from topik_question_lab.step_06_publication.publication import collect_candidate
 from topik_question_lab.step_06_publication.storage_overview import load_overview, REVIEW_LABELS, visual_requirements, PHASE_LABELS
 from topik_question_lab.step_06_publication.postgres_inspection import inspect_database
 from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+from topik_question_lab.ui.set_identity import korean_time, set_view, set_label, set_list_row, render_set_summary
 
 
 SECTION = {"reading": "읽기", "listening": "듣기", "writing": "쓰기"}
@@ -161,12 +162,14 @@ def render_batches(snapshot, catalog, workflow, ready):
     if not batches:
         st.info("일괄 생성한 묶음이 없습니다. 문제 일괄 생성에서 먼저 생성하세요.")
         return
-    labels = {b["id"]: f"{b.get('exam_format', 'pbt').upper()} · {SECTION[b['section']]} · {b['model']} · {b['created_at']} UTC" for b in batches}
+    views = {b["id"]: set_view(b, sets=snapshot["bank"]["sets"], bank_available=snapshot["bank"]["available"]) for b in batches}
+    labels = {bid: set_label(view) for bid, view in views.items()}
     linked = st.session_state.pop("publication-batch-link", None)
     if linked in labels:
         st.session_state["registration-batch"] = linked
     bid = st.selectbox("생성 묶음", list(labels), format_func=labels.get, key="registration-batch")
     b = next(b for b in batches if b["id"] == bid)
+    render_set_summary(views[bid])
     if any(bid in r["batch_ids"] for r in cleanup_receipts(workflow.root)):
         st.info("등록 완료 · 로컬 정리 이력 있음. 등록된 세트에서 확인하세요. 일부 정리는 로컬 정리 화면에서 이어서 진행할 수 있습니다.")
         st.button("로컬 정리 상태 보기", on_click=change_mode, args=("set-cleanup",))
@@ -277,11 +280,12 @@ def render_sets(snapshot, url):
     if not sets:
         st.info("조회된 세트가 없습니다." if snapshot["bank"]["available"] else "DB 연결 상태를 확인하세요.")
         return
-    label = lambda s: f"{s.get('exam_format', 'pbt').upper()} · {SECTION[s['section']]} · {s['generator_version']} · {s['set_sequence']}번 세트"
-    chosen = st.selectbox("확인할 세트", range(len(sets)), format_func=lambda i: label(sets[i]))
-    s = sets[chosen]
+    views = {str(s["set_id"]): set_view(s, batches=snapshot["batches"]) for s in sets}
+    st.dataframe([set_list_row(view) for view in views.values()], hide_index=True, width="stretch")
+    chosen = st.selectbox("확인할 세트", list(views), format_func=lambda sid: set_label(views[sid]))
+    s = next(s for s in sets if str(s["set_id"]) == chosen)
+    render_set_summary(views[chosen])
     with st.container(border=True):
-        st.subheader(label(s))
         st.write(f"{'✅' if s['item_count']==question_count(s.get('exam_format', 'pbt')) else '⚠️'} 문제 {s['item_count']}/{question_count(s.get('exam_format', 'pbt'))} · 등록 완료 · {REVIEW_LABELS.get(s['review_status'],s['review_status'])}")
         show_coverage(s["coverage"])
         key = f"registration-verification-{s['set_id']}"
@@ -297,7 +301,7 @@ def render_sets(snapshot, url):
             st.session_state[key] = (snapshot["checked_at"], message, datetime.now(timezone.utc).isoformat(timespec="seconds"))
         checked = st.session_state.get(key)
         if checked and checked[0] == snapshot["checked_at"]:
-            st.write(f"{checked[1]} · {checked[2]}")
+            st.write(f"{checked[1]} · {korean_time(checked[2])} (KST)")
         else:
             st.caption("실제 파일 접근: 미검증")
         members = sorted([i for i in snapshot["bank"]["items"] if i["set_id"] == s["set_id"]], key=lambda i:i["position"])
@@ -343,7 +347,7 @@ def render_history(root, workflow, ready):
         st.caption("등록 작업 이력이 없습니다.")
     for job in jobs[:20]:
         current = job["target"] == workflow.target
-        with st.expander(f"{job['created_at']} UTC · {STATUS.get(job['status'],job['status'])}" + ("" if current else " · 이전 DB · 조회 전용")):
+        with st.expander(f"{korean_time(job['created_at'])} (KST) · {STATUS.get(job['status'],job['status'])}" + ("" if current else " · 이전 DB · 조회 전용")):
             packages = job["payload"]["packages"]
             st.write(f"대상 {sum(len(p.get('candidates', [])) for p in packages)}문제")
             st.caption(f"작업 ID: {job['id']}")
@@ -422,7 +426,8 @@ def render_set_cleanup(root, url, snapshot):
     except Exception:
         st.warning("정리 이력을 읽지 못했습니다. 로컬 DB를 확인하세요.")
         return
-    label = lambda r: f"{SECTION[r['section']]} · {r['model']} · {r['sequence']}번 세트"
+    labels = {str(s["set_id"]): set_label(set_view(s, batches=snapshot["batches"])) for s in snapshot["bank"]["sets"]}
+    label = lambda r: labels.get(str(r["set_id"]), f"{SECTION[r['section']]} · {r['model']} · {r['sequence']}번 세트")
     st.dataframe([{"세트": label(r), "남은 로컬 문제": r["count"],
                    "상태": "로컬 정리 완료" if r["complete"] else " · ".join(r["reasons"]) or "정리 가능"}
                   for r in rows], hide_index=True, width="stretch")
@@ -482,7 +487,7 @@ def render_app(root, url, initial_mode="add"):
     bank = snapshot["bank"]
     ready = bank["available"] and saved["schema_ready"] and not snapshot["errors"]
     st.button("현황 새로고침", on_click=clear_snapshot)
-    st.caption(f"조회 시각 {snapshot['checked_at']} · UTC")
+    st.caption(f"조회 시각 {korean_time(snapshot['checked_at'])} (KST)")
     if not url:
         st.info("로컬 PostgreSQL 연결이 필요합니다. 고급 설정에서 연결 준비 상태를 확인하세요.")
     elif not bank["available"]:
@@ -542,6 +547,9 @@ def render_app(root, url, initial_mode="add"):
     st.divider()
     plan = st.session_state.get("registration-plan")
     if plan:
+        batch = next((b for b in snapshot["batches"] if b["id"] == plan.get("batch_id")), None)
+        if batch:
+            render_set_summary(set_view(batch, sets=bank["sets"], bank_available=bank["available"]))
         confirmation(plan, workflow)
     else:
         st.subheader(MODES[mode])

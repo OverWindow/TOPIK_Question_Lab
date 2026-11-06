@@ -227,6 +227,7 @@ def load_overview(root: Path, database_url: str):
         set_id = batch_set_id(batch["section"], batch["id"])
         stored = items_by_set[set_id]
         batch.update(local_count=len(records), registered_count=len(stored) if bank["available"] else None,
+                     local_approved_count=sum(bool(r.candidate.review.get("approved")) for r in records),
                      set_id=set_id, review_status=REVIEW_LABELS.get(sets.get(set_id, {}).get("review_status"), "미등록"),
                      preparation=preparation_progress(batch, records, tasks),
                      coverage=bank_coverage(stored) if bank["media_available"] and stored else None,

@@ -43,12 +43,32 @@ def test_local_counts_examples_filters_and_refresh_are_readonly(tmp_path):
     assert sum(i["examples"] for i in result["inventory"]) == 1
     assert {r["status"] for r in result["rows"]} == {"PG 확인 불가"}
     assert result["batches"][0]["registered_count"] is None
+    assert result["batches"][0]["local_approved_count"] == 0
     app = AppTest.from_file(str(PAGE), default_timeout=20).run()
     assert not app.exception
     next(w for w in app.multiselect if w.label == "영역").set_value(["listening"]).run()
     assert not app.exception and any("조건에 맞는 문항" in i.value for i in app.info)
     next(b for b in app.button if b.label == "현황 새로고침").click().run()
     assert not app.exception
+    assert files(tmp_path) == before
+
+
+def test_batch_date_filter_uses_the_displayed_korean_date(tmp_path):
+    from datetime import date
+    seed_batch(tmp_path)
+    with sqlite3.connect(tmp_path / "data/bulk_generation.db") as c:
+        c.execute("UPDATE batches SET created_at='2026-11-05 15:30:00'")
+    before = files(tmp_path)
+    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    picker = next(s for s in app.selectbox if s.label == "작업 기록을 볼 묶음")
+    assert "2026/11/06 00:30 생성" in picker.options[0]
+    next(w for w in app.checkbox if w.label == "날짜 범위 지정").check().run()
+    app.date_input[0].set_value((date(2026, 11, 6), date(2026, 11, 6))).run()
+    assert not app.exception
+    assert any(s.label == "작업 기록을 볼 묶음" for s in app.selectbox)
+    app.date_input[0].set_value((date(2026, 11, 5), date(2026, 11, 5))).run()
+    assert not app.exception
+    assert not any(s.label == "작업 기록을 볼 묶음" for s in app.selectbox)
     assert files(tmp_path) == before
 
 

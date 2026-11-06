@@ -14,6 +14,9 @@ import streamlit as st
 from topik_question_lab.step_06_publication.storage_overview import load_overview, REVIEW_LABELS, PHASE_LABELS
 from topik_question_lab.step_06_publication.media_cloud import preview_s3_media
 from topik_question_lab.step_06_publication.bank_editor import set_health
+from topik_question_lab.ui.set_identity import (
+    KST, korean_datetime, korean_time, set_view, set_label, set_list_row, render_set_summary,
+)
 
 
 ROOT = Path(os.getenv("TOPIK_LAB_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -32,7 +35,9 @@ if refresh or not saved or saved["identity"] != identity:
         st.session_state["storage-overview"] = saved
 snapshot = saved["snapshot"]
 bank, all_rows = snapshot["bank"], snapshot["rows"]
-st.caption(f"조회 시각: {snapshot['checked_at']} · UTC · 생성 중인 작업은 새로고침으로 확인하세요.")
+batch_views = {b["id"]: set_view(b, sets=bank["sets"], bank_available=bank["available"]) for b in snapshot["batches"]}
+set_views = {str(s["set_id"]): set_view(s, batches=snapshot["batches"]) for s in bank["sets"]}
+st.caption(f"조회 시각: {korean_time(snapshot['checked_at'])} (KST) · 생성 중인 작업은 새로고침으로 확인하세요.")
 st.caption("DB별로 조회한 시점의 기록입니다. 실행 중에는 SQLite와 PostgreSQL의 반영 시점이 잠시 다를 수 있습니다.")
 for error in snapshot["errors"]:
     st.warning(error)
@@ -61,22 +66,21 @@ filters = st.columns(3)
 sections = filters[0].multiselect("영역", list(SECTION), format_func=SECTION.get)
 models = filters[1].multiselect("모델", sorted({r["model_id"] for r in all_rows} | {b["model"] for b in snapshot["batches"]}))
 date_filter = filters[2].checkbox("날짜 범위 지정")
-today = datetime.now(timezone.utc).date()
-dates = st.date_input("생성일 / 세트 등록일 (UTC)", value=(today, today)) if date_filter else ()
+today = datetime.now(KST).date()
+dates = st.date_input("생성일 / 세트 등록일 (한국 시간)", value=(today, today)) if date_filter else ()
 
 
 def included(section, model, created):
     if sections and section not in sections or models and model not in models:
         return False
     if date_filter and isinstance(dates, (tuple, list)) and len(dates) == 2:
-        try:
-            day = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-            if day.tzinfo:
-                day = day.astimezone(timezone.utc)
-            return dates[0] <= day.date() <= dates[1]
-        except (ValueError, TypeError):
-            return False
+        day = korean_datetime(created)
+        return day is not None and dates[0] <= day.date() <= dates[1]
     return True
+
+
+def item_set_view(row):
+    return set_views.get(str(row.get("set_id"))) or batch_views.get(row.get("batch_id"))
 
 
 def fraction(value, total):
@@ -132,8 +136,8 @@ with batch_tab:
     st.caption("PBT 듣기는 50문항·35개 음원, IBT 듣기는 30문항·22개 음원입니다. 이미지 수는 필요한 문항별 이미지 연결 수이며, 미완성·검사 오류 묶음은 준비 수량을 확정할 수 없습니다.")
     if batches:
         st.dataframe([{
-            "묶음": b["id"], "영역": SECTION.get(b["section"], b["section"]), "모델": b["model"],
-            "생성일": b["created_at"], "SQLite 문항": f"{b['local_count']}/{question_count(b.get('exam_format', 'pbt'))}",
+            **set_list_row(batch_views[b["id"]]), "생성일 (KST)": korean_time(b["created_at"]),
+            "SQLite 문항": f"{b['local_count']}/{question_count(b.get('exam_format', 'pbt'))}",
             "음원 파일": b["preparation"]["audio_files"],
             "음원 준비 문항": fraction(b["preparation"]["audio_bound"], question_count(b.get("exam_format", "pbt"))) if b["section"] == "listening" else "해당 없음",
             "이미지 준비": fraction(b["preparation"]["images_ready"], b["preparation"]["images_required"]),
@@ -143,12 +147,13 @@ with batch_tab:
             "재시도 대기": b["task_statuses"].get("retry_wait", 0), "실패 작업": b["task_statuses"].get("failed", 0),
             "PG 검수": b["review_status"] if bank["available"] else "확인 불가",
         } for b in batches], hide_index=True, width="stretch")
-        bid = st.selectbox("작업 기록을 볼 묶음", [b["id"] for b in batches])
+        bid = st.selectbox("작업 기록을 볼 묶음", [b["id"] for b in batches], format_func=lambda bid: set_label(batch_views[bid]))
         batch = next(b for b in batches if b["id"] == bid)
+        render_set_summary(batch_views[bid])
         with st.expander("미디어 작업·재시도 기록"):
             st.dataframe([{"단계": PHASE_LABELS.get(t["kind"], t["kind"]),
                            "상태": PHASE_LABELS.get(t["status"], t["status"]), "시도 횟수": t["attempts"],
-                           "재시도 예정 (UTC)": datetime.fromtimestamp(t["next_attempt_at"], timezone.utc).isoformat(timespec="seconds")
+                           "재시도 예정 (KST)": korean_time(datetime.fromtimestamp(t["next_attempt_at"], timezone.utc))
                            if t["next_attempt_at"] else "—"} for t in batch["tasks"]], hide_index=True, width="stretch")
         st.caption("재시도·중단은 ‘문제 일괄 생성’ 화면에서 실행할 수 있습니다.")
     else:
@@ -161,12 +166,15 @@ with item_tab:
     st.caption(f"필터 결과 {len(rows)}문항 · 저장 내용 비교와 검수 상태는 별도로 표시합니다.")
     if rows:
         st.dataframe([{"상태": r["status"], "영역": SECTION.get(r["section"], r["section"]), "모델": r["model_id"],
-                       "번호": r["type_slot"], "유형": r["item_type"], "생성일": r["created_at"],
+                       "번호": r["type_slot"], "유형": r["item_type"], "생성일 (KST)": korean_time(r["created_at"]),
                        "SQLite 검수": r["local_review"], "PG 검수": r["postgres_review"],
-                       "미디어 URL 연결": coverage_text(r["coverage"]), "세트": r["set_id"], "문항 키": r["source_key"]}
+                       "미디어 URL 연결": coverage_text(r["coverage"]),
+                       "세트": set_label(item_set_view(r)) if item_set_view(r) else "미배정", "문항 키": r["source_key"]}
                       for r in rows], hide_index=True, width="stretch")
         key = st.selectbox("상세 문항", [r["source_key"] for r in rows])
         selected = next(r for r in rows if r["source_key"] == key)
+        if item_set_view(selected):
+            render_set_summary(item_set_view(selected))
         if selected["postgres_question"] is not None:
             if st.button("이 문제 PostgreSQL에서 편집"):
                 stored = next(i for i in bank["items"] if i["source_key"] == key)
@@ -209,17 +217,18 @@ with storage_tab:
     st.caption("파일별 수량은 영역 필터만 적용됩니다. 참고 예시는 생성 문항 수에 포함하지 않습니다.")
     st.subheader("PostgreSQL 세트")
     sets = [s for s in bank["sets"] if included(s["section"], s["generator_version"], s["published_at"])]
-    st.dataframe([{"세트": str(s["set_id"]), "영역": SECTION.get(s["section"], s["section"]), "모델": s["generator_version"],
+    st.dataframe([{**set_list_row(set_views[str(s["set_id"])]),
                    "문항": f"{s['item_count']}/{question_count(s.get('exam_format', 'pbt'))}", "검수": REVIEW_LABELS.get(s["review_status"], s["review_status"]),
                    "구성 상태": set_health([i for i in bank["items"] if i["set_id"] == s["set_id"]])["label"],
-                   "미디어 URL 연결": coverage_text(s["coverage"]), "등록일": str(s["published_at"])} for s in sets],
+                   "미디어 URL 연결": coverage_text(s["coverage"]), "등록일 (KST)": korean_time(s["published_at"])} for s in sets],
                  hide_index=True, width="stretch")
-    if sets and bank["media_available"]:
-        labels = {str(s["set_id"]): f"{SECTION.get(s['section'], s['section'])} · {s['generator_version']} · 세트 {s['set_sequence']} · {s['set_id']}" for s in sets}
+    if sets:
+        labels = {str(s["set_id"]): set_label(set_views[str(s["set_id"])]) for s in sets}
         set_id = st.selectbox("실제 파일을 검증할 세트", list(labels), format_func=labels.get)
+        render_set_summary(set_views[set_id])
         st.caption("버튼을 누르면 해당 세트의 S3·CloudFront 파일 크기·해시·음원 부분 요청을 검사합니다. 검증 결과는 이 화면에만 보관합니다.")
         check_key = (snapshot["checked_at"], identity, set_id)
-        if st.button("선택 세트 S3·CloudFront 검증"):
+        if st.button("선택 세트 S3·CloudFront 검증", disabled=not bank["media_available"]):
             with st.spinner("선택 세트의 실제 파일을 검증하고 있습니다."):
                 try:
                     result = preview_s3_media(database_url, [set_id])
@@ -231,9 +240,9 @@ with storage_tab:
                 st.session_state["storage-file-check"] = (check_key, success, message, datetime.now(timezone.utc).isoformat(timespec="seconds"))
         checked = st.session_state.get("storage-file-check")
         if checked and checked[0] == check_key:
-            (st.success if checked[1] else st.warning)(f"{checked[2]} · {checked[3]}")
+            (st.success if checked[1] else st.warning)(f"{checked[2]} · {korean_time(checked[3])} (KST)")
         else:
             st.info("실제 파일 접근: 미검증")
     with st.expander("SQLite DB 등록 작업 이력"):
         st.dataframe([{"작업 ID": j["id"], "상태": PHASE_LABELS.get(j["status"], j["status"]),
-                       "생성일": j["created_at"], "변경일": j["updated_at"]} for j in snapshot["jobs"]], hide_index=True, width="stretch")
+                       "생성일 (KST)": korean_time(j["created_at"]), "변경일 (KST)": korean_time(j["updated_at"])} for j in snapshot["jobs"]], hide_index=True, width="stretch")

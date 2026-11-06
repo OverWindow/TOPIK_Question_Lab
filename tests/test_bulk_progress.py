@@ -95,6 +95,9 @@ def test_page_hides_completed_and_refresh_restores_incomplete_work(tmp_path, mon
     assert not any(s.label == '생성 묶음' for s in app.selectbox)
     history = next(e for e in app.expander if e.label == '완료된 생성 이력 · 2개')
     assert not history.proto.expanded
+    history_picker = next(s for s in app.selectbox if s.label == '완료된 생성 묶음')
+    assert all('2026/11/02 09:00 생성' in label for label in history_picker.options)
+    assert any('식별코드 READING' in c.value for c in app.caption)
     assert any('미완료인 생성 작업이 없습니다' in m.value for m in app.info)
     assert not any(b.key == 'bulk-media' for b in app.button)
     app.run()
@@ -104,6 +107,7 @@ def test_page_hides_completed_and_refresh_restores_incomplete_work(tmp_path, mon
     assert not app.exception
     picker = next(s for s in app.selectbox if s.label == '생성 묶음')
     assert picker.value == 'listening' and len(picker.options) == 1
+    assert 'LISTENIN' in picker.options[0]
     data['batches'][1]['coverage']['images_ready'] = 12
     next(b for b in app.button if b.key == 'bulk-refresh-registration').click().run()
     assert not app.exception and not any(s.label == '생성 묶음' for s in app.selectbox)

@@ -25,7 +25,7 @@ AUDIO_TYPES = {
 }
 AUDIO_FIELDS = tuple(AUDIO_TYPES)
 AUDIO_MIGRATION = MIGRATION_DIR / "014_vocabulary_audio.sql"
-MAX_BATCH_SIZE = 100
+MAX_BATCH_SIZE = 500
 WORD_NARRATION_PROMPT = (
     "한국어 학습용 사전의 표제어를 읽습니다. 표준 한국어로, 중립적이고 차분한 목소리로 낭독하세요. "
     "보통 높이의 음역에서 억양 변화와 강세를 작게 하고, 끝을 가볍게 내려 마무리하세요. "

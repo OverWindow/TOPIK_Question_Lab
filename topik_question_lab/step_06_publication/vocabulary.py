@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from topik_question_lab.step_06_publication.postgres_storage import _dict_rows, _psycopg
-from topik_question_lab.step_06_publication.vocabulary_audio import AUDIO_FIELDS
+from topik_question_lab.step_06_publication.vocabulary_audio import AUDIO_FIELDS, MAX_BATCH_SIZE
 from topik_question_lab.step_06_publication.vocabulary_languages import LANGUAGE_FIELDS
 
 
@@ -12,7 +12,7 @@ SEARCH_COLUMNS = ("korean", "english", "vietnamese", "japanese", "example_korean
 
 def search_vocabulary(database_url: str, *, level: int | None = None, query: str = "", page: int = 1,
                       audio_filter: str = "all", audio_profile: dict | None = None, page_size: int = PAGE_SIZE) -> dict:
-    if (level not in (None, 3, 4, 5, 6) or page < 1 or not 1 <= page_size <= 100
+    if (level not in (None, 3, 4, 5, 6) or page < 1 or not 1 <= page_size <= MAX_BATCH_SIZE
             or audio_filter not in ("all", "present", "missing", "stale")):
         raise ValueError("단어장 급수 또는 페이지가 올바르지 않습니다.")
     result = {

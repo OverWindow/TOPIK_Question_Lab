@@ -71,7 +71,7 @@ def render_audio_controls(database_url, root, snapshot, selected, *, level, quer
                              format_func=lambda value: "음성 없는 단어" if value == "missing" else "갱신 필요한 단어",
                              key="vocabulary-audio-scope")
         limit = st.number_input("한 번에 생성할 단어 수", min_value=1, max_value=MAX_BATCH_SIZE,
-                                value=20, step=1, key="vocabulary-audio-limit")
+                                value=100, step=1, key="vocabulary-audio-limit")
         batch = search_vocabulary(database_url, level=level, query=query, audio_filter=scope,
                                   audio_profile=profile, page_size=limit)
         batch_ids = [row["vocabulary_id"] for row in batch["rows"]]

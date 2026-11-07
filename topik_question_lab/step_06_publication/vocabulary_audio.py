@@ -26,6 +26,12 @@ AUDIO_TYPES = {
 AUDIO_FIELDS = tuple(AUDIO_TYPES)
 AUDIO_MIGRATION = MIGRATION_DIR / "014_vocabulary_audio.sql"
 MAX_BATCH_SIZE = 100
+WORD_NARRATION_PROMPT = (
+    "한국어 학습용 사전의 표제어를 읽습니다. 표준 한국어로, 중립적이고 차분한 목소리로 낭독하세요. "
+    "보통 높이의 음역에서 억양 변화와 강세를 작게 하고, 끝을 가볍게 내려 마무리하세요. "
+    "음절을 끊거나 끝소리를 늘이지 말고, 자연스럽고 고른 속도로 읽으세요. "
+    "입력된 단어만 정확히 한 번 읽고 다른 말이나 소리를 덧붙이지 마세요."
+)
 
 
 class VocabularyAudioError(ValueError):
@@ -37,8 +43,8 @@ def audio_profile(settings: MediaSettings, speaker: str = "여자") -> dict:
         raise VocabularyAudioError("음성 화자를 선택하세요.")
     return {"provider": "google_cloud_tts", "model": settings.tts_model,
             "voice": settings.female if speaker == "여자" else settings.male, "speaker": speaker,
-            "speaking_rate": settings.speaking_rate, "style_prompt": settings.style_prompt,
-            "version": "vocabulary_word_v1"}
+            "speaking_rate": settings.speaking_rate, "style_prompt": WORD_NARRATION_PROMPT,
+            "version": "vocabulary_word_v2"}
 
 
 def generation_config(row: dict, profile: dict) -> dict:
@@ -117,7 +123,7 @@ def _cached_audio(directory: Path, config: dict, previous_hash, settings, client
                 return data
             except (OSError, ValueError):
                 pass
-        data = runner.call("tts", lambda: client.speech(speaker, text))
+        data = runner.call("tts", lambda: client.speech(speaker, text, prompt=config["style_prompt"]))
         pcm(data)
         temporary = speech.with_name(f"{key}.{uuid.uuid4().hex[:8]}.wav")
         temporary.write_bytes(data)

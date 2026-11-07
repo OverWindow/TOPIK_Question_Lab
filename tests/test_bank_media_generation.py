@@ -169,8 +169,9 @@ def test_generated_audio_upload_preserves_metadata_and_validates_bytes(monkeypat
         bucket, base_url = "test", "https://example.test"
         def __init__(self, *a):
             pass
-        def upload(self, path, *a):
+        def upload(self, path, key, size, digest, mime):
             assert path.read_bytes() == b"test-mp3"
+            assert key == f"media/replacements/{digest}.mp3"
             checked.append("upload")
         def verify(self, row, **kwargs):
             assert row["model_name"] == "test-model"
@@ -184,6 +185,9 @@ def test_generated_audio_upload_preserves_metadata_and_validates_bytes(monkeypat
     result = upload_media(dict(kind="audio", data=b"test-mp3", generation=metadata))
     assert result["provider"] == "google_cloud_tts" and result["duration_ms"] == 1200
     assert "input_hash" not in result and checked == ["upload", "verify"]
+    assert result["storage_bucket"] == "test"
+    assert result["storage_path"] == f"media/replacements/{result['file_sha256']}.mp3"
+    assert result["storage_url"] == f"https://example.test/{result['storage_path']}"
 
 
 @pytest.fixture

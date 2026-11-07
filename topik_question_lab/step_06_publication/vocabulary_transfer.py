@@ -18,6 +18,9 @@ from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DI
 from topik_question_lab.step_06_publication.vocabulary_audio import (
     AUDIO_FIELDS, AUDIO_TYPES, AUDIO_MIGRATION, apply_audio_migration,
 )
+from topik_question_lab.step_06_publication.vocabulary_languages import (
+    LANGUAGE_FIELDS, LANGUAGE_MIGRATION, apply_language_migration,
+)
 
 
 FIELDS = ("vocabulary_id", "korean", "part_of_speech", "english", "vietnamese", "japanese",
@@ -44,8 +47,14 @@ def _schema(c):
                  True, "a" if name == "vocabulary_id" else "", "''::text" if name == "part_of_speech" else None)
                 for name in FIELDS]
     audio_columns = [(name, kind, False, "", None) for name, kind in AUDIO_TYPES.items()]
-    if columns not in (expected, expected + audio_columns):
+    language_columns = [(name, "text", True, "", "''::text") for name in LANGUAGE_FIELDS]
+    allowed = [expected, expected + audio_columns, expected + language_columns,
+               expected + audio_columns + language_columns]
+    matched = next((candidate for candidate in allowed if sorted(columns) == sorted(candidate)), None)
+    if matched is None:
         raise TransferError("단어장 컬럼·형식·기본값·자동 증가 구조가 지원 형식과 다릅니다.")
+    # Feature migrations can be applied in either order on existing databases.
+    columns = matched
     # PostgreSQL 18 also catalogs NOT NULL here; attnotnull above checks it across versions.
     constraints = c.execute("""SELECT pg_get_constraintdef(oid),convalidated FROM pg_constraint
         WHERE conrelid='topik_bank.vocabulary'::regclass AND contype <> 'n' ORDER BY 1""").fetchall()
@@ -59,7 +68,7 @@ def _schema(c):
     description = {"columns": [list(row) for row in columns], "constraints": sorted(list(row) for row in constraints),
                    "indexes": sorted([definition.split(" USING ", 1)[1], valid, ready] for definition, valid, ready in indexes),
                    "sequence": list(sequence)}
-    if len(columns) > len(expected):
+    if any(column[0] == AUDIO_FIELDS[0] for column in columns):
         constraint = c.execute("""SELECT pg_get_constraintdef(oid),convalidated FROM pg_constraint
             WHERE conrelid='topik_bank.vocabulary'::regclass AND conname='vocabulary_audio_complete'""").fetchone()
         if constraint is None or not constraint[1]:
@@ -76,8 +85,20 @@ def _base_schema(schema):
     if not _has_audio(schema):
         return schema
     return {**{key: value for key, value in schema.items() if key != "audio_constraint"},
-            "columns": schema["columns"][:len(FIELDS)],
+            "columns": [row for row in schema["columns"] if row[0] not in AUDIO_FIELDS],
             "constraints": [row for row in schema["constraints"] if row != schema["audio_constraint"]]}
+
+
+def _has_languages(schema):
+    return schema is not None and any(row[0] == LANGUAGE_FIELDS[0] for row in schema["columns"])
+
+
+def _without_languages(schema):
+    return {**schema, "columns": [row for row in schema["columns"] if row[0] not in LANGUAGE_FIELDS]}
+
+
+def _with_languages(rows):
+    return [{**dict.fromkeys(LANGUAGE_FIELDS, ""), **row} for row in rows]
 
 
 def _with_audio(rows):
@@ -91,6 +112,8 @@ def _effective_rows(source, target):
         old = by_id.get(row["vocabulary_id"], {})
         if "audio_storage_path" in row and not row["audio_storage_path"] and old.get("audio_storage_path"):
             row = {**row, **{key: old[key] for key in AUDIO_FIELDS}}
+        row = {**row, **{key: old.get(key, "") for key in LANGUAGE_FIELDS
+                         if key in row and not row[key].strip()}}
         result.append(row)
     return result
 
@@ -129,6 +152,7 @@ class VocabularyTransferPlan:
     target_count: int
     target_levels: dict
     upgrade_audio: bool = False
+    upgrade_languages: bool = False
 
 
 def capture_vocabulary(source_url):
@@ -146,6 +170,8 @@ def _effects(source, target):
     audio = bool(source and "audio_storage_path" in source[0])
     if audio:
         target = _with_audio(target)
+    if source and LANGUAGE_FIELDS[0] in source[0]:
+        target = _with_languages(target)
     by_id = {row["vocabulary_id"]: row for row in target}
     preserved = sum("audio_storage_path" in row and not row["audio_storage_path"]
                     and bool(by_id.get(row["vocabulary_id"], {}).get("audio_storage_path")) for row in source)
@@ -181,12 +207,15 @@ def prepare_vocabulary_transfer(snapshot, target_url):
         identity = _distinct_target(c, snapshot.identity)
         schema = _schema(c)
         upgrade = schema is not None and _has_audio(snapshot.schema) and not _has_audio(schema)
+        upgrade_languages = schema is not None and _has_languages(snapshot.schema) and not _has_languages(schema)
         expected_schema = _base_schema(snapshot.schema) if upgrade else snapshot.schema
+        if upgrade_languages:
+            expected_schema = _without_languages(expected_schema)
         if schema is not None and schema != expected_schema:
             raise TransferError("대상 단어장의 제약·인덱스 구조가 원본과 다릅니다. 기존 구조를 확인하세요.")
         rows = _rows(c) if schema else []
         return VocabularyTransferPlan(snapshot, identity, digest((schema, rows)), schema is None,
-                                      _effects(snapshot.rows, rows), len(rows), _levels(rows), upgrade)
+                                      _effects(snapshot.rows, rows), len(rows), _levels(rows), upgrade, upgrade_languages)
 
 
 def _sequence_state(c):
@@ -203,7 +232,8 @@ def _backup(root, identity, schema, rows, sequence):
                "created_at": datetime.now(timezone.utc).isoformat(),
                "schema": schema, "rows": rows, "sequence": sequence,
                "create_table_sql": SCHEMA_FILE.read_text(encoding="utf-8")
-                   + ("\n" + AUDIO_MIGRATION.read_text(encoding="utf-8") if _has_audio(schema) else "")}
+                   + ("\n" + AUDIO_MIGRATION.read_text(encoding="utf-8") if _has_audio(schema) else "")
+                   + ("\n" + LANGUAGE_MIGRATION.read_text(encoding="utf-8") if _has_languages(schema) else "")}
     payload["content_hash"] = digest((schema, rows, sequence))
     directory = Path(root) / "backups" / "vocabulary"
     path = directory / f"before_transfer_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}_{uuid.uuid4().hex[:8]}.json"
@@ -222,6 +252,8 @@ def _upsert(c, rows):
     if not rows:
         return
     fields = FIELDS + AUDIO_FIELDS if "audio_storage_path" in rows[0] else FIELDS
+    if LANGUAGE_FIELDS[0] in rows[0]:
+        fields += LANGUAGE_FIELDS
     names = sql.SQL(",").join(map(sql.Identifier, fields))
     updates = sql.SQL(",").join(sql.SQL("{}=EXCLUDED.{}").format(sql.Identifier(name), sql.Identifier(name))
                               for name in fields[3:])
@@ -262,6 +294,8 @@ def execute_vocabulary_transfer(source_url, target_url, plan, root):
             if effects["conflicts"]:
                 raise TransferError("단어장 ID·단어·품사 충돌을 해결한 후 다시 확인하세요.")
             normalized = _with_audio(previous) if _has_audio(fresh.schema) else previous
+            if _has_languages(fresh.schema):
+                normalized = _with_languages(normalized)
             effective = _effective_rows(fresh.rows, normalized)
             expected = {row["vocabulary_id"]: row for row in normalized}
             expected.update({row["vocabulary_id"]: row for row in effective})
@@ -269,7 +303,8 @@ def execute_vocabulary_transfer(source_url, target_url, plan, root):
             sequence = _sequence_state(c) if schema else None
             current_next = sequence["last_value"] + int(sequence["is_called"]) if sequence else 1
             next_id = max(current_next, max(row["vocabulary_id"] for row in expected) + 1)
-            changes = schema is None or plan.upgrade_audio or effects["created"] or effects["updated"] or current_next != next_id
+            changes = (schema is None or plan.upgrade_audio or plan.upgrade_languages
+                       or effects["created"] or effects["updated"] or current_next != next_id)
             if changes:
                 if schema:
                     backup = _backup(root, plan.target_identity, schema, previous, sequence)
@@ -278,6 +313,8 @@ def execute_vocabulary_transfer(source_url, target_url, plan, root):
                     c.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
                 if _has_audio(fresh.schema) and not _has_audio(schema):
                     apply_audio_migration(c)
+                if _has_languages(fresh.schema) and not _has_languages(schema):
+                    apply_language_migration(c)
                 if _schema(c) != fresh.schema:
                     raise TransferError("원본 단어장이 지원하는 생성 구조와 다릅니다.")
                 by_id = {row["vocabulary_id"]: row for row in normalized}

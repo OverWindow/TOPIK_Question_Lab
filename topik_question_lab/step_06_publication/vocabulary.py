@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from topik_question_lab.step_06_publication.postgres_storage import _dict_rows, _psycopg
 from topik_question_lab.step_06_publication.vocabulary_audio import AUDIO_FIELDS
+from topik_question_lab.step_06_publication.vocabulary_languages import LANGUAGE_FIELDS
 
 
 PAGE_SIZE = 50
@@ -27,11 +28,6 @@ def search_vocabulary(database_url: str, *, level: int | None = None, query: str
         conditions.append("topik_level = %s")
         params.append(level)
     query = query.strip()
-    if query:
-        # Treat wildcard characters as literal text in user searches.
-        pattern = "%" + query.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
-        conditions.append("(" + " OR ".join(f"{column} ILIKE %s ESCAPE '!'" for column in SEARCH_COLUMNS) + ")")
-        params.extend([pattern] * len(SEARCH_COLUMNS))
     try:
         psycopg, Jsonb = _psycopg()
         with psycopg.connect(database_url, connect_timeout=8,
@@ -42,6 +38,13 @@ def search_vocabulary(database_url: str, *, level: int | None = None, query: str
                 return result
             columns = {row[0] for row in connection.execute("""SELECT attname FROM pg_attribute
                 WHERE attrelid='topik_bank.vocabulary'::regclass AND attnum>0 AND NOT attisdropped""")}
+            language_fields = tuple(name for name in LANGUAGE_FIELDS if name in columns)
+            if query:
+                # Search literal text, including legacy banks without added languages.
+                pattern = "%" + query.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+                search_columns = SEARCH_COLUMNS + language_fields
+                conditions.append("(" + " OR ".join(f"{column} ILIKE %s ESCAPE '!'" for column in search_columns) + ")")
+                params.extend([pattern] * len(search_columns))
             has_audio = all(name in columns for name in AUDIO_FIELDS)
             if has_audio:
                 result["audio_schema"] = True
@@ -69,6 +72,7 @@ def search_vocabulary(database_url: str, *, level: int | None = None, query: str
             cursor = connection.execute(
                 "SELECT vocabulary_id, korean, part_of_speech, english, vietnamese, japanese, "
                 "example_korean, example_english, topik_level"
+                + (", " + ", ".join(language_fields) if language_fields else "")
                 + (", " + ", ".join(AUDIO_FIELDS) if has_audio else "") + " FROM topik_bank.vocabulary" + where
                 + " ORDER BY topik_level, korean, part_of_speech, vocabulary_id LIMIT %s OFFSET %s",
                 [*params, page_size, (page - 1) * page_size],

@@ -24,7 +24,7 @@ filters = st.columns([1, 3, 1])
 level = filters[0].selectbox("급수", [None, 3, 4, 5, 6],
                            format_func=lambda value: "전체" if value is None else f"{value}급",
                            key="vocabulary-level")
-query = filters[1].text_input("검색어", placeholder="한국어 단어, 영어·베트남어·일본어 뜻 또는 예문",
+query = filters[1].text_input("검색어", placeholder="한국어 단어, 영어·베트남어·일본어·중국어·인도네시아어 뜻 또는 예문",
                              max_chars=200, key="vocabulary-query")
 audio_filter = filters[2].selectbox("음성", ["all", "present", "missing", "stale"],
     format_func=lambda value: {"all": "전체", "present": "음성 있음", "missing": "음성 없음", "stale": "갱신 필요"}[value],
@@ -81,6 +81,8 @@ status.caption(f"{snapshot['page']} / {snapshot['pages']} 페이지 · {start:,}
 st.dataframe([{
     "급수": f"{row['topik_level']}급", "단어": row["korean"], "품사": row["part_of_speech"] or "미지정",
     "영어": row["english"], "베트남어": row["vietnamese"], "일본어": row["japanese"],
+    "중국어(간체)": row.get("chinese_simplified", "") or "미등록",
+    "인도네시아어": row.get("indonesian", "") or "미등록",
     "음성": STATUS_LABELS[audio_status(row, profile)],
 } for row in rows], hide_index=True, width="stretch", height=420)
 
@@ -93,9 +95,13 @@ selected = by_id[selected_id]
 st.subheader(selected["korean"])
 st.caption(f"{selected['topik_level']}급 · 품사: {selected['part_of_speech'] or '미지정'}")
 meanings, examples = st.columns(2)
-for field, label in (("english", "영어"), ("vietnamese", "베트남어"), ("japanese", "일본어")):
+for field, label in (("english", "영어"), ("vietnamese", "베트남어"), ("japanese", "일본어"),
+                     ("chinese_simplified", "중국어(간체)"), ("indonesian", "인도네시아어")):
     meanings.markdown(f"**{label}**")
-    meanings.text(selected[field])
+    if selected.get(field):
+        meanings.text(selected[field])
+    else:
+        meanings.caption("미등록")
 for field, label in (("example_korean", "한국어 예문"), ("example_english", "영어 예문")):
     examples.markdown(f"**{label}**")
     examples.text(selected[field])

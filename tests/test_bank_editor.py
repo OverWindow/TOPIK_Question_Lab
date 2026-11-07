@@ -347,6 +347,7 @@ def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
         def upload(self, path, key, size, digest, mime):
             with Image.open(path) as image:
                 assert image.size == (4, 4) and image.format == "PNG"
+            assert key == f"media/replacements/{digest}.png"
             checked.append("upload")
         def verify(self, row, *, local_path):
             assert row["storage_backend"] == "s3" and local_path.exists()
@@ -358,6 +359,9 @@ def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
     Image.new("RGB", (4, 4), "white").save(stream, format="JPEG")
     row = upload_media({"kind": "image", "visual_role": "material", "option_number": 1, "data": stream.getvalue()})
     assert row["mime_type"] == "image/png" and checked == ["upload", "verify", "close"]
+    assert row["storage_bucket"] == "test-bucket"
+    assert row["storage_path"] == f"media/replacements/{row['file_sha256']}.png"
+    assert row["storage_url"] == f"https://example.test/{row['storage_path']}"
     with pytest.raises(PublicationBlocked, match="이미지"):
         upload_media({"kind": "image", "data": b"not an image"})
 

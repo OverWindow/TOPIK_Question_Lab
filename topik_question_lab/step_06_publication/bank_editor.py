@@ -498,7 +498,7 @@ def upload_media(replacement):
         store = None
         try:
             store = S3MediaStore(os.getenv("S3_BUCKET", ""), os.getenv("CLOUDFRONT_BASE_URL", ""))
-            key = destination_key(store.bucket, digest, mime)
+            key = destination_key("replacements", digest, mime)
             row = {"kind": kind, "storage_backend": "s3", "storage_bucket": store.bucket, "storage_path": key,
                    "storage_url": cloudfront_url(store.base_url, key), "mime_type": mime,
                    "byte_size": size, "file_sha256": digest, **extra}

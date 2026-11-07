@@ -72,6 +72,8 @@ if preview and preview[0] == request_key:
         st.write("단어장 테이블을 새로 만들고 등록합니다." if plan.create_table else "기존 단어장에 추가·갱신합니다.")
         if plan.upgrade_audio:
             st.info("기존 대상 단어장을 백업한 뒤 음성 저장 컬럼을 추가합니다.")
+        if plan.upgrade_languages:
+            st.info("기존 대상 단어장을 백업한 뒤 중국어(간체)·인도네시아어 뜻 컬럼을 추가합니다.")
         if "audio_created" in effects:
             st.caption(f"음성 신규 연결 {effects['audio_created']:,}개 · 음성 변경 {effects['audio_updated']:,}개 · "
                        f"대상 음성 보존 {effects['audio_preserved']:,}개 · S3 파일은 공유합니다.")

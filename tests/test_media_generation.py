@@ -210,7 +210,33 @@ def test_google_request_preserves_http_status_without_logging_response_or_creden
     body = json.loads(requests[0].content)
     assert body["input"]["text"] == "원문을 한 번만 읽습니다."
     assert body["audioConfig"]["audioEncoding"] == "LINEAR16"
+    assert body["input"]["prompt"].startswith("Read the supplied Korean text literally, exactly once.")
     client.close()
+
+
+def test_word_prompt_changes_delivery_without_changing_text_voice_or_rate():
+    from topik_question_lab.step_06_publication.vocabulary_audio import WORD_NARRATION_PROMPT
+
+    class Credentials:
+        valid = True
+        token = "synthetic-token"
+
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"audioContent": "dGVzdA=="})
+
+    client = GoogleMediaClient(settings(), credentials=Credentials(), client=httpx.Client(transport=httpx.MockTransport(respond)))
+    try:
+        client.speech("여자", "가꾸다", prompt=WORD_NARRATION_PROMPT)
+        client.speech("여자", "가꾸다")
+    finally:
+        client.close()
+    assert requests[0]["input"] == {"text": "가꾸다", "prompt": WORD_NARRATION_PROMPT}
+    assert requests[1]["input"]["prompt"].startswith("Read the supplied Korean text literally, exactly once.")
+    assert requests[0]["voice"] == requests[1]["voice"]
+    assert requests[0]["audioConfig"] == requests[1]["audioConfig"]
 
 
 def test_chart_data_must_match_each_label_and_number():

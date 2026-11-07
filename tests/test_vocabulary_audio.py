@@ -36,7 +36,8 @@ def media():
         calls = []
         frequency = 440
 
-        def speech(self, speaker, text):
+        def speech(self, speaker, text, *, prompt=None):
+            assert prompt == audio.WORD_NARRATION_PROMPT
             self.calls.append((speaker, text))
             data = io.BytesIO()
             with wave.open(data, "wb") as output:
@@ -106,6 +107,8 @@ def test_generate_real_mp3_skip_and_refresh_on_voice_change(audio_bank, tmp_path
     assert result["status"] == "generated", result
     saved = word(audio_bank)
     assert saved["audio_duration_ms"] > 0
+    assert saved["audio_generation_config"]["style_prompt"] == audio.WORD_NARRATION_PROMPT
+    assert saved["audio_generation_config"]["version"] == "vocabulary_word_v2"
     assert saved["audio_storage_path"].endswith(saved["audio_file_sha256"] + ".mp3")
     assert {k: v for k, v in saved.items() if k not in audio.AUDIO_FIELDS} == {
         k: v for k, v in before.items() if k not in audio.AUDIO_FIELDS}
@@ -301,3 +304,11 @@ def test_empty_batch_fails_before_network(tmp_path, settings, media):
     with pytest.raises(audio.VocabularyAudioError):
         generate("unused", tmp_path, settings, media, ids=[])
     assert not media[0].calls and not media[1].objects
+
+
+def test_previous_word_prompt_requires_regeneration(settings):
+    row = {"korean": "사과", "audio_storage_path": "previous.mp3"}
+    previous = {**audio.generation_config(row, audio.audio_profile(settings)),
+                "style_prompt": "", "version": "vocabulary_word_v1"}
+    row.update(audio_generation_config=previous, audio_source_hash=audio.digest(previous))
+    assert audio.audio_status(row, audio.audio_profile(settings)) == "stale"

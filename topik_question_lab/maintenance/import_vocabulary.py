@@ -13,6 +13,7 @@ import psycopg
 from topik_question_lab.maintenance import bank_server
 from topik_question_lab.maintenance.bank_migrations import _backup_database, _local_config
 from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
+from topik_question_lab.step_06_publication.vocabulary_languages import LANGUAGE_FIELDS, apply_language_migration
 
 
 VERSION = "012_vocabulary"
@@ -21,6 +22,8 @@ HEADERS = (
     "Example (Korean)", "Example (English)", "TOPIK level",
 )
 COLUMNS = "korean, part_of_speech, english, vietnamese, japanese, example_korean, example_english, topik_level"
+EXTENDED_HEADERS = HEADERS + ("Chinese (Simplified)", "Indonesian")
+EXTENDED_COLUMNS = COLUMNS + ", " + ", ".join(LANGUAGE_FIELDS)
 
 
 class VocabularyImportError(RuntimeError):
@@ -32,23 +35,24 @@ def read_vocabulary(path: Path) -> list[tuple]:
     try:
         with path.open(encoding="utf-8-sig", newline="") as handle:
             reader = csv.reader(handle, strict=True)
-            if tuple(next(reader, ())) != HEADERS:
-                raise ValueError("CSV 헤더가 단어장 8개 열과 일치하지 않습니다.")
+            headers = tuple(next(reader, ()))
+            if headers not in (HEADERS, EXTENDED_HEADERS):
+                raise ValueError("CSV 헤더가 단어장 8개 또는 10개 열과 일치하지 않습니다.")
             for values in reader:
                 line = reader.line_num
-                if len(values) != len(HEADERS):
+                if len(values) != len(headers):
                     raise ValueError(f"CSV {line}행의 열 개수가 올바르지 않습니다.")
                 if any("\x00" in value for value in values):
                     raise ValueError(f"CSV {line}행에 저장할 수 없는 NUL 문자가 있습니다.")
-                if any(not value.strip() for i, value in enumerate(values) if i != 1):
+                if any(not value.strip() for i, value in enumerate(values[:8]) if i != 1):
                     raise ValueError(f"CSV {line}행의 필수 값이 비어 있습니다.")
-                if values[-1] not in {"3", "4", "5", "6"}:
+                if values[7] not in {"3", "4", "5", "6"}:
                     raise ValueError(f"CSV {line}행의 TOPIK 급수는 3~6이어야 합니다.")
                 key = tuple(values[:2])
                 if key in keys:
                     raise ValueError(f"CSV {line}행에 중복된 단어·품사가 있습니다.")
                 keys.add(key)
-                rows.append((*values[:-1], int(values[-1])))
+                rows.append((*values[:7], int(values[7]), *values[8:]))
     except (OSError, UnicodeError, csv.Error):
         raise ValueError("UTF-8 단어장 CSV 파일을 읽을 수 없습니다.") from None
     if not rows:
@@ -56,38 +60,41 @@ def read_vocabulary(path: Path) -> list[tuple]:
     return rows
 
 
-def _stored_rows(connection) -> dict[tuple, tuple]:
-    return {row[:2]: row for row in connection.execute(f"SELECT {COLUMNS} FROM topik_bank.vocabulary")}
+def _stored_rows(connection, columns=COLUMNS) -> dict[tuple, tuple]:
+    return {row[:2]: row for row in connection.execute(f"SELECT {columns} FROM topik_bank.vocabulary")}
 
 
 def _upsert_vocabulary(connection, rows: list[tuple]) -> dict:
-    previous = _stored_rows(connection)
+    extended = len(rows[0]) == len(EXTENDED_HEADERS)
+    columns = EXTENDED_COLUMNS if extended else COLUMNS
+    previous = _stored_rows(connection, columns) if extended else _stored_rows(connection)
+    if extended:
+        # Missing translations must not erase meanings already reviewed in the bank.
+        rows = [(*row[:8], *(value if value.strip() else previous.get(row[:2], ("",) * 10)[i]
+                            for i, value in enumerate(row[8:], 8))) for row in rows]
     created = sum(row[:2] not in previous for row in rows)
     unchanged = sum(previous.get(row[:2]) == row for row in rows)
+    fields = columns.split(", ")
+    updates = ", ".join(f"{field} = EXCLUDED.{field}" for field in fields[2:])
+    old_values = ", ".join(f"v.{field}" for field in fields[2:])
+    new_values = ", ".join(f"EXCLUDED.{field}" for field in fields[2:])
     with connection.cursor() as cursor:
         cursor.executemany(
-            f"""INSERT INTO topik_bank.vocabulary AS v ({COLUMNS})
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (korean, part_of_speech) DO UPDATE SET
-                    english = EXCLUDED.english,
-                    vietnamese = EXCLUDED.vietnamese,
-                    japanese = EXCLUDED.japanese,
-                    example_korean = EXCLUDED.example_korean,
-                    example_english = EXCLUDED.example_english,
-                    topik_level = EXCLUDED.topik_level
-                WHERE (v.english, v.vietnamese, v.japanese, v.example_korean, v.example_english, v.topik_level)
-                    IS DISTINCT FROM (EXCLUDED.english, EXCLUDED.vietnamese, EXCLUDED.japanese,
-                                      EXCLUDED.example_korean, EXCLUDED.example_english, EXCLUDED.topik_level)""",
+            f"""INSERT INTO topik_bank.vocabulary AS v ({columns})
+                VALUES ({', '.join(['%s'] * len(fields))})
+                ON CONFLICT (korean, part_of_speech) DO UPDATE SET {updates}
+                WHERE ({old_values}) IS DISTINCT FROM ({new_values})""",
             rows,
         )
     expected = {**previous, **{row[:2]: row for row in rows}}
-    if _stored_rows(connection) != expected:
+    stored = _stored_rows(connection, columns) if extended else _stored_rows(connection)
+    if stored != expected:
         raise ValueError("등록 후 단어장 전체 내용 검증에 실패했습니다.")
     return {
         "csv_rows": len(rows), "created": created,
         "updated": len(rows) - created - unchanged, "unchanged": unchanged,
         "total_rows": len(expected),
-        "levels": dict(sorted(Counter(row[-1] for row in rows).items())),
+        "levels": dict(sorted(Counter(row[7] for row in rows).items())),
         "empty_part_of_speech": sum(not row[1] for row in rows),
     }
 
@@ -115,12 +122,17 @@ def import_vocabulary(root: Path, url: str, csv_path: Path) -> dict:
             if not applied:
                 connection.execute((MIGRATION_DIR / f"{VERSION}.sql").read_text(encoding="utf-8"))
                 connection.execute("INSERT INTO topik_bank.schema_migrations(version) VALUES (%s)", (VERSION,))
+            if len(rows[0]) == len(EXTENDED_HEADERS):
+                apply_language_migration(connection)
             report = _upsert_vocabulary(connection, rows)
         committed = True
         with psycopg.connect(url, connect_timeout=8,
                              options="-c default_transaction_read_only=on -c statement_timeout=15000") as connection:
-            stored = _stored_rows(connection)
-            if any(stored.get(row[:2]) != row for row in rows):
+            extended = len(rows[0]) == len(EXTENDED_HEADERS)
+            stored = _stored_rows(connection, EXTENDED_COLUMNS) if extended else _stored_rows(connection)
+            if any(row[:2] not in stored or stored[row[:2]][:8] != row[:8]
+                   or any(value.strip() and stored[row[:2]][i] != value
+                          for i, value in enumerate(row[8:], 8)) for row in rows):
                 raise ValueError("커밋 후 CSV 대조에 실패했습니다.")
         return {**report, "verified": True, "backup": str(backup)}
     except Exception:
@@ -139,7 +151,7 @@ def main(argv=None):
     try:
         if args.check_only:
             rows = read_vocabulary(args.csv)
-            report = {"csv_rows": len(rows), "levels": dict(sorted(Counter(row[-1] for row in rows).items())),
+            report = {"csv_rows": len(rows), "levels": dict(sorted(Counter(row[7] for row in rows).items())),
                       "empty_part_of_speech": sum(not row[1] for row in rows)}
         else:
             load_dotenv(bank_server.ROOT / ".env")

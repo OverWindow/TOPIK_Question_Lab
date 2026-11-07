@@ -600,25 +600,5 @@ def render_app(root, url, initial_mode="add"):
                 reload_page()
             except Exception:
                 st.error("DB 구조 준비에 실패했습니다. 연결·권한·호환성을 확인하세요.")
-        st.subheader("과거 배포 이력")
-        if st.button("보관된 배포 이력 조회", disabled=not ready):
-            try:
-                st.session_state["registration-deployments"] = (identity, PostgresQuestionBank(url).list_deployment_runs())
-            except Exception:
-                st.warning("배포 이력을 조회하지 못했습니다.")
-        history = st.session_state.get("registration-deployments")
-        if history and history[0] == identity:
-            # Omit old connection labels and raw exception messages.
-            rows = [{"작업 ID": str(r["run_id"]), "상태": r["status"], "요청 세트": r["requested_set_count"],
-                     "시작 시각": str(r["started_at"])} for r in history[1]]
-            st.dataframe(rows, hide_index=True, width="stretch")
-            if rows:
-                import csv
-                import io
-                output = io.StringIO()
-                writer = csv.DictWriter(output, fieldnames=list(rows[0]))
-                writer.writeheader()
-                writer.writerows(rows)
-                st.download_button("배포 이력 CSV 다운로드", output.getvalue().encode("utf-8-sig"), "deployment_history.csv", "text/csv")
     if st.button("문제 저장 현황 열기"):
         st.switch_page(str(Path(__file__).parent / "storage_overview_app.py"))

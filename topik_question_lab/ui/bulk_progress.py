@@ -4,6 +4,18 @@
 from topik_question_lab.step_02_planning.exam_profiles import question_count
 
 
+ACTIVE_PIPELINE_STATES = {
+    "pending", "generating", "tts", "compose", "image", "chart", "upload", "verify", "register", "retry_wait"
+}
+
+
+def needs_progress_refresh(batches, *, runner_active=False):
+    return runner_active or any(
+        b["status"] == "running" or (b.get("auto_resume") and b.get("pipeline_status") in ACTIVE_PIPELINE_STATES)
+        for b in batches
+    )
+
+
 def completed_batches(snapshot):
     bank = snapshot["bank"]
     if snapshot["errors"] or not bank["available"] or not bank["media_available"]:
@@ -11,9 +23,7 @@ def completed_batches(snapshot):
     sets = {str(s["set_id"]): s for s in bank["sets"]}
     result = []
     for batch in snapshot["batches"]:
-        if batch["status"] in {"pending", "processing", "running"} or batch.get("pipeline_status") in {
-            "pending", "generating", "tts", "compose", "image", "chart", "upload", "verify", "register", "retry_wait"
-        }:
+        if batch["status"] in {"pending", "processing", "running"} or batch.get("pipeline_status") in ACTIVE_PIPELINE_STATES:
             continue
         expected_count = question_count(batch.get("exam_format", "pbt"))
         sid = batch["set_id"]

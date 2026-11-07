@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1.local_script_runner import LocalScriptRunner
 
-from topik_question_lab.ui.bulk_progress import completed_batches
+from topik_question_lab.ui.bulk_progress import completed_batches, needs_progress_refresh
 
 
 PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/bulk_generation_app.py"
@@ -68,13 +69,23 @@ def test_pending_review_and_cleaned_originals_are_completed_history():
     assert len(completed_batches(data)) == 2
 
 
-def test_page_hides_completed_and_refresh_restores_incomplete_work(tmp_path, monkeypatch):
+@pytest.fixture
+def progress_page(tmp_path, monkeypatch):
     import topik_question_lab.ui.runner_service as runners
     import topik_question_lab.step_03_generation.bulk_generation as bulk
     import topik_question_lab.step_06_publication.storage_overview as overview
     data = snapshot()
     original = deepcopy(data['batches'])
     calls = []
+    timers = []
+    forward_msgs = LocalScriptRunner.forward_msgs
+
+    def capture_timers(script_runner):
+        messages = forward_msgs(script_runner)
+        timers.append([m.auto_rerun.interval for m in messages if m.HasField('auto_rerun')])
+        return messages
+
+    monkeypatch.setattr(LocalScriptRunner, 'forward_msgs', capture_timers)
     class Store:
         def settings(self): return {}
         def set_setting(self, *args): pass
@@ -91,6 +102,11 @@ def test_page_hides_completed_and_refresh_restores_incomplete_work(tmp_path, mon
         return deepcopy(data)
     monkeypatch.setattr(overview, 'load_overview', read)
     app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    return SimpleNamespace(app=app, data=data, batches=original, runner=runner, calls=calls, timers=timers)
+
+
+def test_page_hides_completed_and_refresh_restores_incomplete_work(progress_page):
+    app, data, original, calls = progress_page.app, progress_page.data, progress_page.batches, progress_page.calls
     assert not app.exception
     assert not any(s.label == '생성 묶음' for s in app.selectbox)
     history = next(e for e in app.expander if e.label == '완료된 생성 이력 · 2개')
@@ -112,3 +128,72 @@ def test_page_hides_completed_and_refresh_restores_incomplete_work(tmp_path, mon
     next(b for b in app.button if b.key == 'bulk-refresh-registration').click().run()
     assert not app.exception and not any(s.label == '생성 묶음' for s in app.selectbox)
     assert original == snapshot()['batches']
+
+
+def test_idle_page_has_no_timer_and_keeps_snapshot_until_manual_refresh(progress_page):
+    app = progress_page.app
+    assert not app.exception and not progress_page.timers[-1]
+    identity, checked_at, cached = app.session_state['bulk-registration-snapshot']
+    app.session_state['bulk-registration-snapshot'] = (identity, checked_at - 60, cached)
+    app.run()
+    assert not app.exception and not progress_page.timers[-1]
+    assert len(progress_page.calls) == 1
+    app.button(key='bulk-refresh-registration').click().run()
+    assert not app.exception and len(progress_page.calls) == 2
+
+
+@pytest.mark.parametrize('terminal', ['succeeded', 'paused', 'failed'])
+def test_active_page_polls_then_refreshes_once_and_stops(progress_page, terminal):
+    app, batch = progress_page.app, progress_page.batches[0]
+    batch.update(status='running', pipeline_status='retry_wait', auto_resume=1)
+    app.run()
+    assert not app.exception and 2.0 in progress_page.timers[-1]
+    before = len(progress_page.calls)
+    identity, checked_at, cached = app.session_state['bulk-registration-snapshot']
+    app.session_state['bulk-registration-snapshot'] = (identity, checked_at - 60, cached)
+    app.run()
+    assert not app.exception and len(progress_page.calls) == before + 1
+
+    batch.update(status='succeeded' if terminal == 'succeeded' else 'interrupted',
+                 pipeline_status=terminal, auto_resume=0)
+    before = len(progress_page.calls)
+    app.run()
+    assert not app.exception and not progress_page.timers[-1]
+    assert len(progress_page.calls) == before + 1
+    app.run()
+    assert len(progress_page.calls) == before + 1
+
+    if terminal != 'succeeded':
+        def resume(*, batch_id):
+            assert batch_id == batch['id']
+            batch.update(status='running', pipeline_status='generating', auto_resume=1)
+
+        progress_page.runner.start = resume
+        # Show the unfinished local batch in the next bank snapshot.
+        progress_page.data['batches'][0].update(status='interrupted', pipeline_status=terminal)
+        progress_page.data['batches'][0]['coverage']['images_ready'] = 0
+        app.button(key='bulk-refresh-registration').click().run()
+        app.button(key='bulk-resume').click().run()
+        assert not app.exception and 2.0 in progress_page.timers[-1]
+
+
+def test_worker_exit_stops_timer_even_without_a_batch_status_change(progress_page):
+    app = progress_page.app
+    progress_page.runner.thread = SimpleNamespace(is_alive=lambda: True)
+    app.run()
+    assert not app.exception and 2.0 in progress_page.timers[-1]
+    before = len(progress_page.calls)
+    progress_page.runner.thread = None
+    app.run()
+    assert not app.exception and not progress_page.timers[-1]
+    assert len(progress_page.calls) == before + 1
+
+
+def test_retry_wait_needs_auto_resume_and_terminal_states_are_idle():
+    batch = {'status': 'succeeded', 'pipeline_status': 'retry_wait', 'auto_resume': 1}
+    assert needs_progress_refresh([batch])
+    assert not needs_progress_refresh([{**batch, 'auto_resume': 0}])
+    for phase in ('succeeded', 'paused', 'failed', 'ready', 'needs_attention'):
+        assert not needs_progress_refresh([{**batch, 'pipeline_status': phase}])
+    assert not needs_progress_refresh([])
+    assert needs_progress_refresh([], runner_active=True)

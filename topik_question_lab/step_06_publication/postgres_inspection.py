@@ -133,8 +133,7 @@ def _table_count(connection, table: str) -> int:
 def _required_structure_problems(connection) -> list[str]:
     problems: list[str] = []
     required_tables = {
-        "items", "question_sets",
-        "deployment_runs", "deployment_run_sets", *MEDIA_TABLES,
+        "items", "question_sets", *MEDIA_TABLES,
     }
     existing_tables = {
         str(row[0])

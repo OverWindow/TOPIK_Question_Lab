@@ -193,7 +193,7 @@ def test_former_database_jobs_are_visible_but_readonly(tmp_path, monkeypatch):
     assert not any(b.label == '같은 작업 재시도' for b in app.button)
 
 
-def test_local_history_and_validation_survive_empty_sqlite_catalog(local_service, monkeypatch):
+def test_local_validation_survives_empty_sqlite_catalog_without_legacy_history(local_service, monkeypatch):
     from streamlit.testing.v1 import AppTest
     service, ids = local_service
     monkeypatch.setenv('DATABASE_URL', service.target_url)
@@ -203,8 +203,9 @@ def test_local_history_and_validation_survive_empty_sqlite_catalog(local_service
     app = AppTest.from_file(path, default_timeout=30).run()
     next(b for b in app.button if b.label == '로컬 DB 연결·구조 확인').click().run()
     assert not app.exception
-    assert any(h.value == '과거 배포 이력' for h in app.subheader)
-    assert any(b.label == '보관된 배포 이력 조회' for b in app.button)
+    assert any('연결·구조 확인 완료' in message.value for message in app.success)
+    assert not any(h.value == '과거 배포 이력' for h in app.subheader)
+    assert not any(b.label == '보관된 배포 이력 조회' for b in app.button)
 
 
 def test_s3_validation_requires_click_and_uses_selected_sets(local_service, monkeypatch):

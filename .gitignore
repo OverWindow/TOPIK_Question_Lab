@@ -9,6 +9,7 @@ data/*.db-wal
 data/listening/
 data/media/
 data/media_generation/
+data/vocabulary_audio/
 data/media_migrations/
 /tmp/
 backups/

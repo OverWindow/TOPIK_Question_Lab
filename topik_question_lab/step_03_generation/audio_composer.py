@@ -98,7 +98,9 @@ def compose(script, speech, target, settings):
                              "-codec:a", "libmp3lame", "-b:a", "64k", str(target)], capture_output=True, timeout=120)
     if result.returncode:
         raise ValueError("음원 MP3 조립에 실패했습니다.")
-    return validate_mp3(target, settings)
+    duration = validate_mp3(target, settings)
+    wav_path.unlink()
+    return duration
 
 
 def validate_mp3(path, settings):

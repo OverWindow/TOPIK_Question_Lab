@@ -1,6 +1,6 @@
 # TOPIK PostgreSQL 문항 은행
 
-이 문서는 `006_unversioned_items` 이후의 코드와 스키마를 설명합니다.
+이 문서는 `013_remove_deployment_history`까지 적용한 코드와 스키마를 설명합니다.
 로컬 생성기의 원본은 `DATABASE_URL`의 PostgreSQL입니다. 별도의 서버 등록 화면에서 지정한 대상 DB로 단방향 복사할 수 있습니다.
 기존 DB의 구조 전환은 [이관 안내](docs/UNVERSIONED_DATABASE_MIGRATION.md)를 따릅니다.
 
@@ -14,7 +14,7 @@
 - 사용 중지는 기존 `retired`, 복원은 `pending_review`를 사용합니다. 영구 삭제는 사용 기록 참조를 검사하고 해당 미디어 연결만 제거합니다.
 - 한 문제는 최대 한 세트에 속하며, 미배정 문제의 `set_id`, `position`은 모두 `NULL`입니다.
 - 세트는 `items.set_id`, `items.position`으로 구성합니다. 문제 갱신은 해당 세트의 조회 결과에도 반영됩니다.
-- 핵심 테이블은 `items`, `question_sets`입니다. 생성·검수·프롬프트·소재·작업·배포 보조 저장소는 유지합니다.
+- 핵심 테이블은 `items`, `question_sets`입니다. 생성·검수·프롬프트·소재·등록 작업 보조 저장소는 유지합니다.
 - 프롬프트 저장 이력과 모델 정보는 문항 수정 버전과 별개입니다. `prompt_version`은 프롬프트 해시이고, 기존 이름 `generator_version`은 모델 ID입니다.
 
 ## 기존 생성 흐름
@@ -60,7 +60,8 @@ PostgreSQL 연결이 없어도 기존 생성 기능을 사용할 수 있습니�
 
 ### 보조 저장소
 
-`schema_migrations`, `deployment_runs`, `deployment_run_sets`는 유지합니다.
+`schema_migrations`는 적용한 구조 변경 이력을 보존합니다.
+과거 배포 기록 테이블 `deployment_runs`, `deployment_run_sets`는 마이그레이션 013에서 제거합니다.
 로컬 SQLite의 `examples`, `settings`, `prompt_versions`, `runs`, `generated_questions`,
 `reviews`, 생성 완료 기록, 소재·사용 이력, 일괄 작업 및 원격 등록 작업도 유지합니다.
 
@@ -99,8 +100,8 @@ ORDER BY position;
 
 문항 동기화는 같은 `item_id`의 현재 내용을 갱신합니다.
 동일한 문항·순서의 세트는 기존 세트를 갱신하고, 미사용 문항 세트는 새 번호로 발행합니다.
-로컬 DB의 `deployment_runs`, `deployment_run_sets`는 과거 기록으로 보존합니다.
-발행 이력 탭에서 기존 배포 작업과 세트 발행 이력을 조회할 수 있습니다.
+`문제 등록·세트 만들기 → 최근 등록 결과`는 `data/publication_jobs.db`의 등록 작업을 조회합니다.
+고급 설정의 과거 배포 이력 조회와 CSV 다운로드는 제거되었습니다.
 
 미디어 메타데이터와 연결은 기존 4개 테이블에 유지합니다.
 `로컬 검증`은 선택 세트, 필수 음원·이미지, 파일 크기·SHA-256을 읽기 전용으로 검사합니다.
@@ -130,9 +131,11 @@ QUESTION_BANK_PRODUCTION_DATABASE_URL=운영_Django가_사용하는_DB
 
 복사 대상은 `question_sets`, `items`, `tts_audio_assets`, `item_audio_bindings`,
 `item_visual_assets`입니다. 음원 연결은 세트 유무와 관계없이 문항 ID를 기준으로 하며,
-연결 UUID와 과거 연결 이력도 함께 복사합니다. Hub의 `schema_migrations`,
-`deployment_runs`, `deployment_run_sets`, 로컬 SQLite 생성 기록은 전송하지 않습니다.
+연결 UUID와 과거 연결 이력도 함께 복사합니다. Hub의 `schema_migrations`와
+로컬 SQLite 생성·등록 기록은 전송하지 않습니다.
 대상의 Django 인증·설문·마이그레이션 테이블도 변경하지 않습니다.
+
+서버 등록 결과는 현재 화면 세션에만 보관합니다. 세션 종료 후 조회할 수 있는 영구 배포 이력은 없습니다.
 
 UUID, 생성/수정 시각, 검수 상태, JSON, 해시, 세트 번호·순서, 미디어 주소는 원본 값으로 덮어씁니다.
 검수 승인 여부로 자동 필터링하지 않습니다. 세트에서 빠진 대상 문항은 미배정으로 보존하며
@@ -165,6 +168,20 @@ $env:DJANGO_ENV = 'development'
 스키마 변경은 등록 중에 자동 적용하지 않습니다. 구조 차이를 확인하고 별도의 변경 SQL을 검토·적용해야 합니다.
 복사 통합 테스트는 `tests/test_bank_transfer.py`이며 `TEST_PG_ADMIN_URL`의 격리된 로컬 임시 DB만 사용합니다.
 
+## 과거 배포 이력 제거
+
+`013_remove_deployment_history.sql`은 `deployment_run_sets`와 `deployment_runs`를 순서대로 삭제합니다.
+전체 PostgreSQL DB를 먼저 백업한 뒤, 고급 설정의 `DB 구조 준비` 등 명시적인 마이그레이션 경로로 적용하세요.
+013이 미적용 상태이면 앱 시작 검사가 중단하므로, 실행 중인 앱을 통한 적용이 불가능하면
+백업 후 `PostgresQuestionBank(url).ensure_schema()`로 적용하고 앱을 다시 시작합니다.
+이 메서드는 다른 미적용 마이그레이션도 실행하므로 적용 목록을 먼저 확인해야 합니다.
+앱 시작 시 013을 자동 적용하지 않습니다.
+
+삭제와 `schema_migrations` 기록은 같은 트랜잭션에서 처리합니다. 예상 밖의 참조가 있으면
+전체 롤백하며 `CASCADE`로 다른 객체를 삭제하지 않습니다. 기존 004 파일과 적용 이력은 유지하고,
+새 설치에서도 전체 마이그레이션 완료 후 두 테이블이 남지 않습니다.
+과거 배포 기록 복구에는 삭제 전 백업이 필요합니다. 문항·세트·미디어와 SQLite 등록 이력은 보존합니다.
+
 ## 기존 DB 이관
 
 이관 파일은 `topik_question_lab/step_06_publication/migrations/006_unversioned_items.sql`입니다.
@@ -192,6 +209,7 @@ PostgreSQL 통합 테스트는 `TEST_PG_ADMIN_URL`로 명시한 루프백 서버
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests/test_publication.py tests/test_postgres_inspection.py
+.\.venv\Scripts\python.exe -m pytest -q tests/test_deployment_history_removal.py tests/test_bank_transfer.py
 .\.venv\Scripts\python.exe -m pytest -q tests/test_unversioned_questions.py tests/test_postgres_integration.py tests/test_media_validation_integration.py tests/test_direct_publication.py
 ```
 

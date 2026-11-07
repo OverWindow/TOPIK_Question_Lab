@@ -16,7 +16,7 @@ from topik_question_lab.step_03_generation.bulk_generation import custom_model, 
 from topik_question_lab.step_03_generation.media_generation import preflight
 from topik_question_lab.step_03_generation.media_provider import MediaSettings
 from topik_question_lab.ui.runner_service import get_runner
-from topik_question_lab.ui.bulk_progress import completed_batches
+from topik_question_lab.ui.bulk_progress import completed_batches, needs_progress_refresh
 from topik_question_lab.ui.set_identity import set_view, set_label, set_list_row, render_set_summary
 from topik_question_lab.step_06_publication.storage_overview import load_overview
 from topik_question_lab.step_03_generation.providers import (
@@ -140,14 +140,18 @@ PIPELINE_LABELS = {"pending": "대기", "generating": "문항 생성", "tts": "�
 PIPELINE_LABELS.update(reviewing="이전 작업 · 재개 가능", ready="이전 작업 · 재개 가능", needs_attention="확인 필요 · 재개 가능")
 
 
-@st.fragment(run_every="2s")
+polling = needs_progress_refresh(store.batches(), runner_active=is_busy())
+
+
+@st.fragment(run_every="2s" if polling else None)
 def render_progress():
     batches = store.batches()
-    signature = tuple((batch["id"], batch["status"], batch["pipeline_status"]) for batch in batches)
+    active = needs_progress_refresh(batches, runner_active=is_busy())
+    signature = (active, tuple((batch["id"], batch["status"], batch["pipeline_status"]) for batch in batches))
     previous = st.session_state.get("bulk-status-signature")
     st.session_state["bulk-status-signature"] = signature
-    if previous is not None and previous != signature:
-        # Refresh start buttons and the next batch's preflight after completion.
+    if active != polling or (previous is not None and previous != signature):
+        # Reconfigure the timer and refresh controls after a worker state change.
         st.rerun()
     if not batches:
         return
@@ -156,7 +160,7 @@ def render_progress():
     refresh = st.button("등록 상태 새로 확인", key="bulk-refresh-registration")
     identity = (str(ROOT), os.getenv("DATABASE_URL", ""), signature)
     cached = st.session_state.get("bulk-registration-snapshot")
-    if refresh or cached is None or cached[0] != identity or time.monotonic() - cached[1] >= 30:
+    if refresh or cached is None or cached[0] != identity or (active and time.monotonic() - cached[1] >= 30):
         cached = (identity, time.monotonic(), load_overview(ROOT, os.getenv("DATABASE_URL", "")))
         st.session_state["bulk-registration-snapshot"] = cached
     snapshot = cached[2]

@@ -12,6 +12,7 @@ from topik_question_lab.step_06_publication.bank_editor import (
     BankEditor, item_metadata, prepare_edit, question_profile, shared_members,
     audio_members, media_ready, set_health,
 )
+from topik_question_lab.step_06_publication.bank_media_generation import generate_replacements
 from topik_question_lab.step_06_publication.direct_publication import _hash, read_batches, PublicationBlocked
 from topik_question_lab.step_06_publication.storage_overview import read_bank, bank_coverage, REVIEW_LABELS, visual_requirements
 from topik_question_lab.ui.registration_ui import show_question
@@ -23,7 +24,7 @@ ACTIONS = {"approve": "검수 승인", "retire": "사용 중지", "restore": "�
 
 
 def refresh():
-    for key in ("bank-editor-list", "bank-editor-snapshot", "bank-editor-plan", "registration-snapshot",
+    for key in ("bank-editor-list", "bank-editor-snapshot", "bank-editor-plan", "bank-editor-draft", "registration-snapshot",
                 "registration-plan", "storage-overview", "storage-file-check"):
         st.session_state.pop(key, None)
 
@@ -40,23 +41,47 @@ def media_url(value):
     return None
 
 
+def show_image_preview(asset):
+    material = asset["visual_role"] == "material"
+    label = "자료 이미지" if material else f"{'①②③④'[asset['option_number'] - 1]} 선지 이미지"
+    url = media_url(asset["storage_url"])
+    if url:
+        st.image(url, caption=label, width=640 if material else "stretch")
+    else:
+        st.caption(f"{label}: 파일이 연결되어 있습니다. 미리보기는 설정된 CloudFront 주소를 지원합니다.")
+
+
 def show_media(snapshot):
     row, media = snapshot["item"], snapshot["media"]
     audio_ids = {b["audio_asset_id"] for b in media["item_audio_bindings"] if b["item_id"] == row["item_id"] and b["content_hash"] == row["content_hash"]}
     assets = [a for a in media["tts_audio_assets"] if a["audio_asset_id"] in audio_ids and a["deleted_at"] is None]
-    assets += [a for a in media["item_visual_assets"] if a["item_id"] == row["item_id"] and a["content_hash"] == row["content_hash"]]
+    images = sorted(
+        [a for a in media["item_visual_assets"] if a["item_id"] == row["item_id"] and a["content_hash"] == row["content_hash"]],
+        key=lambda a: a["option_number"],
+    )
     st.caption("필수 미디어 연결 완료" if media_ready(snapshot, row) else "필수 음원·이미지 교체 필요")
-    with st.expander("현재 음원·이미지"):
-        if not assets:
-            st.info("현재 연결된 파일이 없습니다.")
-        for asset in assets:
-            url = media_url(asset["storage_url"])
-            if not url:
-                st.caption("파일이 연결되어 있습니다. 미리보기는 설정된 CloudFront 주소를 지원합니다.")
-            elif "audio_asset_id" in asset:
-                st.audio(url)
-            else:
-                st.image(url, caption="자료 이미지" if asset["visual_role"] == "material" else f"선지 {asset['option_number']}")
+    if images or visual_requirements(row["section"], row["type_slot"], row["content_json"]):
+        st.subheader("이미지 미리보기")
+        if not images:
+            st.info("현재 문항 내용에 연결된 이미지가 없습니다. 아래에서 이미지 파일을 등록하거나 교체하세요.")
+        for asset in images:
+            if asset["visual_role"] == "material":
+                show_image_preview(asset)
+        choices = [a for a in images if a["visual_role"] == "choice"]
+        for start in range(0, len(choices), 2):
+            for column, asset in zip(st.columns(2), choices[start:start + 2]):
+                with column:
+                    show_image_preview(asset)
+    if assets or row["section"] == "listening":
+        with st.expander("현재 음원"):
+            if not assets:
+                st.info("현재 연결된 음원이 없습니다.")
+            for asset in assets:
+                url = media_url(asset["storage_url"])
+                if url:
+                    st.audio(url)
+                else:
+                    st.caption("음원이 연결되어 있습니다. 미리보기는 설정된 CloudFront 주소를 지원합니다.")
 
 
 def parse_dialogue(value):
@@ -73,7 +98,10 @@ def parse_dialogue(value):
 
 def edit_form(snapshot):
     row = snapshot["item"]
-    question = deepcopy(row["content_json"])
+    draft = st.session_state.get("bank-editor-draft")
+    if draft and draft["snapshot"] != snapshot:
+        draft = None
+    question = deepcopy(draft["question"] if draft else row["content_json"])
     profile = question_profile(row)
     prefix = f"bank-edit-{row['item_id']}-{_hash(snapshot)[:12]}"
     members = shared_members(snapshot)
@@ -112,7 +140,7 @@ def edit_form(snapshot):
         question["answer"] = st.selectbox("정답", [1, 2, 3, 4], index=int(question.get("answer", 1)) - 1, key=f"{prefix}-answer")
         question["explanation"] = st.text_area("해설", question.get("explanation", ""), height=140, key=f"{prefix}-explanation")
         question["difficulty"] = st.text_input("난이도 설명", question.get("difficulty", ""), key=f"{prefix}-difficulty")
-        meta = item_metadata(row)
+        meta = dict(draft["metadata"]) if draft else item_metadata(row)
         cols = st.columns(3)
         meta["target_level"] = cols[0].number_input("TOPIK 급수", 1, 6, int(meta["target_level"]), key=f"{prefix}-target_level")
         meta["predicted_difficulty"] = cols[1].number_input("예상 난이도", -3.0, 3.0, float(meta["predicted_difficulty"]), step=0.1, key=f"{prefix}-predicted_difficulty")
@@ -121,17 +149,27 @@ def edit_form(snapshot):
             for field, label in (("topic_id", "소재 ID"), ("topic_domain", "소재 분야"), ("topic_title", "소재 제목"), ("topic_angle", "소재 관점")):
                 question[field] = st.text_input(label, question.get(field, ""), key=f"{prefix}-{field}")
         upload_fields = []
+
+        def media_input(descriptor, key, label, extensions):
+            previous = next((r for r in draft["replacements"] if all(r.get(k) == v for k, v in descriptor.items())), None) if draft else None
+            st.radio(f"{label} 교체 방식", ["직접 업로드", "자동 생성", "기존 유지"], horizontal=True,
+                     index=1 if previous and previous.get("generation") else 0, key=f"{key}-mode")
+            st.file_uploader(f"{label} 교체", type=extensions, key=key, help="직접 업로드를 선택했을 때 사용합니다.")
+            if previous and not previous.get("generation"):
+                st.caption("앞서 선택한 업로드 파일이 보관되어 있습니다. 새 파일을 선택하면 바뀝니다.")
+            upload_fields.append((descriptor, key, previous))
+
         with st.expander("음원·이미지 파일 교체"):
-            st.caption("교체 파일은 저장을 실행할 때 S3에 업로드하고 검증합니다. 내용이 바뀐 기존 미디어는 교체가 필요할 수 있습니다.")
+            st.caption("자동 생성은 ‘변경 내용 확인’을 누를 때 현재 입력한 대본·그림 설명·도표 데이터로 실행됩니다. 다시 누르면 새로 생성합니다.")
+            st.caption("생성 결과는 다음 화면에서 확인합니다. 업로드·자동 생성 파일 모두 ‘PostgreSQL에 저장’을 눌러야 S3 업로드와 교체가 진행됩니다.")
             if row["section"] == "listening":
                 numbers = ", ".join(str(r["type_slot"]) for r in sorted(audio_members(snapshot), key=lambda r: r["type_slot"]))
-                st.file_uploader(f"{numbers}번 음원 교체 · MP3", type=["mp3"], key=f"{prefix}-audio")
-                upload_fields.append(({"kind": "audio"}, f"{prefix}-audio"))
+                st.caption(f"음원 교체 적용 문항: {numbers}번")
+                media_input({"kind": "audio"}, f"{prefix}-audio", f"{numbers}번 음원 · MP3", ["mp3"])
             for role, n in sorted(visual_requirements(row["section"], row["type_slot"], question)):
                 label = "자료 이미지" if role == "material" else f"선지 {n} 이미지"
                 key = f"{prefix}-image-{role}-{n}"
-                st.file_uploader(f"{label} 교체", type=["png", "webp", "jpg", "jpeg"], key=key)
-                upload_fields.append(({"kind": "image", "visual_role": role, "option_number": n}, key))
+                media_input({"kind": "image", "visual_role": role, "option_number": n}, key, label, ["png", "webp", "jpg", "jpeg"])
 
         def prepare():
             try:
@@ -157,14 +195,29 @@ def edit_form(snapshot):
                     if option["chart_spec"] is not None:
                         from topik_question_lab.common.listening_models import ChartSpec
                         option["chart_spec"] = ChartSpec.model_validate(option["chart_spec"]).model_dump()
-                uploads = [{**descriptor, "data": st.session_state[key].getvalue()}
-                           for descriptor, key in upload_fields if st.session_state.get(key)]
-                plan = prepare_edit(snapshot, question, meta, uploads)
+                uploads = []
+                for descriptor, key, previous in upload_fields:
+                    mode = st.session_state[f"{key}-mode"]
+                    if mode == "자동 생성":
+                        uploads.append({**descriptor, "generate": True})
+                    elif mode == "직접 업로드":
+                        if st.session_state.get(key):
+                            uploads.append({**descriptor, "data": st.session_state[key].getvalue()})
+                        elif previous and not previous.get("generation"):
+                            uploads.append(previous)
+                plan = prepare_edit(snapshot, question, meta, uploads, allow_generation=True)
+                if any(r.get("generate") for r in uploads):
+                    with st.spinner("선택한 미디어를 자동 생성하고 있습니다."):
+                        status = st.empty()
+                        plan = generate_replacements(plan, progress=status.caption)
+                st.session_state["bank-editor-draft"] = plan
                 st.session_state["bank-editor-plan"] = {"action": "edit", "plan": plan}
             except json.JSONDecodeError:
                 st.session_state["bank-editor-error"] = "도표·그림 JSON 형식을 확인하세요."
             except ValueError as exc:
                 st.session_state["bank-editor-error"] = str(exc)
+            except Exception:
+                st.session_state["bank-editor-error"] = "교체 파일을 준비하지 못했습니다. 입력과 생성 설정을 확인하세요. 기존 미디어는 변경하지 않았습니다."
         st.form_submit_button("변경 내용 확인", type="primary", disabled=row["review_status"] == "retired", on_click=prepare)
 
 
@@ -199,8 +252,17 @@ def confirm_plan(editor, prepared):
         if plan["invalidate_audio"]:
             st.warning("대본·발문·반복 횟수가 바뀌어 공유 음원 연결을 갱신합니다. 새 음원이 없으면 교체 필요 상태로 저장됩니다.")
         for replacement in plan["replacements"]:
-            label = "공유 음원" if replacement["kind"] == "audio" else f"{replacement['visual_role']} 이미지 {replacement['option_number']}"
-            st.write(f"교체 파일: {label} · {len(replacement['data']):,}바이트")
+            label = "음원" if replacement["kind"] == "audio" else "자료 이미지" if replacement["visual_role"] == "material" else f"선지 {replacement['option_number']} 이미지"
+            source = "자동 생성" if replacement.get("generation") else "직접 업로드"
+            st.write(f"교체 파일: {label} · {source} · {len(replacement['data']):,}바이트")
+            try:
+                if replacement["kind"] == "audio":
+                    st.audio(replacement["data"], format="audio/mpeg")
+                else:
+                    st.image(replacement["data"], caption=f"교체할 {label}", width=640)
+            except Exception:
+                st.error("교체 파일을 미리볼 수 없습니다. 편집으로 돌아가 파일을 다시 선택하거나 생성하세요.")
+                confirmed = False
     else:
         show_question(row["content_json"])
         if action == "delete":

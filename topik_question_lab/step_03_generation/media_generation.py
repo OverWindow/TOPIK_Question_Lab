@@ -71,6 +71,67 @@ def chart_image_prompt(spec):
     )
 
 
+def image_tasks(candidate, content_hash, targets=None):
+    question = candidate.question
+    tasks = []
+    options = question.get("visual_options") or []
+    for option in options:
+        number = option["number"]
+        if number not in (1, 2, 3, 4):
+            raise ValueError("이미지 선택지 번호가 올바르지 않습니다.")
+        if targets is not None and ("choice", number) not in targets:
+            continue
+        spec = chart_spec(option.get("chart_spec")) if question.get("visual_kind") == "chart" else None
+        prompt = (option.get("image_prompt") or option.get("description") or "").strip()
+        model_chart = candidate.exam_format == "ibt" and spec is not None
+        if model_chart:
+            prompt = chart_image_prompt(spec)
+        if not spec and not prompt:
+            raise ValueError("필수 이미지 설명이 없습니다.")
+        tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": content_hash,
+                      "visual_role": "choice", "option_number": number, "prompt": prompt, "chart_spec": spec,
+                      **({"model_chart": True} if model_chart else {})})
+    if options and {o["number"] for o in options} != {1, 2, 3, 4}:
+        raise ValueError("선택지 이미지 네 장이 모두 필요합니다.")
+    reading_profile = profile_for("reading", candidate.question_type, question.get("generation_profile")) if candidate.section == "reading" else None
+    if targets is not None and ("material", 1) not in targets:
+        return tasks
+    if reading_profile and getattr(reading_profile, "material_kind", "none") == "material_banner":
+        text = (question.get("visual_material") or {}).get("text", "")
+        if not text.strip() or text.strip() != question.get("passage", "").strip():
+            raise ValueError("광고·표어 이미지 문구와 지문이 일치해야 합니다.")
+        tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": content_hash,
+                      "visual_role": "material", "option_number": 1, "banner_text": text, "chart_spec": None, "prompt": ""})
+    if reading_profile and ((candidate.exam_format == "pbt" and candidate.slot == 10) or getattr(reading_profile, "material_kind", "none") == "material_combo_chart"):
+        material = question.get("visual_material") or {}
+        source = question.get("passage") or question.get("stem", "")
+        spec = chart_spec(material.get("chart_spec"), source)
+        model_chart = candidate.exam_format == "ibt"
+        tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": content_hash,
+                      "visual_role": "material", "option_number": 1, "chart_spec": spec,
+                      "prompt": chart_image_prompt(spec) if model_chart else "",
+                      **({"model_chart": True} if model_chart else {})})
+    return tasks
+
+
+def render_image(task, client):
+    if task.get("model_chart"):
+        data = client.image(task["prompt"], chart=True)
+    elif task.get("banner_text"):
+        data = render_banner(task["banner_text"])
+    elif task["chart_spec"]:
+        data = render_chart(ChartSpec.model_validate(task["chart_spec"]))
+    else:
+        data = client.image(task["prompt"])
+    with Image.open(io.BytesIO(data)) as image:
+        image.load()
+        image = image.convert("RGB")
+        image.thumbnail((1200, 900))
+        output = io.BytesIO()
+        image.save(output, format="PNG", optimize=True)
+        return output.getvalue()
+
+
 def media_plan(package, settings):
     draft = package_draft(package)
     groups = defaultdict(list)
@@ -81,39 +142,7 @@ def media_plan(package, settings):
             profile = profile_for("listening", candidate.question_type, question.get("generation_profile"))
             key = (candidate.question_type, question.get("set_id")) if profile.shared_script else (candidate.question_type, candidate.slot)
             groups[key].append(candidate)
-        options = question.get("visual_options") or []
-        for option in options:
-            number = option["number"]
-            if number not in (1, 2, 3, 4):
-                raise ValueError("이미지 선택지 번호가 올바르지 않습니다.")
-            spec = chart_spec(option.get("chart_spec")) if question.get("visual_kind") == "chart" else None
-            prompt = (option.get("image_prompt") or option.get("description") or "").strip()
-            model_chart = candidate.exam_format == "ibt" and spec is not None
-            if model_chart:
-                prompt = chart_image_prompt(spec)
-            if not spec and not prompt:
-                raise ValueError("필수 이미지 설명이 없습니다.")
-            tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": item.content_hash,
-                          "visual_role": "choice", "option_number": number, "prompt": prompt, "chart_spec": spec,
-                          **({"model_chart": True} if model_chart else {})})
-        if options and {o["number"] for o in options} != {1, 2, 3, 4}:
-            raise ValueError("선택지 이미지 네 장이 모두 필요합니다.")
-        reading_profile = profile_for("reading", candidate.question_type, question.get("generation_profile")) if candidate.section == "reading" else None
-        if reading_profile and getattr(reading_profile, "material_kind", "none") == "material_banner":
-            text = (question.get("visual_material") or {}).get("text", "")
-            if not text.strip() or text.strip() != question.get("passage", "").strip():
-                raise ValueError("광고·표어 이미지 문구와 지문이 일치해야 합니다.")
-            tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": item.content_hash,
-                          "visual_role": "material", "option_number": 1, "banner_text": text, "chart_spec": None, "prompt": ""})
-        if reading_profile and ((candidate.exam_format == "pbt" and candidate.slot == 10) or getattr(reading_profile, "material_kind", "none") == "material_combo_chart"):
-            material = question.get("visual_material") or {}
-            source = question.get("passage") or question.get("stem", "")
-            spec = chart_spec(material.get("chart_spec"), source)
-            model_chart = candidate.exam_format == "ibt"
-            tasks.append({"kind": "image", "item_id": str(candidate.item_id), "content_hash": item.content_hash,
-                          "visual_role": "material", "option_number": 1, "chart_spec": spec,
-                          "prompt": chart_image_prompt(spec) if model_chart else "",
-                          **({"model_chart": True} if model_chart else {})})
+        tasks.extend(image_tasks(candidate, item.content_hash))
     for items in groups.values():
         script = narration_script(items)
         tasks.append({"kind": "audio", "script": script, "positions": script["positions"]})
@@ -253,21 +282,10 @@ class MediaPipeline:
                     "version": "ibt_chart_image_v1" if model_chart else "exam_image_v1"}
 
         def generate(key):
-            if model_chart:
-                data = self.client.image(task["prompt"], chart=True)
-            elif task.get("banner_text"):
-                data = render_banner(task["banner_text"])
-            elif task["chart_spec"]:
-                data = render_chart(ChartSpec.model_validate(task["chart_spec"]))
-            else:
-                data = self.client.image(task["prompt"])
-            with Image.open(io.BytesIO(data)) as image:
-                image.load()
-                image = image.convert("RGB")
-                image.thumbnail((1200, 900))
-                path = self.directory / f"{key}.png"
-                temporary = path.with_suffix(".part")
-                image.save(temporary, format="PNG", optimize=True)
+            data = render_image(task, self.client)
+            path = self.directory / f"{key}.png"
+            temporary = path.with_suffix(".part")
+            temporary.write_bytes(data)
             temporary.replace(path)
             return self._artifact(path, mime_type="image/png")
         result = self._perform("chart" if local_render else "image", snapshot, generate,

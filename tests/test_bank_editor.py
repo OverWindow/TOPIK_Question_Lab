@@ -360,3 +360,55 @@ def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
     assert row["mime_type"] == "image/png" and checked == ["upload", "verify", "close"]
     with pytest.raises(PublicationBlocked, match="이미지"):
         upload_media({"kind": "image", "data": b"not an image"})
+
+
+def test_generated_image_replaces_only_selected_choice(bank, tmp_path):
+    from test_media_generation import FakeGoogle, settings
+    from topik_question_lab.step_06_publication.bank_media_generation import generate_replacements
+    seed_listening(bank, tmp_path)
+    with bank.connect() as c:
+        for n in range(1, 5):
+            c.execute("""INSERT INTO topik_bank.item_visual_assets(visual_asset_id,item_id,content_hash,option_number,
+                storage_bucket,storage_path,storage_url,mime_type,byte_size,file_sha256)
+                SELECT %s,item_id,content_hash,%s,'images',%s,'https://example.test/old.png','image/png',5,%s
+                FROM topik_bank.items WHERE section='listening' AND type_slot=1""", (uuid.uuid4(), n, f"{n}.png", "e" * 64))
+    snapshot = pick(bank, 1, "listening")
+    pending = prepare_edit(snapshot, snapshot["item"]["content_json"], item_metadata(snapshot["item"]),
+                           [dict(kind="image", visual_role="choice", option_number=2, generate=True)], allow_generation=True)
+    ready = generate_replacements(pending, settings=settings(image_delay=0), client=FakeGoogle())
+    assert bank.load(snapshot["item"]["item_id"]) == snapshot
+    bank.save(ready, uploader=fake_uploaded)
+    current = pick(bank, 1, "listening")
+    images = {a["option_number"]: a["storage_path"] for a in current["media"]["item_visual_assets"]}
+    assert images == {1: "1.png", 2: "new.png", 3: "3.png", 4: "4.png"}
+    assert current["item"]["review_status"] == "pending_review"
+
+
+def test_generated_shared_audio_keeps_provenance_and_manual_upload_still_works(bank, tmp_path, monkeypatch):
+    from test_media_generation import FakeGoogle, settings
+    from topik_question_lab.step_06_publication import bank_media_generation as generation
+    from topik_question_lab.step_06_publication.bank_editor import AUDIO_GENERATION_FIELDS
+    seed_listening(bank, tmp_path)
+    other_audio = audio_binding(bank, [4])
+    audio_binding(bank, [21, 22])
+    snapshot = pick(bank, 21, "listening")
+    monkeypatch.setattr(generation, "compose", lambda script, speech, path, config: path.write_bytes(b"generated mp3"))
+    monkeypatch.setattr(generation.MediaSettings, "validate", lambda *args: None)
+    pending = prepare_edit(snapshot, edited(snapshot, dialogue_turns=[dict(speaker="여자", text="새로운 공통 대본입니다.")]),
+                           item_metadata(snapshot["item"]), [dict(kind="audio", generate=True)], allow_generation=True)
+    ready = generation.generate_replacements(pending, settings=settings(), client=FakeGoogle())
+    assert bank.load(snapshot["item"]["item_id"]) == snapshot
+    bank.save(ready, uploader=lambda r: {**fake_uploaded(r), **{k: r["generation"][k] for k in AUDIO_GENERATION_FIELDS}})
+    current = pick(bank, 21, "listening")
+    bindings = [b for b in current["media"]["item_audio_bindings"] if b["item_id"] in ready["affected"]]
+    assert len(bindings) == 2 and len({b["audio_asset_id"] for b in bindings}) == 1
+    asset = next(a for a in current["media"]["tts_audio_assets"] if a["audio_asset_id"] == bindings[0]["audio_asset_id"])
+    assert asset["provider"] == "google_cloud_tts" and asset["model_name"] == settings().tts_model
+    assert asset["female_voice"] == settings().female and asset["script_snapshot"]["positions"] == [21, 22]
+    assert any(b["audio_asset_id"] == other_audio for b in current["media"]["item_audio_bindings"])
+    manual = prepare_edit(current, current["item"]["content_json"], item_metadata(current["item"]), [dict(kind="audio", data=b"manual mp3")])
+    bank.save(manual, uploader=fake_uploaded)
+    current = pick(bank, 21, "listening")
+    binding = next(b for b in current["media"]["item_audio_bindings"] if b["item_id"] == current["item"]["item_id"])
+    asset = next(a for a in current["media"]["tts_audio_assets"] if a["audio_asset_id"] == binding["audio_asset_id"])
+    assert asset["provider"] == asset["model_name"] == "manual_upload"

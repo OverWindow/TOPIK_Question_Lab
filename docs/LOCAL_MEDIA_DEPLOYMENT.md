@@ -13,7 +13,7 @@
 
 `topik_bank`의 `tts_audio_assets`, `item_audio_bindings`,
 `question_set_item_audio_bindings`, `item_visual_assets`를 사용합니다.
-기존 자산 ID·파일 주소·연결과 과거 배포 이력은 보존합니다.
+기존 자산 ID·파일 주소·연결 이력은 보존합니다.
 
 ```dotenv
 LOCAL_MEDIA_ROOT=C:/path/to/Unigate-PBT-Hub/data/media
@@ -43,8 +43,10 @@ AWS 인증은 표준 프로필 또는 환경변수를 사용하며 파일 업로
 
 ## 이력과 백업
 
-`발행 이력` 탭은 PostgreSQL 세트와 기존 `deployment_runs`, `deployment_run_sets`를 조회합니다.
-생성 묶음의 등록 작업은 `data/publication_jobs.db`에 기록하며 SQLite 백업에 포함됩니다.
+`문제 등록·세트 만들기 → 최근 등록 결과`는 `data/publication_jobs.db`의 등록 작업을 조회하며,
+이 파일은 SQLite 백업에 포함됩니다. 과거 배포 테이블 `deployment_runs`, `deployment_run_sets`와
+그 조회 화면은 제거했습니다. 삭제 전 백업과 적용 순서는 [013 이관 안내](../POSTGRESQL_QUESTION_BANK.md#과거-배포-이력-제거)를 따릅니다.
+`서버에 문제 등록` 결과는 화면 세션에만 보관하며 영구 이력으로 기록하지 않습니다.
 이전 DB 대상의 등록 작업은 조회 전용입니다.
 PostgreSQL 전체 DB와 `LOCAL_MEDIA_ROOT`는 별도로 백업하세요.
 

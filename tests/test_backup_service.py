@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import sqlite3
+import tracemalloc
 import zipfile
 from contextlib import closing
 from pathlib import Path
@@ -81,6 +82,68 @@ def test_backup_can_exclude_sources_and_rendered_pages(tmp_path):
     paths = {item["path"] for item in artifact.manifest["files"]}
     assert not any(path.startswith("TOPIK-II-") for path in paths)
     assert not any(path.endswith("page-01.png") for path in paths)
+
+
+def test_backup_excludes_composition_intermediates_without_deleting_files(tmp_path):
+    media = tmp_path / "data/media_generation"
+    media.mkdir(parents=True)
+    for name in ("track.part.wav", "speech.wav", "track.mp3", "image.png"):
+        (media / name).write_bytes(name.encode())
+    artifact = create_backup(tmp_path)
+    paths = {item["path"] for item in inspect_backup(artifact.data)["files"]}
+    assert paths == {f"data/media_generation/{name}" for name in ("speech.wav", "track.mp3", "image.png")}
+    assert (media / "track.part.wav").read_bytes() == b"track.part.wav"
+
+
+def test_backup_memory_does_not_accumulate_uncompressed_files(tmp_path):
+    media = tmp_path / "data/media_generation"
+    media.mkdir(parents=True)
+    payload = b"x" * (1024 * 1024)
+    for index in range(12):
+        (media / f"speech-{index}.wav").write_bytes(payload)
+    tracemalloc.start()
+    try:
+        artifact = create_backup(tmp_path)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 * 1024, f"Backup retained too much uncompressed data: {peak} bytes"
+    assert len(inspect_backup(artifact.data)["files"]) == 12
+
+
+def test_backup_snapshot_includes_committed_wal_data_only(tmp_path):
+    source = tmp_path / "data/types/wal.db"
+    source.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(source)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE sample(value TEXT)")
+        writer.execute("INSERT INTO sample VALUES ('committed')")
+        writer.commit()
+        writer.execute("INSERT INTO sample VALUES ('uncommitted')")
+        artifact = create_backup(tmp_path)
+        inspect_backup(artifact.data)
+        with zipfile.ZipFile(io.BytesIO(artifact.data)) as archive:
+            snapshot = tmp_path / "snapshot.db"
+            snapshot.write_bytes(archive.read("data/types/wal.db"))
+        with closing(sqlite3.connect(snapshot)) as restored:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert restored.execute("SELECT value FROM sample").fetchall() == [("committed",)]
+
+
+def test_legacy_manifest_first_backup_still_restores(tmp_path):
+    name, payload = "data/media_generation/legacy.part.wav", b"legacy intermediate"
+    manifest = {
+        "format": "topik-question-lab-backup", "format_version": 1,
+        "files": [{"path": name, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+                   "category": "generated_media"}],
+    }
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("backup_manifest.json", json.dumps(manifest))
+        archive.writestr(name, payload)
+    restored, _ = restore_backup(tmp_path, output.getvalue())
+    assert restored == manifest
+    assert (tmp_path / name).read_bytes() == payload
 
 
 def test_backup_restores_slot_pools_and_their_usage_history(tmp_path):

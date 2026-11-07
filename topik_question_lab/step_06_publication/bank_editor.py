@@ -29,6 +29,7 @@ from topik_question_lab.step_06_publication.storage_overview import visual_requi
 LOCKS = ("topik_bank:production_deployment", "topik_bank:set_membership", "topik_bank:item_sync")
 FIXED_FIELDS = ("question_type", "type_slot", "set_id", "exam_format", "generation_profile")
 MEDIA_TABLES = ("item_audio_bindings", "item_visual_assets")
+AUDIO_GENERATION_FIELDS = ("provider", "model_name", "female_voice", "male_voice", "tts_style")
 
 
 def question_profile(row):
@@ -152,7 +153,16 @@ def audio_script(rows):
     return script
 
 
-def prepare_edit(snapshot, question, metadata, replacements=()):
+def replacement_signature(plan, replacement):
+    snapshot = plan["snapshot"]
+    if replacement["kind"] == "audio":
+        rows = [{**r, **plan["changes"].get(r["item_id"], {})} for r in audio_members(snapshot)]
+        return audio_script(rows)
+    row = {**snapshot["item"], "content_json": plan["question"]}
+    return visual_signature(row, replacement["visual_role"], replacement["option_number"])
+
+
+def prepare_edit(snapshot, question, metadata, replacements=(), *, allow_generation=False):
     row = snapshot["item"]
     if row["review_status"] == "retired":
         raise PublicationBlocked("사용 중지한 문항은 먼저 복원하세요.")
@@ -187,12 +197,15 @@ def prepare_edit(snapshot, question, metadata, replacements=()):
         target = ("audio",) if kind == "audio" else (replacement.get("visual_role"), replacement.get("option_number"))
         if target in targets or (kind == "audio" and row["section"] != "listening") or (kind == "image" and target not in required) or kind not in ("audio", "image"):
             raise PublicationBlocked("미디어 교체 대상이 올바르지 않습니다.")
-        if not isinstance(replacement.get("data"), bytes) or not replacement["data"]:
+        if replacement.get("generate"):
+            if not allow_generation:
+                raise PublicationBlocked("자동 생성을 완료하고 결과를 확인한 뒤 저장하세요.")
+        elif not isinstance(replacement.get("data"), bytes) or not replacement["data"]:
             raise PublicationBlocked("교체할 파일이 비어 있습니다.")
         targets.add(target)
     audio_rows = audio_members(snapshot)
     if any(r["kind"] == "audio" for r in replacements):
-        expected = 1 if row["type_slot"] <= 20 else 2
+        expected = len(profile.question_numbers) if profile.shared_script else 1
         if len(audio_rows) != expected:
             raise PublicationBlocked("공유 음원 문항 구성이 불완전합니다.")
         audio_script([{**r, "content_json": changes.get(r["item_id"], {}).get("content_json", r["content_json"])} for r in audio_rows])
@@ -206,8 +219,12 @@ def prepare_edit(snapshot, question, metadata, replacements=()):
         affected.update(r["item_id"] for r in audio_rows)
     if not affected:
         raise PublicationBlocked("변경한 내용이 없습니다.")
-    return {"snapshot": snapshot, "question": question, "metadata": dict(metadata), "changes": changes, "affected": sorted(affected),
+    plan = {"snapshot": snapshot, "question": question, "metadata": dict(metadata), "changes": changes, "affected": sorted(affected),
             "invalidate_audio": invalidate_audio, "replacements": replacements}
+    for replacement in replacements:
+        if replacement.get("generation") and replacement["generation"].get("input_hash") != _hash(replacement_signature(plan, replacement)):
+            raise PublicationBlocked("자동 생성 후 대본·이미지 설명이 변경되었습니다. 다시 생성하세요.")
+    return plan
 
 
 class BankEditor:
@@ -342,9 +359,14 @@ class BankEditor:
                 script = audio_script(rows)
                 source_hash = _hash([script, {k: asset[k] for k in ("file_sha256", "storage_bucket", "storage_path", "storage_url")}])
                 value = {k: v for k, v in asset.items() if k != "kind"}
-                value.update(audio_asset_id=str(uuid.uuid4()), source_hash=source_hash, provider="manual_upload", model_name="manual_upload",
-                             female_voice="manual", male_voice="manual", narration_version="exam_track_v4", script_snapshot=script)
-                existing = c.execute("SELECT audio_asset_id FROM topik_bank.tts_audio_assets WHERE source_hash=%s AND model_name='manual_upload' AND female_voice='manual' AND male_voice='manual' AND deleted_at IS NULL", (source_hash,)).fetchone()
+                if "tts_style" in asset:
+                    source_hash = _hash([source_hash, {k: asset[k] for k in AUDIO_GENERATION_FIELDS}])
+                value.update(audio_asset_id=str(uuid.uuid4()), source_hash=source_hash,
+                             provider=asset.get("provider", "manual_upload"), model_name=asset.get("model_name", "manual_upload"),
+                             female_voice=asset.get("female_voice", "manual"), male_voice=asset.get("male_voice", "manual"),
+                             narration_version="exam_track_v4", script_snapshot=script)
+                existing = c.execute("SELECT audio_asset_id FROM topik_bank.tts_audio_assets WHERE source_hash=%s AND model_name=%s AND female_voice=%s AND male_voice=%s AND deleted_at IS NULL",
+                                     (source_hash, value["model_name"], value["female_voice"], value["male_voice"])).fetchone()
                 if existing:
                     value["audio_asset_id"] = str(existing[0])
                 else:
@@ -470,6 +492,8 @@ def upload_media(replacement):
             except Exception:
                 raise PublicationBlocked("재생 가능한 MP3와 ffmpeg·ffprobe 설정을 확인하세요.") from None
             mime, extra = "audio/mpeg", {"duration_ms": duration}
+            if replacement.get("generation"):
+                extra.update({k: replacement["generation"][k] for k in AUDIO_GENERATION_FIELDS})
         size, digest = digest_file(path)
         store = None
         try:

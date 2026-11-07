@@ -254,19 +254,6 @@ class PostgresQuestionBank:
                 f"문항 동기화에 실패해 전체 작업을 롤백했습니다: {_safe_error(exc, self.database_url)}"
             ) from exc
 
-    def list_deployment_runs(self, limit: int = 50) -> list[dict]:
-        """Read historical deployments without contacting their former targets."""
-        return self._query_dicts(
-            """SELECT r.run_id, r.target_label, r.status, r.requested_set_count,
-                      r.transferred_set_count, r.reused_set_count,
-                      r.created_row_count, r.reused_row_count, r.error_message,
-                      r.started_at, r.completed_at, COUNT(s.set_id) AS audited_set_count
-               FROM topik_bank.deployment_runs r
-               LEFT JOIN topik_bank.deployment_run_sets s ON s.run_id = r.run_id
-               GROUP BY r.run_id ORDER BY r.started_at DESC LIMIT %s""",
-            "과거 배포 이력을 읽지 못했습니다", (limit,),
-        )
-
     def list_current_items(self) -> list[dict]:
         return self._query_dicts(
             """SELECT *,COALESCE((source_provenance->'publication_metadata'->>'predicted_difficulty')::double precision,0.0) AS predicted_difficulty

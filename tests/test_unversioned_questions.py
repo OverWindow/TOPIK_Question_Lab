@@ -79,13 +79,13 @@ def test_migration_preserves_published_contents_and_latest_unassigned_item(postg
             source_snapshot_hash,status,requested_set_count) VALUES (%s,%s,'test',%s,'succeeded',1)""",
             (uuid.uuid4(), "b" * 64, "c" * 64))
     bank = PostgresQuestionBank(url)
-    assert bank.ensure_schema() == ["006_unversioned_items", "007_bank_media", "008_s3_media", "009_pending_media_review", "010_exam_format", "011_item_audio_only"]
+    assert bank.ensure_schema() == [path.stem for path in sorted(MIGRATION_DIR.glob("*.sql")) if path.stem >= "006"]
     assert bank.ensure_schema() == []
     with psycopg.connect(url) as connection:
         rows = connection.execute("SELECT source_key,stem,set_id,position FROM topik_bank.items ORDER BY type_slot").fetchall()
         assert rows == [(assigned.source_key, assigned.question["stem"], set_id, 1),
                         (free.source_key, latest_free.question["stem"], None, None)]
-        assert connection.execute("SELECT count(*) FROM topik_bank.deployment_runs").fetchone()[0] == 1
+        assert connection.execute("SELECT to_regclass('topik_bank.deployment_runs'), to_regclass('topik_bank.deployment_run_sets')").fetchone() == (None, None)
         assert connection.execute("SELECT to_regclass('topik_bank.item_versions'),to_regclass('topik_bank.question_set_items')").fetchone() == (None, None)
         assert connection.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema='topik_bank' AND column_name='item_version'").fetchone()[0] == 0
         require_target_schema(connection)

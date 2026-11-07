@@ -99,7 +99,12 @@ def _collect_files(root: Path, options: BackupOptions) -> list[Path]:
             ]
         )
     for pattern in patterns:
-        candidates.extend(path for path in root.glob(pattern) if path.is_file())
+        candidates.extend(
+            path for path in root.glob(pattern)
+            if path.is_file() and not (
+                path.is_relative_to(root / "data/media_generation") and path.name.endswith(".part.wav")
+            )
+        )
     return sorted(set(candidates), key=lambda value: value.relative_to(root).as_posix())
 
 
@@ -123,12 +128,6 @@ def create_backup(root: Path, options: BackupOptions | None = None) -> BackupArt
 def _create_backup(root: Path, options: BackupOptions | None = None) -> BackupArtifact:
     root = root.resolve()
     options = options or BackupOptions()
-    entries: list[tuple[str, bytes, str]] = []
-    for path in _collect_files(root, options):
-        relative = path.relative_to(root)
-        data = _sqlite_snapshot(path) if path.suffix.lower() == ".db" else path.read_bytes()
-        entries.append((relative.as_posix(), data, _category(relative)))
-
     created_at = datetime.now(timezone.utc).isoformat()
     manifest = {
         "format": "topik-question-lab-backup",
@@ -138,16 +137,18 @@ def _create_backup(root: Path, options: BackupOptions | None = None) -> BackupAr
             "include_sources": options.include_sources,
             "include_rendered_pages": options.include_rendered_pages,
         },
-        "files": [
-            {"path": name, "size": len(data), "sha256": _sha256(data), "category": category}
-            for name, data, category in entries
-        ],
+        "files": [],
     }
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        for path in _collect_files(root, options):
+            relative = path.relative_to(root)
+            data = _sqlite_snapshot(path) if path.suffix.lower() == ".db" else path.read_bytes()
+            manifest["files"].append({"path": relative.as_posix(), "size": len(data),
+                                      "sha256": _sha256(data), "category": _category(relative)})
+            archive.writestr(relative.as_posix(), data)
+            del data  # Keep only one uncompressed file in memory at a time.
         archive.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
-        for name, data, _ in entries:
-            archive.writestr(name, data)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return BackupArtifact(f"topik_lab_backup_{timestamp}.zip", output.getvalue(), manifest)
 

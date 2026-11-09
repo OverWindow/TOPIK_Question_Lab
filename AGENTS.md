@@ -25,6 +25,7 @@
 - Keep changes within the requested scope. Do not perform unrelated refactoring or modify unrelated files.
 - If instructions are unclear or open to multiple interpretations, ask for clarification and wait before proceeding with dependent work.
 - Evaluate existing functionality before adding a dependency. Reuse existing tables and relationships where possible; add tables only for a clear, current requirement.
+- When proposing a new table, clearly specify its purpose, column names, data types, nullability, default values, and primary key, foreign key, and unique constraints.
 - Before adding or configuring a background worker, explain its purpose and obtain approval.
 - Obtain approval before deleting data or making database changes that break schema compatibility.
 - Do not expose personal information, student information, API keys, database connection strings, credentials, or secrets in logs or the repository. Never print environment file values or commit secrets.

@@ -104,7 +104,7 @@ class ProviderResult(BaseModel):
     provider: ProviderName
     model: str
     # Retired review operations remain readable in saved runs and backups.
-    operation: Literal["analysis", "enrichment", "generation", "transcription", "review_solve", "review_quality", "review_set", "review_repair", "review_preflight"]
+    operation: Literal["analysis", "enrichment", "generation", "transcription", "vocabulary_review", "review_solve", "review_quality", "review_set", "review_repair", "review_preflight"]
     raw_response: str = ""
     parsed_json: dict | list | None = None
     input_tokens: int | None = None

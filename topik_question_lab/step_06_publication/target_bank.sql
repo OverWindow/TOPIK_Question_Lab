@@ -46,10 +46,9 @@ CREATE TABLE topik_bank.tts_audio_assets (
     byte_size INTEGER NOT NULL CHECK (byte_size > 0), duration_ms INTEGER,
     created_by UUID, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     tts_style JSONB NOT NULL DEFAULT '{"stylePrompt":"","speakingRate":1}', deleted_at TIMESTAMPTZ,
-    narration_version TEXT NOT NULL DEFAULT 'dialogue_v1'
-        CHECK (narration_version IN ('dialogue_v1','exam_track_v2','exam_track_v3','exam_track_v4')),
-    script_snapshot JSONB,
-    CHECK (narration_version = 'dialogue_v1' OR script_snapshot IS NOT NULL),
+    narration_version TEXT NOT NULL DEFAULT 'exam_track_v4'
+        CHECK (narration_version = 'exam_track_v4'),
+    script_snapshot JSONB NOT NULL,
     UNIQUE (source_hash,model_name,female_voice,male_voice),
     storage_backend TEXT NOT NULL DEFAULT 'local' CHECK (storage_backend IN ('local','supabase','s3')),
     file_sha256 CHAR(64) CHECK (file_sha256 ~ '^[a-f0-9]{64}$')

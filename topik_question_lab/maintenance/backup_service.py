@@ -229,6 +229,9 @@ def _restore_backup(root: Path, data: bytes) -> tuple[dict, Path]:
             columns = {r[1] for r in connection.execute("PRAGMA table_info(batches)")}
             if "auto_resume" in columns:
                 connection.execute("UPDATE batches SET auto_resume=0,pipeline_status='paused' WHERE auto_resume=1")
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='vocabulary_batches'").fetchone():
+                connection.execute("UPDATE vocabulary_batches SET status='paused' WHERE status='running'")
+                connection.execute("UPDATE vocabulary_tasks SET status='pending' WHERE status='processing'")
     return manifest, safety_path
 
 

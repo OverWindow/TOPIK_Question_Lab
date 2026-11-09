@@ -83,6 +83,11 @@ def migrate_local_bank(root: Path, url: str) -> tuple[list[str], Path | None]:
             pending = [path.stem for path in paths if path.stem not in applied]
             if "011_item_audio_only" in pending:
                 raise StartupMigrationError("문항 음원 통합(011)은 백업·검증 후 수동 적용해야 합니다. 자동 변경하지 않았습니다.")
+            if pending == ["017_vocabulary_questions"]:
+                from topik_question_lab.step_06_publication.vocabulary_questions import apply_question_migration
+                backup = _backup_database(root, url, config, label="017")
+                apply_question_migration(c)
+                return pending, backup
             if pending and pending != [AUTO_VERSION]:
                 raise StartupMigrationError("자동 적용 범위는 009 → 010입니다. 다른 미적용 마이그레이션은 수동 검토가 필요합니다.")
             if not pending:

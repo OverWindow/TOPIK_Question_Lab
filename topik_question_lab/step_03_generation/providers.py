@@ -440,6 +440,7 @@ def call_provider(
     generation_preset: str | None = None,
     managed_retries: bool = False,
     model_capabilities: dict | None = None,
+    request_timeout: float | None = None,
 ) -> ProviderResult:
     started = time.perf_counter()
     raw = ""
@@ -474,7 +475,8 @@ def call_provider(
             missing_key_message = "CHATKHU_API_KEY가 없습니다. ChatKHU 웹 수동 모드를 사용하세요."
         if not key:
             raise ValueError(missing_key_message)
-        client = OpenAI(api_key=key, base_url=base_url, max_retries=0 if managed_retries else 2)
+        client = OpenAI(api_key=key, base_url=base_url, max_retries=0 if managed_retries else 2,
+                        **({"timeout": request_timeout} if request_timeout is not None else {}))
         if image_paths:
             if backend == "deepseek":
                 raise ValueError("DeepSeek 텍스트 모델은 PDF 이미지 전사에 사용할 수 없습니다.")

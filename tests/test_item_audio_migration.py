@@ -33,9 +33,10 @@ def legacy_audio(postgres_database_factory):
         assets = [uuid.uuid4() for _ in range(3)]
         for n, aid in enumerate(assets):
             c.execute("""INSERT INTO topik_bank.tts_audio_assets(audio_asset_id,source_hash,model_name,
-                female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,deleted_at)
+                female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,deleted_at,
+                narration_version,script_snapshot)
                 VALUES (%s,%s,'test','f','m','test','audio.mp3','https://example.invalid/audio.mp3',1,
-                        CASE WHEN %s THEN now() END)""", (aid, str(n)*64, n == 2))
+                        CASE WHEN %s THEN now() END,'exam_track_v4','{}')""", (aid, str(n)*64, n == 2))
         for slot in (1, 2, 3, 5):
             c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash)
                 VALUES (%s,%s,%s,%s)""", (*items[slot], assets[0], "a"*64))

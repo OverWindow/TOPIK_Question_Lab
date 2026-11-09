@@ -37,6 +37,7 @@ navigation = st.navigation(
         ],
         "TOPIK 단어장": [
             st.Page(APP_DIR / "vocabulary_app.py", title="TOPIK II 단어장", icon="📚"),
+            st.Page(APP_DIR / "vocabulary_questions_app.py", title="단어 연습문제 생성", icon="📝"),
             st.Page(APP_DIR / "vocabulary_transfer_app.py", title="서버에 단어장 등록", icon="📡"),
         ],
         "PostgreSQL 정리": [
@@ -46,6 +47,6 @@ navigation = st.navigation(
     position="sidebar",
     expanded=True,
 )
-if navigation.title not in {"문제 저장 현황", "문제 등록·세트 만들기", "서버에 문제 등록", "PostgreSQL 문제 관리", "TOPIK II 단어장", "서버에 단어장 등록", "정리 작업"} and (ROOT / "data/bulk_generation.db").exists():
+if navigation.title not in {"문제 저장 현황", "문제 등록·세트 만들기", "서버에 문제 등록", "PostgreSQL 문제 관리", "TOPIK II 단어장", "단어 연습문제 생성", "서버에 단어장 등록", "정리 작업"} and (ROOT / "data/bulk_generation.db").exists():
     get_runner(str(ROOT)).recover_idle()
 navigation.run()

@@ -41,8 +41,10 @@ def add_media(url, set_id):
         item_id, content_hash = c.execute("SELECT item_id,content_hash FROM topik_bank.items WHERE set_id=%s AND position=1", (set_id,)).fetchone()
         audio = str(uuid.uuid4())
         c.execute("""INSERT INTO topik_bank.tts_audio_assets(audio_asset_id,source_hash,model_name,
-            female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,storage_backend,file_sha256)
-            VALUES (%s,%s,'synthetic','female','male','test-bucket','audio.mp3','https://media.example/audio.mp3',1,'s3',%s)""", (audio, 'a'*64, 'b'*64))
+            female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,storage_backend,file_sha256,
+            narration_version,script_snapshot)
+            VALUES (%s,%s,'synthetic','female','male','test-bucket','audio.mp3','https://media.example/audio.mp3',1,'s3',%s,
+                    'exam_track_v4','{}')""", (audio, 'a'*64, 'b'*64))
         c.execute("INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash) VALUES (%s,%s,%s,%s)", (item_id, content_hash, audio, 'a'*64))
         visual = str(uuid.uuid4())
         c.execute("""INSERT INTO topik_bank.item_visual_assets(visual_asset_id,item_id,content_hash,option_number,
@@ -69,8 +71,8 @@ def test_all_rows_and_media_are_exact_and_retry_does_not_duplicate(banks):
         c.execute("""INSERT INTO topik_bank.item_audio_bindings(item_id,content_hash,audio_asset_id,source_hash,is_current)
             SELECT item_id,%s,audio_asset_id,source_hash,false FROM topik_bank.item_audio_bindings""", ('d'*64,))
         c.execute("""INSERT INTO topik_bank.tts_audio_assets(audio_asset_id,source_hash,model_name,
-            female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,deleted_at)
-            VALUES (%s,%s,'archive','female','male','archive','old.mp3','https://media.example/old.mp3',1,now())""",
+            female_voice,male_voice,storage_bucket,storage_path,storage_url,byte_size,deleted_at,script_snapshot)
+            VALUES (%s,%s,'archive','female','male','archive','old.mp3','https://media.example/old.mp3',1,now(),'{}')""",
                   (uuid.uuid4(), 'e'*64))
     before = rows(source)
     result = send(source, target)

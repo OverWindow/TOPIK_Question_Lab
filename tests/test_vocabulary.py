@@ -42,6 +42,7 @@ def test_unconfigured_page_does_not_connect_or_create_files(tmp_path, monkeypatc
     app = AppTest.from_file(str(PAGE)).run()
     assert not app.exception
     assert app.title[0].value == "TOPIK II 단어장"
+    assert not any(button.key == "vocab-start" for button in app.button)
     assert "연결이 설정되지 않았습니다" in app.warning[0].value
     assert not app.dataframe and not app.metric
     assert list(tmp_path.rglob("*")) == before
@@ -97,6 +98,7 @@ def test_ui_filters_pages_details_and_refresh(bank):
     app = AppTest.from_file(str(PAGE)).run()
     assert not app.exception
     assert app.metric[0].value == "55" and len(app.dataframe[0].value) == 50
+    assert not any((button.key or "").startswith("vocab-") for button in app.button)
     assert next(button for button in app.button if button.label == "이전").disabled
     next(button for button in app.button if button.label == "다음").click().run()
     assert not app.exception and app.number_input[0].value == 2
@@ -160,3 +162,6 @@ def test_main_menu_opens_vocabulary_without_recovering_worker(tmp_path, monkeypa
     app.switch_page("ui/vocabulary_app.py").run()
     assert not app.exception
     assert app.title[0].value == "TOPIK II 단어장"
+    app.switch_page("ui/vocabulary_questions_app.py").run()
+    assert not app.exception
+    assert app.title[0].value == "단어 연습문제 생성"

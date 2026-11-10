@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import unicodedata
 from typing import Literal
@@ -55,7 +56,7 @@ class VocabularyQuestion(BaseModel):
     @field_validator("stem")
     @classmethod
     def blank(cls, value):
-        return normalize_blank_marker(value)
+        return normalize_blank_marker(re.sub(r"_{3,}", "( )", value))
 
     @field_validator("choices", "accepted_answers")
     @classmethod
@@ -91,6 +92,31 @@ class VocabularyBundle(BaseModel):
     skipped_reason: str = ""
 
 
+class VocabularyRepair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    questions: list[VocabularyQuestion] = Field(min_length=1, max_length=7)
+
+
+def merge_repair(payload, candidate, word, positions):
+    original = validate_bundle(candidate, word).model_dump()
+    repair = VocabularyRepair.model_validate(payload)
+    replacements = {q.position: q for q in repair.questions}
+    if len(replacements) != len(repair.questions) or set(replacements) != set(positions):
+        raise ValueError("수정 응답은 지적된 문항을 정확히 한 번씩 포함해야 합니다.")
+    for index, before in enumerate(original["questions"]):
+        if before["position"] not in replacements:
+            continue
+        after = replacements[before["position"]].model_dump()
+        if after["question_type"] != before["question_type"]:
+            raise ValueError("수정 과정에서 문항 유형을 바꿀 수 없습니다.")
+        # Preserve the balanced answer positions without touching accepted answers.
+        answer = after["choices"].pop(after["correct_answer"] - 1)
+        after["choices"].insert(before["correct_answer"] - 1, answer)
+        after["correct_answer"] = before["correct_answer"]
+        original["questions"][index] = after
+    return validate_bundle(original, word).model_dump()
+
+
 def validate_bundle(payload: dict, word: dict) -> VocabularyBundle:
     bundle = VocabularyBundle.model_validate(payload)
     positions = [q.position for q in bundle.questions]
@@ -109,3 +135,23 @@ def validate_bundle(payload: dict, word: dict) -> VocabularyBundle:
         raise ValueError("활용 조건이 중복됩니다.")
     bundle.questions.sort(key=lambda q: q.position)
     return bundle
+
+
+def balance_answer_positions(bundle: VocabularyBundle, *, seed: str) -> VocabularyBundle:
+    """Copy a validated bundle, preserving answer text and repeatable ordering."""
+    rng = random.Random(seed)
+    result = bundle.model_copy(deep=True)
+    targets = []
+    # Balanced prefixes also cover omission of the final optional question.
+    for _ in range(0, len(result.questions), 4):
+        block = [1, 2, 3, 4]
+        rng.shuffle(block)
+        targets.extend(block)
+    for question, target in zip(result.questions, targets):
+        answer = question.choices[question.correct_answer - 1]
+        distractors = sorted(choice for choice in question.choices if choice != answer)
+        rng.shuffle(distractors)
+        distractors.insert(target - 1, answer)
+        question.choices = distractors
+        question.correct_answer = target
+    return result

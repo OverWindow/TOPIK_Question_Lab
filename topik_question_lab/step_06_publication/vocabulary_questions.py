@@ -1,5 +1,6 @@
 """Atomic word exercise publication with source and edit conflict detection."""
 from pathlib import Path
+from collections import Counter
 import uuid
 
 from psycopg.types.json import Jsonb
@@ -45,8 +46,9 @@ def question_status(snapshot):
     try:
         expected = set(range(1, 7) if conjugates(word) else range(1, 4))
         positions = {row["position"] for row in rows}
+        word_hash = digest(word)
         if (positions not in (expected, expected | {7})
-                or any(row["source_hash"] != digest(word) for row in rows)
+                or any(row["source_hash"] != word_hash for row in rows)
                 or len({row["generation_id"] for row in rows}) != 1):
             return "stale"
         for row in rows:
@@ -82,15 +84,36 @@ class VocabularyQuestionBank:
         with connection(self.url) as c:
             return self._snapshot(c, vocabulary_id)
 
-    def select(self, *, level=None, query="", mode="missing", limit=100, ids=None):
-        if level not in (None, 3, 4, 5, 6) or mode not in {"missing", "stale", "regenerate"} or (limit is not None and limit < 1):
+    @staticmethod
+    def _snapshots(c, where="", params=()):
+        # One joined query avoids a round trip for every word during counts/selection.
+        cursor = c.execute("""SELECT to_jsonb(v), coalesce(jsonb_agg(to_jsonb(q) ORDER BY q.position)
+            FILTER (WHERE q.question_id IS NOT NULL), '[]'::jsonb)
+            FROM topik_bank.vocabulary v LEFT JOIN topik_bank.vocabulary_questions q USING(vocabulary_id)"""
+            + where + " GROUP BY v.vocabulary_id ORDER BY v.vocabulary_id", params)
+        for word, existing in cursor:
+            yield {"word": source_snapshot(word), "existing": existing, "existing_hash": digest(existing)}
+
+    def progress(self):
+        with connection(self.url) as c:
+            if c.execute("SELECT to_regclass('topik_bank.vocabulary')").fetchone()[0] is None:
+                raise ValueError("단어장이 아직 준비되지 않았습니다.")
+            if c.execute("SELECT to_regclass('topik_bank.vocabulary_questions')").fetchone()[0] is None:
+                total = c.execute("SELECT count(*) FROM topik_bank.vocabulary").fetchone()[0]
+                return {"total": total, "completed": 0, "remaining": total}
+            counts = Counter(question_status(snapshot) for snapshot in self._snapshots(c))
+        return {"total": sum(counts.values()), "completed": counts["ready"],
+                "remaining": counts["missing"] + counts["stale"]}
+
+    def select(self, *, level=None, query="", mode="unfinished", limit=100, ids=None):
+        if level not in (None, 3, 4, 5, 6) or mode not in {"unfinished", "missing", "stale", "regenerate"} or (limit is not None and limit < 1):
             raise ValueError("단어 생성 범위를 확인하세요.")
         clauses, params = [], []
         if level is not None:
             clauses.append("topik_level=%s")
             params.append(level)
         if ids is not None:
-            clauses.append("vocabulary_id=ANY(%s)")
+            clauses.append("v.vocabulary_id=ANY(%s)")
             params.append(list(ids))
         if query.strip():
             pattern = "%" + query.strip().replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
@@ -99,16 +122,30 @@ class VocabularyQuestionBank:
             params.extend([pattern] * len(columns))
         found = []
         with connection(self.url) as c:
-            sql = "SELECT vocabulary_id FROM topik_bank.vocabulary v" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY vocabulary_id"
-            cursor = c.execute(sql, params)
-            for (vocabulary_id,) in cursor:
-                snapshot = self._snapshot(c, vocabulary_id)
-                if mode != "regenerate" and question_status(snapshot) != mode:
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            for snapshot in self._snapshots(c, where, params):
+                state = question_status(snapshot)
+                if (mode == "unfinished" and state == "ready"
+                        or mode in {"missing", "stale"} and state != mode):
                     continue
                 found.append(snapshot)
                 if limit is not None and len(found) >= limit:
                     break
         return found
+
+    @staticmethod
+    def _matches_saved(rows, task, config):
+        expected = [q.model_dump() for q in validate_bundle(task["checkpoint"]["candidate"], task["snapshot"]["word"]).questions]
+        generation_id = str(uuid.UUID(task["generation_id"]))
+        return ([{key: row[key] for key in QUESTION_FIELDS} for row in rows] == expected
+                and all(str(row["generation_id"]) == generation_id and row["source_hash"] == task["source_hash"]
+                        and row["provider"] == config["provider"] and row["model"] == config["model"] for row in rows))
+
+    def confirm_saved(self, task, config, database_key):
+        with connection(self.url) as c:
+            if digest(database_identity(c)) != database_key:
+                raise ValueError("생성을 시작한 DB와 현재 DB가 다릅니다.")
+            return self._matches_saved(self._snapshot(c, task["vocabulary_id"])["existing"], task, config)
 
     def save(self, task, config, database_key):
         bundle = validate_bundle(task["checkpoint"]["candidate"], task["snapshot"]["word"])
@@ -119,16 +156,11 @@ class VocabularyQuestionBank:
         generation_id = str(uuid.UUID(task["generation_id"]))
         expected = [q.model_dump() for q in bundle.questions]
 
-        def matches(rows):
-            return ([{key: row[key] for key in QUESTION_FIELDS} for row in rows] == expected
-                    and all(str(row["generation_id"]) == generation_id and row["source_hash"] == task["source_hash"]
-                            and row["provider"] == config["provider"] and row["model"] == config["model"] for row in rows))
-
         with connection(self.url, readonly=False) as c:
             if digest(database_identity(c)) != database_key:
                 raise ValueError("생성을 시작한 DB와 현재 DB가 다릅니다.")
             current = self._snapshot(c, task["vocabulary_id"], lock=True)
-            if matches(current["existing"]):
+            if self._matches_saved(current["existing"], task, config):
                 return "reconciled"
             if digest(current["word"]) != task["source_hash"]:
                 raise ValueError("생성 이후 원본 단어가 변경되었습니다. 다시 생성하세요.")
@@ -144,6 +176,6 @@ class VocabularyQuestionBank:
                           f"ON CONFLICT(vocabulary_id,position) DO UPDATE SET {updates},updated_at=CURRENT_TIMESTAMP", values)
             c.execute("DELETE FROM topik_bank.vocabulary_questions WHERE vocabulary_id=%s AND NOT(position=ANY(%s))",
                       (task["vocabulary_id"], [q.position for q in bundle.questions]))
-            if not matches(self._snapshot(c, task["vocabulary_id"])["existing"]):
+            if not self._matches_saved(self._snapshot(c, task["vocabulary_id"])["existing"], task, config):
                 raise ValueError("PostgreSQL 저장 내용이 검수 완료 문항과 일치하지 않아 저장을 취소했습니다.")
         return "saved"

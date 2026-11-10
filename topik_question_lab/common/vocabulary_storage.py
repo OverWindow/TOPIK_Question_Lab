@@ -134,9 +134,20 @@ class VocabularyStore:
         with self.connect() as c:
             c.executescript(SCHEMA)
             c.execute("UPDATE vocabulary_batches SET status='paused',updated_at=CURRENT_TIMESTAMP WHERE status='running'")
-            c.execute("UPDATE vocabulary_tasks SET status='pending' WHERE status='processing'")
+            ids = [r[0] for r in c.execute("""SELECT generation_id FROM vocabulary_tasks
+                WHERE status NOT IN ('saved','skipped')
+                AND coalesce(json_extract(checkpoint_json,'$.restart_required'),0)=0""")]
+        for task_id in ids:
+            self.reset_for_next_run(task_id)
 
-    def retry(self, batch_id):
-        with self.connect() as c:
-            c.execute("""UPDATE vocabulary_tasks SET status='pending',attempts=0,error=''
-                WHERE batch_id=? AND status IN ('failed','retry_wait')""", (batch_id,))
+    def reset_for_next_run(self, task_id, *, error=None):
+        task = self.task(task_id)
+        if task["status"] in {"saved", "skipped"}:
+            return
+        checkpoint = task["checkpoint"]
+        if not checkpoint.get("restart_required"):
+            checkpoint["last_attempt"] = {key: task[key] for key in ("stage", "status", "attempts", "repair_count")}
+            checkpoint["last_attempt"]["reviewed_hash"] = checkpoint.pop("reviewed_hash", None)
+            checkpoint["restart_required"] = True
+        self.update(task_id, stage="generate", status="pending", attempts=0, repair_count=0,
+                    next_attempt_at=0, checkpoint=checkpoint, error=task["error"] if error is None else error)

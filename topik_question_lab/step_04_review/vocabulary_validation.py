@@ -45,12 +45,14 @@ class ItemReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     position: int = Field(ge=1, le=7, strict=True)
     issues: list[StrictStr]
+    warnings: list[StrictStr] = Field(default_factory=list)
 
 
 class BundleReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issues: list[StrictStr]
     questions: list[ItemReview]
+    warnings: list[StrictStr] = Field(default_factory=list)
 
 
 def apply_review(payload, candidate, word):
@@ -59,9 +61,11 @@ def apply_review(payload, candidate, word):
     expected = {question["position"] for question in candidate["questions"]}
     if len(positions) != len(set(positions)) or set(positions) != expected:
         raise ValueError("검수 결과가 모든 문항을 정확히 한 번 포함해야 합니다.")
-    if any(not issue.strip() for issue in review.issues + [i for q in review.questions for i in q.issues]):
+    if any(not issue.strip() for issue in review.issues + review.warnings
+           + [i for q in review.questions for i in q.issues + q.warnings]):
         raise ValueError("검수 오류 사유가 비어 있습니다.")
     issues = list(review.issues)
+    warnings = list(review.warnings) + [f"{q.position}번: {message}" for q in review.questions for message in q.warnings]
     failed = []
     for item in review.questions:
         if item.issues:
@@ -71,7 +75,7 @@ def apply_review(payload, candidate, word):
         candidate = {**candidate, "questions": [q for q in candidate["questions"] if q["position"] != 7],
                      "skipped_reason": "; ".join(issues)}
         validate_bundle(candidate, word)
-        return candidate, {"passed": True, "issues": [], "optional_skipped": issues}, []
+        return candidate, {"passed": True, "issues": [], "warnings": warnings, "optional_skipped": issues}, []
     if review.issues:
         failed = sorted(expected)
-    return candidate, {"passed": not issues, "issues": issues}, sorted(failed)
+    return candidate, {"passed": not issues, "issues": issues, "warnings": warnings}, sorted(failed)

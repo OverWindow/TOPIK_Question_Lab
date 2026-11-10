@@ -8,21 +8,26 @@ from dotenv import load_dotenv
 import streamlit as st
 
 from topik_question_lab.step_06_publication.vocabulary import PAGE_SIZE, search_vocabulary
-from topik_question_lab.ui.vocabulary_questions_ui import render_question_controls
+from topik_question_lab.ui.vocabulary_questions_ui import render_progress, render_question_controls
 
 
 ROOT = Path(os.getenv("TOPIK_LAB_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 load_dotenv(ROOT / ".env")
 st.set_page_config(page_title="단어 연습문제 생성", page_icon="📝", layout="wide")
 st.title("단어 연습문제 생성")
-st.caption("단어를 선택해 빈칸·활용형·유의어 및 반의어 문제를 생성하고 검수·저장하세요.")
+database_url = os.getenv("DATABASE_URL", "").strip()
+render_progress(database_url)
+st.caption("① 대상 선택 → ② 프롬프트 확인 → ③ 생성·검수·자동 저장 → ④ 실행 결과")
+st.info("단어당 최대 7문제를 만듭니다. 1차 검수 통과 시 2회, 실패 시 수정·최종 검수를 포함해 최대 4회 호출합니다. "
+        "먼저 단어 1개로 결과를 확인한 뒤 대량 생성하세요. "
+        "통과한 단어는 즉시 PostgreSQL에 저장하고, 실패한 단어는 다음 생성에서 처음부터 시작합니다.")
+st.subheader("1. 단어·생성 범위 선택")
 
 filters = st.columns([1, 3])
 level = filters[0].selectbox("급수", [None, 3, 4, 5, 6],
     format_func=lambda value: "전체" if value is None else f"{value}급", key="vocab-question-level")
 query = filters[1].text_input("검색어", placeholder="단어, 뜻 또는 예문", max_chars=200, key="vocab-question-query")
 st.button("새로고침", key="vocab-question-refresh")
-database_url = os.getenv("DATABASE_URL", "").strip()
 identity = (hashlib.sha256(database_url.encode()).hexdigest(), level, query.strip())
 if st.session_state.get("vocab-question-filter") != identity:
     st.session_state["vocab-question-filter"] = identity

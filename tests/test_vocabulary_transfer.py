@@ -281,7 +281,7 @@ def test_unconfigured_page_and_main_menu_do_not_start_workers(tmp_path, monkeypa
     monkeypatch.setattr(runner_service, "get_runner", lambda *a: pytest.fail("must not recover a worker"))
     main = AppTest.from_file(str(ROOT / "topik_question_lab/main.py"))
     main.switch_page("ui/vocabulary_transfer_app.py").run()
-    assert not main.exception and main.title[0].value == "서버에 단어장 등록"
+    assert not main.exception and main.title[0].value == "서버에 단어장·문제 등록"
 
 
 def test_ui_partial_failure_retries_only_selected_server(banks, postgres_database_factory, tmp_path, monkeypatch):

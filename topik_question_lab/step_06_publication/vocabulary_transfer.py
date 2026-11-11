@@ -204,18 +204,22 @@ def _effects(source, target):
 
 def prepare_vocabulary_transfer(snapshot, target_url):
     with connection(target_url) as c:
-        identity = _distinct_target(c, snapshot.identity)
-        schema = _schema(c)
-        upgrade = schema is not None and _has_audio(snapshot.schema) and not _has_audio(schema)
-        upgrade_languages = schema is not None and _has_languages(snapshot.schema) and not _has_languages(schema)
-        expected_schema = _base_schema(snapshot.schema) if upgrade else snapshot.schema
-        if upgrade_languages:
-            expected_schema = _without_languages(expected_schema)
-        if schema is not None and schema != expected_schema:
-            raise TransferError("대상 단어장의 제약·인덱스 구조가 원본과 다릅니다. 기존 구조를 확인하세요.")
-        rows = _rows(c) if schema else []
-        return VocabularyTransferPlan(snapshot, identity, digest((schema, rows)), schema is None,
-                                      _effects(snapshot.rows, rows), len(rows), _levels(rows), upgrade, upgrade_languages)
+        return _prepare_vocabulary_transfer(c, snapshot)
+
+
+def _prepare_vocabulary_transfer(c, snapshot):
+    identity = _distinct_target(c, snapshot.identity)
+    schema = _schema(c)
+    upgrade = schema is not None and _has_audio(snapshot.schema) and not _has_audio(schema)
+    upgrade_languages = schema is not None and _has_languages(snapshot.schema) and not _has_languages(schema)
+    expected_schema = _base_schema(snapshot.schema) if upgrade else snapshot.schema
+    if upgrade_languages:
+        expected_schema = _without_languages(expected_schema)
+    if schema is not None and schema != expected_schema:
+        raise TransferError("대상 단어장의 제약·인덱스 구조가 원본과 다릅니다. 기존 구조를 확인하세요.")
+    rows = _rows(c) if schema else []
+    return VocabularyTransferPlan(snapshot, identity, digest((schema, rows)), schema is None,
+                                  _effects(snapshot.rows, rows), len(rows), _levels(rows), upgrade, upgrade_languages)
 
 
 def _sequence_state(c):

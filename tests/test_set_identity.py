@@ -7,8 +7,8 @@ from uuid import UUID
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.step_06_publication.direct_publication import batch_set_id
-from topik_question_lab.ui.set_identity import korean_datetime, korean_time, set_view, set_title, set_label, set_status
+from topik_question_lab.common.question_bank.direct_publication import batch_set_id
+from topik_question_lab.common.ui.set_identity import korean_datetime, korean_time, set_view, set_title, set_label, set_status
 
 
 def records():
@@ -44,7 +44,7 @@ def test_legacy_set_uses_registration_date_without_inventing_generation_time():
     assert set_title(legacy) == "PBT 읽기 · 등록 세트 3번"
     assert legacy["generation_created_at"] is None
     app = AppTest.from_string('''
-from topik_question_lab.ui.set_identity import render_set_summary
+from topik_question_lab.common.ui.set_identity import render_set_summary
 import streamlit as st
 render_set_summary(st.session_state["view"])
 ''')
@@ -84,7 +84,7 @@ def test_unavailable_bank_and_partial_sets_are_not_reported_as_ready():
 
 
 def test_registration_and_editor_show_the_same_selected_set(monkeypatch):
-    from topik_question_lab.step_06_publication import bank_editor, direct_publication, storage_overview
+    from topik_question_lab.common.question_bank import bank_editor, direct_publication, storage_overview
     batch, stored = records()
     stored.update(set_id=str(stored["set_id"]), item_count=1, coverage=None)
     item = {"item_id": "00000000-0000-0000-0000-000000000001", "set_id": stored["set_id"],
@@ -97,7 +97,7 @@ def test_registration_and_editor_show_the_same_selected_set(monkeypatch):
     before = deepcopy(bank)
     registered = AppTest.from_string('''
 import streamlit as st
-from topik_question_lab.ui.registration_ui import render_sets
+from topik_question_lab.menus.registration.registration_ui import render_sets
 render_sets(st.session_state["snapshot"], "synthetic")
 ''')
     registered.session_state["snapshot"] = {"bank": bank, "batches": [batch], "checked_at": "2026-11-06T00:00:00Z"}
@@ -112,7 +112,7 @@ render_sets(st.session_state["snapshot"], "synthetic")
     monkeypatch.setattr(storage_overview, "read_bank", lambda _: deepcopy(bank))
     monkeypatch.setattr(direct_publication, "read_batches", lambda _: [deepcopy(batch)])
     monkeypatch.setattr(bank_editor, "BankEditor", lambda _: SimpleNamespace(target="synthetic", load=lambda _: deepcopy(snapshot)))
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/bank_editor_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bank_editor/bank_editor_app.py"
     editor = AppTest.from_file(str(page), default_timeout=20).run()
     assert not editor.exception and not editor.error
     assert expected in next(s for s in editor.selectbox if s.label == "세트 필터").options

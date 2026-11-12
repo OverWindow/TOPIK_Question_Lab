@@ -8,13 +8,13 @@ from streamlit.testing.v1 import AppTest
 
 from test_direct_publication import seed_batch, change_question
 from test_storage_overview import files
-from topik_question_lab.step_06_publication.registration_workflow import RegistrationWorkflow
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_06_publication.direct_publication import PublicationJobs, DirectPublicationService
+from topik_question_lab.menus.registration.registration_workflow import RegistrationWorkflow
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.common.question_bank.direct_publication import PublicationJobs, DirectPublicationService
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/postgres_publish_app.py"
+PAGE = ROOT / "topik_question_lab/menus/registration/postgres_publish_app.py"
 META = {"level": 4, "difficulty": 0.0, "items": {}}
 
 
@@ -38,8 +38,8 @@ def make_legacy(root):
 
 
 def test_entry_and_filter_dont_create_files_or_connect_to_media(tmp_path, monkeypatch):
-    import topik_question_lab.ui.runner_service as runner
-    import topik_question_lab.step_06_publication.media_cloud as media
+    import topik_question_lab.common.generation.runner_service as runner
+    import topik_question_lab.common.media.media_cloud as media
     def forbidden(*args, **kwargs):
         raise AssertionError("Unexpected mutation/network")
     monkeypatch.setattr(runner, "get_runner", forbidden)
@@ -159,7 +159,7 @@ def test_ui_add_confirmation_and_registered_summary(setup_bank):
 
 def test_auto_registered_batch_approval_preserves_media(setup_bank):
     from test_media_generation import seed_media, pipeline
-    from topik_question_lab.step_06_publication.media_registration import MediaRegistration
+    from topik_question_lab.common.media.media_registration import MediaRegistration
     w, _ = setup_bank
     # A second batch uses distinct local IDs in the same authoring stores.
     media_root = w.root / "media-test"

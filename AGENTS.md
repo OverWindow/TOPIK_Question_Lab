@@ -7,9 +7,9 @@
 
 ## Project Structure
 
-- `topik_question_lab/main.py` starts the UI in `topik_question_lab/ui/`.
-- `step_01_source/` → `step_02_planning/` → `step_03_generation/` → `step_04_review/` → `step_05_export/` → `step_06_publication/` follow the question workflow.
-- `common/` holds shared models/storage; `maintenance/` holds backup/server tools. These folders are inside `topik_question_lab/`; tests are in `tests/` and persistent records are in `data/`.
+- `topik_question_lab/main.py` starts the menu pages in `topik_question_lab/menus/`; each menu folder holds its page and menu-specific logic.
+- `common/` holds shared models/storage and generation, question-bank, vocabulary, media, export, and UI code. `common/paths.py` defines resource/data roots; `common/ui/navigation.py` maps menu pages.
+- `maintenance/` holds backup/server tools, SQL migrations, and AWS definitions. These folders are inside `topik_question_lab/`; tests are in `tests/` and persistent records are in `data/`.
 
 ## Working Scope
 

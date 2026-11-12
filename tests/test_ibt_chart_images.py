@@ -1,3 +1,4 @@
+from topik_question_lab.common.ui.navigation import menu_page
 import base64
 from copy import deepcopy
 import json
@@ -8,11 +9,11 @@ import pytest
 
 from test_ibt_pipeline import COMBO, generated_batch
 from test_media_generation import Clock, FakeGoogle, pipeline, seed_media, settings
-from topik_question_lab.step_03_generation import media_generation as media
-from topik_question_lab.step_03_generation.media_provider import GoogleMediaClient, MediaError
-from topik_question_lab.step_06_publication.direct_publication import expected_item, package_draft
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_06_publication.storage_overview import preparation_progress
+from topik_question_lab.common.media import media_generation as media
+from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaError
+from topik_question_lab.common.question_bank.direct_publication import expected_item, package_draft
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.common.question_bank.storage_overview import preparation_progress
 
 
 def test_chart_request_keeps_endpoint_and_body_shape_without_scene_text_prohibition():
@@ -163,7 +164,7 @@ def test_ibt_reading_registration_waits_for_model_image_and_preserves_package(tm
 ])
 def test_ibt_review_shows_data_without_rendering_or_changing_chart_content(tmp_path, monkeypatch, section, type_id, save_label):
     from streamlit.testing.v1 import AppTest
-    from topik_question_lab.step_03_generation.bulk_generation import storage_for
+    from topik_question_lab.common.generation.bulk_generation import storage_for
 
     generated_batch(tmp_path, section, monkeypatch)
     storage = storage_for(tmp_path, section, type_id)
@@ -177,9 +178,9 @@ def test_ibt_review_shows_data_without_rendering_or_changing_chart_content(tmp_p
     def no_render(*args):
         pytest.fail("IBT review must not render or attach a local chart")
 
-    monkeypatch.setattr("topik_question_lab.common.listening_visuals.render_chart", no_render)
+    monkeypatch.setattr("topik_question_lab.common.media.listening_visuals.render_chart", no_render)
     page = "app.py" if section == "reading" else "listening_app.py"
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "topik_question_lab/ui" / page), default_timeout=30).run()
+    app = AppTest.from_file(str(menu_page(page)), default_timeout=30).run()
     app.sidebar.radio(key=f"{section}-exam-format").set_value("ibt").run()
     app.sidebar.selectbox[0].set_value(type_id).run()
     app.sidebar.radio(key=f"{section}-work-stage").set_value("5. 검수·비교").run()

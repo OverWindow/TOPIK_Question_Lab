@@ -1,3 +1,4 @@
+from topik_question_lab.common.ui.navigation import menu_page
 import io
 import json
 
@@ -7,14 +8,14 @@ import pytest
 from test_bulk_generation import seed
 from topik_question_lab.common.models import ProviderResult
 from topik_question_lab.common.listening_models import ChartSpec
-from topik_question_lab.common.listening_visuals import render_chart, render_banner
-from topik_question_lab.step_02_planning.exam_profiles import ibt_profiles, profile_for
-from topik_question_lab.step_03_generation.bulk_generation import prepare_batch, BulkRunner, storage_for
-from topik_question_lab.step_03_generation.media_generation import media_plan, chart_spec
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog, validate_complete_selection
-from topik_question_lab.step_06_publication.direct_publication import make_package, package_draft
-from topik_question_lab.step_04_review.validation import validate_generation_payload
-from topik_question_lab.step_04_review.listening_validation import validate_listening_payload
+from topik_question_lab.common.media.listening_visuals import render_chart, render_banner
+from topik_question_lab.common.generation.exam_profiles import ibt_profiles, profile_for
+from topik_question_lab.common.generation.bulk_generation import prepare_batch, BulkRunner, storage_for
+from topik_question_lab.common.media.media_generation import media_plan, chart_spec
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog, validate_complete_selection
+from topik_question_lab.common.question_bank.direct_publication import make_package, package_draft
+from topik_question_lab.common.generation.validation import validate_generation_payload
+from topik_question_lab.common.generation.listening_validation import validate_listening_payload
 
 
 COMBO = dict(chart_type="combo", title="도시 인구", labels=["2020년", "2025년"], values=[100, 120],
@@ -117,8 +118,8 @@ def test_ibt_roles_and_invalid_count_are_rejected(tmp_path, monkeypatch):
     assert not errors
     snapshot = next(s for s in listening if s["type_id"] == "ibt_topic_reason")
     data = payload(snapshot)
-    from topik_question_lab.step_06_publication.bank_editor import checked_question
-    from topik_question_lab.step_06_publication.direct_publication import PublicationBlocked
+    from topik_question_lab.common.question_bank.bank_editor import checked_question
+    from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked
     question = data["questions"][1]
     row = dict(section="listening", item_type=snapshot["type_id"], type_slot=28, content_json=question)
     with pytest.raises(PublicationBlocked, match="2회"):
@@ -174,7 +175,7 @@ def test_retry_uses_saved_mapping_and_does_not_duplicate(tmp_path, monkeypatch):
     def unavailable(*args, **kwargs):
         raise AssertionError("재시도는 변경된 매핑을 읽으면 안 됩니다.")
 
-    monkeypatch.setattr("topik_question_lab.step_02_planning.exam_profiles.ibt_profiles", unavailable)
+    monkeypatch.setattr("topik_question_lab.common.generation.exam_profiles.ibt_profiles", unavailable)
     runner.provider_call = call
     runner.start(batch_id=bid)
     runner.thread.join(30)
@@ -191,7 +192,7 @@ def test_ibt_pages(tmp_path, monkeypatch, section, filename, key):
     from streamlit.testing.v1 import AppTest
     generated_batch(tmp_path, section, monkeypatch)
     monkeypatch.setenv("CHATKHU_API_KEY", "")
-    app = AppTest.from_file(str(Path("topik_question_lab/ui") / filename), default_timeout=30).run()
+    app = AppTest.from_file(str(menu_page(filename)), default_timeout=30).run()
     app.sidebar.radio(key=f"{key}-exam-format").set_value("ibt").run()
     assert not app.exception
     for stage in ("3. 프롬프트 작업실", "4. 문제 생성", "5. 검수·비교", "6. 내보내기"):
@@ -213,10 +214,10 @@ def test_database_formats_and_migration(tmp_path, monkeypatch, postgres_database
     from pathlib import Path
     from dataclasses import replace
     from test_postgres_integration import _draft
-    from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-    from topik_question_lab.step_06_publication.publication import build_set_draft
+    from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+    from topik_question_lab.common.question_bank.publication import build_set_draft
     url = postgres_database_factory()
-    schema = Path("topik_question_lab/step_06_publication/target_bank.sql").read_text(encoding="utf-8")
+    schema = Path("topik_question_lab/maintenance/target_bank.sql").read_text(encoding="utf-8")
     with psycopg.connect(url) as c:
         c.execute(schema)
     bank = PostgresQuestionBank(url)
@@ -246,10 +247,10 @@ def test_migration_preserves_existing_pbt_and_media(postgres_database_factory):
     from psycopg.types.json import Jsonb
     from pathlib import Path
     from test_postgres_integration import _draft
-    from topik_question_lab.step_06_publication.direct_publication import expected_item
-    from topik_question_lab.step_06_publication.postgres_storage import _source_provenance
+    from topik_question_lab.common.question_bank.direct_publication import expected_item
+    from topik_question_lab.common.question_bank.postgres_storage import _source_provenance
     url = postgres_database_factory()
-    base = Path("topik_question_lab/step_06_publication")
+    base = Path("topik_question_lab/maintenance")
     old_schema = (base / "target_bank.sql").read_text(encoding="utf-8").split("-- Existing records remain PBT;")[0]
     draft = _draft()
     item = expected_item(draft.items[0])
@@ -285,9 +286,9 @@ def test_migration_preserves_existing_pbt_and_media(postgres_database_factory):
 def test_ibt_media_pipeline_and_registration(tmp_path, monkeypatch, postgres_database_factory, section, images, audio):
     import shutil
     from test_media_generation import pipeline, FakeGoogle, FakeCloud
-    from topik_question_lab.step_06_publication.media_registration import MediaRegistration
-    from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-    from topik_question_lab.step_06_publication.storage_overview import load_overview
+    from topik_question_lab.common.media.media_registration import MediaRegistration
+    from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+    from topik_question_lab.common.question_bank.storage_overview import load_overview
     if section == "listening" and (not shutil.which("ffmpeg") or not shutil.which("ffprobe")):
         pytest.skip("FFmpeg required")
     url = postgres_database_factory()

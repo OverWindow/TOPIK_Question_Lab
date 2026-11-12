@@ -6,13 +6,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from topik_question_lab.maintenance.backup_service import BackupOptions, create_backup, restore_backup
-from topik_question_lab.step_03_generation.bulk_generation import BulkRunner, BulkStore, custom_model, model_options, prepare_batch, profiles_for, storage_for
-from topik_question_lab.step_03_generation.generation_service import save_generation
+from topik_question_lab.common.generation.bulk_generation import BulkRunner, BulkStore, custom_model, model_options, prepare_batch, profiles_for, storage_for
+from topik_question_lab.common.generation.generation_service import save_generation
 from topik_question_lab.common.listening_models import ListeningQuestionExample
 from topik_question_lab.common.models import ProviderResult, QuestionExample, Review
-from topik_question_lab.step_03_generation.providers import GENERATION_PRESETS, generation_preset_prompt
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_02_planning.topic_bank import TopicBrief, TopicStore
+from topik_question_lab.common.generation.providers import GENERATION_PRESETS, generation_preset_prompt
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.common.generation.topic_bank import TopicBrief, TopicStore
 
 
 def seed(root, section):
@@ -306,7 +306,7 @@ def test_bulk_page_renders_and_disables_unprepared_execution(tmp_path, monkeypat
     monkeypatch.delenv("CHATKHU_API_KEY", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     root = Path(__file__).resolve().parents[1]
-    app = AppTest.from_file(str(root / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(root / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
     assert [tab.label for tab in app.tabs] == ["듣기 50문제", "읽기 50문제"]
     assert next(widget for widget in app.selectbox if widget.label == "생성 프리셋").value == "precise_generation"
@@ -332,7 +332,7 @@ def test_bulk_page_renders_and_disables_unprepared_execution(tmp_path, monkeypat
 
 
 def test_bulk_page_runs_to_completion_and_remembers_common_preset(tmp_path, monkeypatch):
-    import topik_question_lab.step_03_generation.bulk_generation as bulk
+    import topik_question_lab.common.generation.bulk_generation as bulk
 
     snapshots = prepared(tmp_path, "reading", monkeypatch, "fast_draft")
     calls = []
@@ -343,7 +343,7 @@ def test_bulk_page_runs_to_completion_and_remembers_common_preset(tmp_path, monk
     monkeypatch.setattr(bulk, "prepare_batch", lambda root, section, *args:
                         (snapshots, []) if section == "reading" else ([], ["듣기 준비 필요"]))
     root = Path(__file__).resolve().parents[1]
-    app = AppTest.from_file(str(root / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(root / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
     assert next(widget for widget in app.selectbox if widget.label == "생성 프리셋").value == "fast_draft"
     next(widget for widget in app.checkbox if widget.label == "음원·이미지 생성 및 DB 자동 등록").uncheck().run()
@@ -363,7 +363,7 @@ def test_generation_batch_review_filter_shows_only_selected_batch(tmp_path, monk
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
     harness = tmp_path / "filter_app.py"
     harness.write_text('''import streamlit as st
-from topik_question_lab.ui.batch_ui import select_generation_batch
+from topik_question_lab.common.ui.batch_ui import select_generation_batch
 items=[{"batch_id":None,"id":1},{"batch_id":"batch-a","id":2},{"batch_id":"batch-b","id":3}]
 filtered=select_generation_batch(items,"filter",lambda value:value["batch_id"])
 st.write([item["id"] for item in filtered])

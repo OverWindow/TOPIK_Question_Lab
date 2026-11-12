@@ -6,10 +6,10 @@ import pytest
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.local_script_runner import LocalScriptRunner
 
-from topik_question_lab.ui.bulk_progress import completed_batches, needs_progress_refresh
+from topik_question_lab.menus.bulk_generation.bulk_progress import completed_batches, needs_progress_refresh
 
 
-PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/bulk_generation_app.py"
+PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"
 
 
 def snapshot():
@@ -71,9 +71,9 @@ def test_pending_review_and_cleaned_originals_are_completed_history():
 
 @pytest.fixture
 def progress_page(tmp_path, monkeypatch):
-    import topik_question_lab.ui.runner_service as runners
-    import topik_question_lab.step_03_generation.bulk_generation as bulk
-    import topik_question_lab.step_06_publication.storage_overview as overview
+    import topik_question_lab.common.generation.runner_service as runners
+    import topik_question_lab.common.generation.bulk_generation as bulk
+    import topik_question_lab.common.question_bank.storage_overview as overview
     data = snapshot()
     original = deepcopy(data['batches'])
     calls = []

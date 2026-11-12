@@ -9,7 +9,7 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo
 import pytest
 
 from topik_question_lab.maintenance import bank_migrations as migration
-from topik_question_lab.step_06_publication import postgres_storage
+from topik_question_lab.common.question_bank import postgres_storage
 
 
 def test_unconfigured_database_does_not_connect(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_other_workspace_is_rejected_before_connection(tmp_path, monkeypatch):
 
 
 def test_startup_caches_success_but_retries_failure(tmp_path, monkeypatch):
-    from topik_question_lab.ui import startup
+    from topik_question_lab.maintenance import startup
     calls = []
 
     def prepare(*args):
@@ -45,7 +45,8 @@ def test_startup_caches_success_but_retries_failure(tmp_path, monkeypatch):
 
 def test_main_stops_before_worker_recovery_when_preparation_fails(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
-    from topik_question_lab.ui import startup, runner_service
+    from topik_question_lab.maintenance import startup
+    from topik_question_lab.common.generation import runner_service
 
     def fail(*args):
         raise migration.StartupMigrationError("DB preparation failed")
@@ -80,7 +81,7 @@ def old_bank(postgres_database_factory, tmp_path, monkeypatch):
             (reviewed / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setattr(migration, "MIGRATION_DIR", reviewed)
     monkeypatch.setattr(postgres_storage, "MIGRATION_DIR", reviewed)
-    from topik_question_lab.step_06_publication.direct_publication import require_target_schema
+    from topik_question_lab.common.question_bank.direct_publication import require_target_schema
     monkeypatch.setattr(migration, "require_media_schema", require_target_schema)
     url = postgres_database_factory()
     with psycopg.connect(url) as c:

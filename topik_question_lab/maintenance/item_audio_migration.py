@@ -13,8 +13,8 @@ from psycopg.conninfo import conninfo_to_dict
 
 from topik_question_lab.maintenance import bank_server
 from topik_question_lab.maintenance.bank_migrations import _backup_database, StartupMigrationError
-from topik_question_lab.step_06_publication.audio_bindings import require_item_audio_schema
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
+from topik_question_lab.common.question_bank.audio_bindings import require_item_audio_schema
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR
 
 VERSION = "011_item_audio_only"
 PRESERVED = ("items", "question_sets", "tts_audio_assets", "item_visual_assets")

@@ -18,7 +18,7 @@ def ensure_generation_schema(connection: sqlite3.Connection) -> None:
 class GenerationStorageMixin:
     def reference_examples(self, example_cls, approved_only=False):
         """Read PBT references without relabelling or copying them into IBT storage."""
-        from topik_question_lab.step_02_planning.exam_profiles import profile_for
+        from topik_question_lab.common.generation.exam_profiles import profile_for
         section = "listening" if example_cls.__name__.startswith("Listening") else "reading"
         profile = profile_for(section, self.path.stem)
         source = self.path.with_name(profile.base_type_id + ".db")

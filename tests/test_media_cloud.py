@@ -8,10 +8,7 @@ import httpx
 import pytest
 from botocore.exceptions import ClientError
 
-from topik_question_lab.step_06_publication.media_cloud import (
-    CACHE_CONTROL, MediaCloudError, S3MediaStore, cloudfront_url,
-    destination_key, digest_file,
-)
+from topik_question_lab.common.media.media_cloud import CACHE_CONTROL, MediaCloudError, S3MediaStore, cloudfront_url, destination_key, digest_file
 
 
 class MemoryS3:
@@ -95,7 +92,7 @@ def test_cloudfront_delivery_must_match_original(tmp_path, failure):
 
 
 def test_template_private_origin_and_public_cloudfront():
-    template_path = Path(__file__).resolve().parents[1] / "topik_question_lab/step_06_publication/cloudformation/media.json"
+    template_path = Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/cloudformation/media.json"
     template = json.loads(template_path.read_text())
     resources = template['Resources']
     bucket = resources['MediaBucket']

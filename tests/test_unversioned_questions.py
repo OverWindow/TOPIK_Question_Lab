@@ -3,9 +3,9 @@ import uuid
 
 import pytest
 
-from topik_question_lab.step_06_publication.direct_publication import expected_item, require_target_schema, PublicationBlocked
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError
-from topik_question_lab.step_06_publication.publication import PublicationCandidate, build_item_drafts, build_set_draft
+from topik_question_lab.common.question_bank.direct_publication import expected_item, require_target_schema, PublicationBlocked
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError
+from topik_question_lab.common.question_bank.publication import PublicationCandidate, build_item_drafts, build_set_draft
 
 
 def candidate(slot=1, text="문제", offset=0):
@@ -122,7 +122,7 @@ def test_migration_refuses_external_version_references(postgres_database_factory
 
 def test_explicit_sync_updates_one_row_and_existing_set(postgres_database_factory):
     import psycopg
-    from topik_question_lab.step_06_publication.postgres_inspection import inspect_database
+    from topik_question_lab.common.question_bank.postgres_inspection import inspect_database
     url = postgres_database_factory()
     bank = PostgresQuestionBank(url)
     bank.ensure_schema()

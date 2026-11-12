@@ -10,12 +10,10 @@ from test_import_vocabulary import SAMPLE, local_bank, write_csv
 from test_vocabulary import bank, PAGE
 from test_vocabulary_transfer import banks, prepare, send, stored
 from topik_question_lab.maintenance import import_vocabulary as importer
-from topik_question_lab.step_06_publication import vocabulary_transfer as transfer
-from topik_question_lab.step_06_publication.vocabulary import search_vocabulary
-from topik_question_lab.step_06_publication.vocabulary_audio import prepare_audio_schema
-from topik_question_lab.step_06_publication.vocabulary_languages import (
-    LANGUAGE_FIELDS, LANGUAGE_MIGRATION, apply_language_migration,
-)
+from topik_question_lab.menus.vocabulary_transfer import vocabulary_transfer as transfer
+from topik_question_lab.common.vocabulary.vocabulary import search_vocabulary
+from topik_question_lab.common.vocabulary.vocabulary_audio import prepare_audio_schema
+from topik_question_lab.common.vocabulary.vocabulary_languages import LANGUAGE_FIELDS, LANGUAGE_MIGRATION, apply_language_migration
 
 
 def add_languages(url):

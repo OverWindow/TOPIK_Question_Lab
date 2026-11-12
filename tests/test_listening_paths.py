@@ -5,10 +5,7 @@ import pytest
 from PIL import Image
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.step_01_source.listening_importer import (
-    load_import_manifest, load_imported_examples, merge_page_transcription,
-    placeholder_examples, save_imported_examples,
-)
+from topik_question_lab.menus.listening.listening_importer import load_import_manifest, load_imported_examples, merge_page_transcription, placeholder_examples, save_imported_examples
 from topik_question_lab.common.listening_storage import ListeningStorage
 
 
@@ -69,7 +66,7 @@ def test_listening_page_handles_moved_and_missing_images(tmp_path, missing_image
     storage.upsert_examples([examples[0]])
     if missing_image:
         page.unlink()
-    app = AppTest.from_file(str(ROOT / 'topik_question_lab/ui/listening_app.py'), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / 'topik_question_lab/menus/listening/listening_app.py'), default_timeout=20).run()
     assert not app.exception
     if missing_image:
         assert any('페이지 이미지가 없습니다' in item.value for item in app.warning)

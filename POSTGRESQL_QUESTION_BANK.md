@@ -184,7 +184,7 @@ $env:DJANGO_ENV = 'development'
 
 ## 기존 DB 이관
 
-이관 파일은 `topik_question_lab/step_06_publication/migrations/006_unversioned_items.sql`입니다.
+이관 파일은 `topik_question_lab/maintenance/migrations/006_unversioned_items.sql`입니다.
 전체 DB를 백업하고 별도 임시 DB에 복원하여 구조 전환을 검증한 후 적용하세요.
 문항·세트 ID, 순서, 기존 세트 내용과 보조 이력이 보존되었는지 확인합니다.
 외부 응시·미디어 테이블이 구 버전 구조를 참조하면 Hub의 이관은 차단됩니다.

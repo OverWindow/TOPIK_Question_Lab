@@ -1,7 +1,7 @@
 import psycopg
 
-from topik_question_lab.step_06_publication.postgres_inspection import database_fingerprint, inspect_database, _safe_error
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.postgres_inspection import database_fingerprint, inspect_database, _safe_error
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
 
 
 def test_inspection_without_connection_and_credential_redaction():

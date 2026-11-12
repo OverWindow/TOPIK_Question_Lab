@@ -9,13 +9,13 @@ from PIL import Image
 import pytest
 
 from test_direct_publication import seed_batch, change_question
-from topik_question_lab.step_03_generation.bulk_generation import BulkRunner, BulkStore
-from topik_question_lab.step_03_generation.media_generation import MediaPipeline, chart_spec, media_plan
-from topik_question_lab.step_03_generation.media_provider import GoogleMediaClient, MediaError, MediaSettings, RequestRunner, Stopped
-from topik_question_lab.step_06_publication.direct_publication import DirectPublicationService, PublicationBlocked
-from topik_question_lab.step_06_publication.media_cloud import digest_file
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration, check_media
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.generation.bulk_generation import BulkRunner, BulkStore
+from topik_question_lab.common.media.media_generation import MediaPipeline, chart_spec, media_plan
+from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaError, MediaSettings, RequestRunner, Stopped
+from topik_question_lab.common.question_bank.direct_publication import DirectPublicationService, PublicationBlocked
+from topik_question_lab.common.media.media_cloud import digest_file
+from topik_question_lab.common.media.media_registration import MediaRegistration, check_media
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
 
 
 SPEC = {"chart_type": "bar", "title": "교통 조사", "labels": ["버스", "지하철"], "values": [60, 40], "unit": "%"}
@@ -215,7 +215,7 @@ def test_google_request_preserves_http_status_without_logging_response_or_creden
 
 
 def test_word_prompt_changes_delivery_without_changing_text_voice_or_rate():
-    from topik_question_lab.step_06_publication.vocabulary_audio import WORD_NARRATION_PROMPT
+    from topik_question_lab.common.vocabulary.vocabulary_audio import WORD_NARRATION_PROMPT
 
     class Credentials:
         valid = True
@@ -273,11 +273,11 @@ def test_chart_numbers_without_units_allow_comma_separators():
 
 
 def test_invalid_speaker_is_blocked_before_media_generation(tmp_path):
-    from topik_question_lab.step_03_generation.audio_composer import narration_script
+    from topik_question_lab.common.media.audio_composer import narration_script
     from dataclasses import replace
     bid = seed_media(tmp_path, "listening")
     draft = FakeRegistration(tmp_path).package(bid)
-    from topik_question_lab.step_06_publication.direct_publication import package_draft
+    from topik_question_lab.common.question_bank.direct_publication import package_draft
     candidate = package_draft(draft).items[0].candidate
     invalid = replace(candidate, question={**candidate.question, "dialogue_turns": [{"speaker": "unknown", "text": "대본"}]})
     with pytest.raises(ValueError, match="화자"):
@@ -409,8 +409,8 @@ def test_registration_failure_rolls_back_all_rows_and_pending_edits_are_atomic(p
 
 def test_auto_runner_retries_transient_text_and_starts_media_only_after_50_items(tmp_path, monkeypatch):
     from test_bulk_generation import prepared, caller_for, wait
-    import topik_question_lab.step_03_generation.media_generation as generation
-    import topik_question_lab.step_03_generation.media_provider as provider
+    import topik_question_lab.common.media.media_generation as generation
+    import topik_question_lab.common.media.media_provider as provider
     snapshots = prepared(tmp_path, "reading", monkeypatch)
     calls = []
     normal = caller_for(snapshots, calls)
@@ -472,11 +472,11 @@ def test_interrupted_auto_job_resumes_without_a_second_click(tmp_path, monkeypat
 def test_missing_media_config_blocks_ui_before_any_model_call(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
     from pathlib import Path
-    import topik_question_lab.step_03_generation.bulk_generation as bulk
+    import topik_question_lab.common.generation.bulk_generation as bulk
     from test_bulk_generation import prepared
     snapshots = prepared(tmp_path, "reading", monkeypatch)
     monkeypatch.setattr(bulk, "prepare_batch", lambda root, section, *args: (snapshots, []) if section == "reading" else ([], ["not ready"]))
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not any(c.label == "자동 검수·수정" for c in app.checkbox)
     assert next(c for c in app.checkbox if c.label == "음원·이미지 생성 및 DB 자동 등록").value
     assert not next(c for c in app.checkbox if c.label == "음원·이미지 생성 및 DB 자동 등록").disabled
@@ -487,7 +487,7 @@ def test_missing_media_config_blocks_ui_before_any_model_call(tmp_path, monkeypa
 
 def test_recovery_preflight_failure_releases_worker_and_keeps_model_uncalled(tmp_path, monkeypatch):
     from test_bulk_generation import prepared, caller_for, wait
-    import topik_question_lab.step_03_generation.media_generation as generation
+    import topik_question_lab.common.media.media_generation as generation
     snapshots = prepared(tmp_path, "reading", monkeypatch)
     calls = []
     config = {"settings": settings().snapshot(), "target": "synthetic-target"}
@@ -501,14 +501,14 @@ def test_recovery_preflight_failure_releases_worker_and_keeps_model_uncalled(tmp
     batch = runner.store.batches()[0]
     assert batch["status"] == "interrupted" and batch["pipeline_status"] == "failed" and not batch["auto_resume"]
     assert not calls
-    from topik_question_lab.step_03_generation.bulk_generation import execution_lock
+    from topik_question_lab.common.generation.bulk_generation import execution_lock
     with execution_lock(tmp_path):
         pass
 
 
 def test_listening_audio_rows_and_all_50_bindings_are_atomic(postgres_database_factory, tmp_path, monkeypatch):
     import psycopg
-    import topik_question_lab.step_03_generation.media_generation as generation
+    import topik_question_lab.common.media.media_generation as generation
     url = postgres_database_factory()
     PostgresQuestionBank(url).ensure_schema()
     monkeypatch.setenv("DATABASE_URL", url)

@@ -3,10 +3,10 @@ import uuid
 import psycopg
 import pytest
 
-from topik_question_lab.step_06_publication.bank_transfer import capture_source
-from topik_question_lab.step_06_publication.postgres_inspection import inspect_database
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError
-from topik_question_lab.step_06_publication.publication import build_set_draft
+from topik_question_lab.menus.bank_transfer.bank_transfer import capture_source
+from topik_question_lab.common.question_bank.postgres_inspection import inspect_database
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError
+from topik_question_lab.common.question_bank.publication import build_set_draft
 from test_bank_transfer import add_media
 from test_unversioned_questions import candidate
 

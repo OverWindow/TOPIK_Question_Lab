@@ -5,8 +5,8 @@ import psycopg
 import pytest
 
 from test_vocabulary_questions import CONFIG, FakeBank, bank, bundle, finish, ready_task, result, review, successful_caller
-from topik_question_lab.step_03_generation.vocabulary_bulk import VocabularyRunner
-from topik_question_lab.step_06_publication.bank_transfer import TransferError
+from topik_question_lab.menus.vocabulary_generation.vocabulary_bulk import VocabularyRunner
+from topik_question_lab.common.question_bank.connection import TransferError
 
 
 def test_accepted_word_is_saved_while_next_word_is_still_generating(tmp_path):

@@ -1,3 +1,4 @@
+from topik_question_lab.common.ui.navigation import menu_page
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,11 +10,9 @@ from streamlit.testing.v1 import AppTest
 from test_bulk_generation import prepared, response, seed, wait
 from test_ibt_pipeline import payload as ibt_response
 from topik_question_lab.common.models import ProviderResult
-from topik_question_lab.step_03_generation import providers
-from topik_question_lab.step_03_generation.bulk_generation import (
-    BulkRunner, BulkStore, custom_model, model_options, prepare_batch, profiles_for, storage_for,
-)
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
+from topik_question_lab.common.generation import providers
+from topik_question_lab.common.generation.bulk_generation import BulkRunner, BulkStore, custom_model, model_options, prepare_batch, profiles_for, storage_for
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
 
 
 MODEL = "openai/gpt-test"
@@ -197,7 +196,7 @@ def test_individual_generation_ui(tmp_path, monkeypatch, section, filename, butt
     storage.set_setting("generation_count", str(len(profile.question_numbers)))
     payload = response({"section": section, "type_id": type_id, "slots": profile.question_numbers})
     clients, calls = fake_sdk(monkeypatch, payload)
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui" / filename), default_timeout=30).run()
+    app = AppTest.from_file(str(menu_page(filename)), default_timeout=30).run()
     app.sidebar.radio(key=f"{section}-work-stage").set_value("4. 문제 생성").run()
     assert not app.exception
     assert next(item for item in app.selectbox if item.label == "생성 서비스").value == "bizrouter"
@@ -212,14 +211,14 @@ def test_individual_generation_ui(tmp_path, monkeypatch, section, filename, butt
 
 def test_bulk_ui_sync_service_selection_and_remembering(tmp_path, monkeypatch):
     monkeypatch.setenv("BIZROUTER_API_KEY", "biz-key")
-    monkeypatch.setattr("topik_question_lab.ui.provider_ui.list_bizrouter_models", lambda: [catalog()])
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    monkeypatch.setattr("topik_question_lab.common.ui.provider_ui.list_bizrouter_models", lambda: [catalog()])
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     next(item for item in app.button if item.label == "BizRouter 텍스트 모델 동기화").click().run()
     next(item for item in app.selectbox if item.label == "생성 서비스").set_value("bizrouter").run()
     assert not app.exception
     assert next(item for item in app.selectbox if item.label == "모델").value == (PROVIDER, MODEL)
     assert BulkStore(tmp_path).settings()["generation_service"] == "bizrouter"
-    reopened = AppTest.from_file(str(ROOT / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    reopened = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not reopened.exception
     assert next(item for item in reopened.selectbox if item.label == "모델").value == (PROVIDER, MODEL)
 
@@ -229,7 +228,7 @@ def test_empty_service_catalog_keeps_existing_batch_controls(tmp_path, monkeypat
     store = BulkStore(tmp_path)
     store.create(snapshots)
     store.set_setting("generation_service", "bizrouter")
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
     assert any(item.label == "실패·미완료 유형 재시도" for item in app.button)
     assert not any(item.label == "읽기 50문제 생성" for item in app.button)
@@ -241,7 +240,7 @@ def test_new_bulk_plan_uses_refreshed_catalog(tmp_path, monkeypatch):
     store = BulkStore(tmp_path)
     store.set_setting("bizrouter_models", json.dumps([catalog()]))
     store.set_setting("generation_service", "bizrouter")
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/bulk_generation_app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
     assert app.session_state["bulk-plan-reading"][1][0]["model_capabilities"]["max_output_tokens"] == 8192
     store.set_setting("bizrouter_models", json.dumps([catalog(max_output_tokens=4096)]))

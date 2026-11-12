@@ -4,21 +4,11 @@ from collections import Counter
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.step_02_planning.listening_prompts import build_listening_generation_prompt
+from topik_question_lab.common.generation.listening_prompts import build_listening_generation_prompt
 from topik_question_lab.common.models import GeneratedQuestion, Review
-from topik_question_lab.step_02_planning.prompts import build_generation_prompt
-from topik_question_lab.step_02_planning.topic_bank import (
-    SlotPoolConfigurationError,
-    SlotTopicPool,
-    TopicBrief,
-    TopicStore,
-    apply_topic_plan,
-    generation_units,
-    parse_pool_items,
-    parse_slot_numbers,
-    uses_topic_bank,
-)
-from topik_question_lab.ui.topic_ui import planner_rows
+from topik_question_lab.common.generation.prompts import build_generation_prompt
+from topik_question_lab.common.generation.topic_bank import SlotPoolConfigurationError, SlotTopicPool, TopicBrief, TopicStore, apply_topic_plan, generation_units, parse_pool_items, parse_slot_numbers, uses_topic_bank
+from topik_question_lab.common.ui.topic_ui import planner_rows
 
 
 def test_default_bank_seeds_once_and_restore_does_not_overwrite_edits(tmp_path):
@@ -448,7 +438,7 @@ def test_topic_bank_page_renders():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    app = AppTest.from_file(str(root / "topik_question_lab" / "ui" / "topic_bank_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(root / "topik_question_lab/menus/topic_bank/topic_bank_app.py"), default_timeout=20).run()
     assert not app.exception
     assert any(title.value == "소재 은행" for title in app.title)
     assert any(metric.label == "전체 소재" and metric.value == "120" for metric in app.metric)

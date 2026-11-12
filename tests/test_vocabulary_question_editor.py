@@ -6,12 +6,12 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_vocabulary_questions import CONFIG, bank, ready_task
-from topik_question_lab.step_06_publication import vocabulary_question_editor as editor
-from topik_question_lab.step_06_publication.vocabulary_questions import QUESTION_FIELDS, question_status
+from topik_question_lab.menus.vocabulary_editor import vocabulary_question_editor as editor
+from topik_question_lab.common.vocabulary.vocabulary_questions import QUESTION_FIELDS, question_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/vocabulary_question_editor_app.py"
+PAGE = ROOT / "topik_question_lab/menus/vocabulary_editor/vocabulary_question_editor_app.py"
 
 
 @pytest.fixture
@@ -39,12 +39,12 @@ def button(app, label):
 
 
 def test_page_without_database_or_worker(tmp_path, monkeypatch):
-    from topik_question_lab.ui import runner_service
+    from topik_question_lab.common.generation import runner_service
     (tmp_path / "data").mkdir()
     (tmp_path / "data/bulk_generation.db").touch()
     monkeypatch.setattr(runner_service, "get_runner", lambda *a: pytest.fail("must not start a worker"))
     app = AppTest.from_file(str(ROOT / "topik_question_lab/main.py"))
-    app.switch_page("ui/vocabulary_question_editor_app.py").run()
+    app.switch_page("menus/vocabulary_editor/vocabulary_question_editor_app.py").run()
     assert not app.exception and app.title[0].value == "단어 문제 관리"
     assert "설정되지 않았습니다" in app.warning[0].value
     assert list(tmp_path.rglob("*.db")) == [tmp_path / "data/bulk_generation.db"]

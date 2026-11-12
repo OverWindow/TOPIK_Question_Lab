@@ -3,27 +3,8 @@ from pathlib import Path
 import pytest
 
 from topik_question_lab.common.models import ProviderResult, Review
-from topik_question_lab.step_06_publication.postgres_storage import (
-    _insert_set_items,
-    _resolve_set_membership,
-    _safe_error,
-    _source_provenance,
-)
-from topik_question_lab.step_06_publication.publication import (
-    CandidateCatalog,
-    LocalPublicationRecord,
-    PublicationCandidate,
-    PublicationItemMetadata,
-    build_item_drafts,
-    build_set_draft,
-    collect_candidate_catalog,
-    display_choices,
-    display_stem,
-    group_by_slot,
-    reconcile_catalog,
-    unused_set_candidates,
-    validate_complete_selection,
-)
+from topik_question_lab.common.question_bank.postgres_storage import _insert_set_items, _resolve_set_membership, _safe_error, _source_provenance
+from topik_question_lab.common.question_bank.publication import CandidateCatalog, LocalPublicationRecord, PublicationCandidate, PublicationItemMetadata, build_item_drafts, build_set_draft, collect_candidate_catalog, display_choices, display_stem, group_by_slot, reconcile_catalog, unused_set_candidates, validate_complete_selection
 from topik_question_lab.common.storage import Storage
 
 
@@ -269,7 +250,7 @@ def test_collector_normalizes_legacy_blank_spacing_and_clears_error(tmp_path: Pa
 
 
 def test_migration_declares_required_item_bank_fields():
-    sql = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "001_question_bank.sql").read_text(encoding="utf-8")
+    sql = (Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/migrations/001_question_bank.sql").read_text(encoding="utf-8")
     for field in [
         "item_id",
         "item_version",
@@ -287,22 +268,22 @@ def test_migration_declares_required_item_bank_fields():
     ]:
         assert field in sql
 
-    second = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "002_complete_item_bank.sql").read_text(encoding="utf-8")
+    second = (Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/migrations/002_complete_item_bank.sql").read_text(encoding="utf-8")
     assert "type_slot" in second
     assert "topik_bank.current_items" in second
     assert "topik_bank.current_set_contents" in second
 
-    third = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "003_multi_question_sets.sql").read_text(encoding="utf-8")
+    third = (Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/migrations/003_multi_question_sets.sql").read_text(encoding="utf-8")
     assert "set_sequence" in third
     assert "question_sets_identity_sequence_key" in third
     assert "DROP CONSTRAINT IF EXISTS question_sets_section_generator_provider_generator_model_ge_key" in third
 
-    fourth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "004_postgres_deployments.sql").read_text(encoding="utf-8")
+    fourth = (Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/migrations/004_postgres_deployments.sql").read_text(encoding="utf-8")
     assert "topik_bank.deployment_runs" in fourth
     assert "topik_bank.deployment_run_sets" in fourth
     assert "outcome_unknown" in fourth
 
-    fifth = (Path(__file__).resolve().parents[1] / "topik_question_lab" / "step_06_publication" / "migrations" / "005_item_only_question_versions.sql").read_text(encoding="utf-8")
+    fifth = (Path(__file__).resolve().parents[1] / "topik_question_lab/maintenance/migrations/005_item_only_question_versions.sql").read_text(encoding="utf-8")
     assert "DROP TABLE topik_bank.question_set_versions" in fifth
     assert "DROP COLUMN set_version" in fifth
     assert "CREATE VIEW topik_bank.current_set_contents" in fifth

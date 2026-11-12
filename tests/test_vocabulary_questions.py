@@ -11,14 +11,12 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from topik_question_lab.common.models import ProviderResult
-from topik_question_lab.common.vocabulary_models import balance_answer_positions, digest, source_snapshot, validate_bundle
-from topik_question_lab.common.vocabulary_storage import VocabularyStore
-from topik_question_lab.step_03_generation.vocabulary_bulk import VocabularyRunner
-from topik_question_lab.step_04_review.vocabulary_validation import apply_review
-from topik_question_lab.step_06_publication.vocabulary_questions import (
-    MIGRATION, QUESTION_FIELDS, VocabularyQuestionBank, apply_question_migration, question_status,
-)
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
+from topik_question_lab.common.vocabulary.vocabulary_models import balance_answer_positions, digest, source_snapshot, validate_bundle
+from topik_question_lab.common.vocabulary.vocabulary_storage import VocabularyStore
+from topik_question_lab.menus.vocabulary_generation.vocabulary_bulk import VocabularyRunner
+from topik_question_lab.menus.vocabulary_generation.vocabulary_validation import apply_review
+from topik_question_lab.common.vocabulary.vocabulary_questions import MIGRATION, QUESTION_FIELDS, VocabularyQuestionBank, apply_question_migration, question_status
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR
 
 
 WORD = source_snapshot({"vocabulary_id": 1, "korean": "미루다", "part_of_speech": "동사", "english": "postpone",
@@ -81,7 +79,7 @@ class FakeBank:
         self.snapshots[task["vocabulary_id"]].update(existing=deepcopy(existing), existing_hash=digest(existing))
         if self.fail_after_commit:
             self.fail_after_commit = False
-            from topik_question_lab.step_06_publication.bank_transfer import TransferError
+            from topik_question_lab.common.question_bank.connection import TransferError
             raise TransferError("connection lost")
 
 
@@ -256,8 +254,8 @@ def test_invalid_generation_stops_without_review_or_repair(tmp_path):
 
 @pytest.mark.parametrize("status", ["pending", "processing", "failed", "needs_attention"])
 def test_legacy_repair_does_not_call_ai_or_rewrite_history(tmp_path, status):
-    from topik_question_lab.step_02_planning.vocabulary_prompts import prompt_config
-    from topik_question_lab.step_04_review.vocabulary_validation import validation_retry_details
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import prompt_config
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_validation import validation_retry_details
     bank, calls = FakeBank(), []
     runner = VocabularyRunner(tmp_path, successful_caller(calls), lambda _: bank)
     original_config = {**CONFIG, **prompt_config(), "prompt_version": "vocabulary-1", "system": "old prompt",
@@ -300,7 +298,7 @@ def test_optional_relation_failure_keeps_six_reviewed_items_with_two_calls(tmp_p
 
 
 def test_missing_answers_are_required_in_schema_and_remain_invalid():
-    from topik_question_lab.common.vocabulary_models import VocabularyQuestion
+    from topik_question_lab.common.vocabulary.vocabulary_models import VocabularyQuestion
     schema = VocabularyQuestion.model_json_schema()
     assert "accepted_answers" in schema["required"]
     bad = bundle()
@@ -310,7 +308,7 @@ def test_missing_answers_are_required_in_schema_and_remain_invalid():
 
 
 def test_custom_prompts_and_failed_history_are_preserved_across_new_runs(tmp_path):
-    from topik_question_lab.step_02_planning.vocabulary_prompts import prompt_config, build_prompt
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import prompt_config, build_prompt
     bank, calls = FakeBank(), []
     custom = {"system": "사용자 공통 지침", "generation_prompt": "생성 지침 CUSTOM", "review_prompt": "검수 지침 CUSTOM"}
     def invoke(**kwargs):
@@ -390,7 +388,7 @@ def test_pause_keeps_returned_response_and_lock_blocks_second_runner(tmp_path):
 
 
 def test_recovery_archives_returned_response_without_model_calls(tmp_path):
-    from topik_question_lab.step_02_planning.vocabulary_prompts import prompt_config
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import prompt_config
     bank, calls = FakeBank(), []
     runner = VocabularyRunner(tmp_path, successful_caller(calls), lambda _: bank)
     batch_id = runner.store.create(bank.identity(), {**CONFIG, **prompt_config()}, [bank.snapshot(1)])
@@ -442,7 +440,7 @@ def test_changed_source_stops_before_model_request(tmp_path):
 
 
 def test_transient_retries_are_bounded_and_recorded(tmp_path, monkeypatch):
-    from topik_question_lab.step_03_generation.vocabulary_bulk import RateGate
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_bulk import RateGate
     monkeypatch.setattr(RateGate, "wait", lambda *args: None)
     bank, calls = FakeBank(), []
     def invoke(**kwargs):
@@ -514,7 +512,7 @@ def test_cached_runner_recovers_backup_without_word_tables(tmp_path):
 def test_vocabulary_review_uses_existing_client_with_bounded_timeout(monkeypatch):
     from types import SimpleNamespace
     import openai
-    from topik_question_lab.step_03_generation.providers import call_provider
+    from topik_question_lab.common.generation.providers import call_provider
     recorded = {}
     def client(**kwargs):
         recorded.update(kwargs)
@@ -672,7 +670,7 @@ def test_postgres_selection_and_edit_conflict(bank):
 
 def test_017_startup_migration_backs_up_and_rolls_back_on_error(bank, tmp_path, monkeypatch):
     from topik_question_lab.maintenance import bank_migrations as migration
-    from topik_question_lab.step_06_publication import vocabulary_questions as questions
+    from topik_question_lab.common.vocabulary import vocabulary_questions as questions
     with psycopg.connect(bank.url) as c:
         c.execute("DROP TABLE topik_bank.vocabulary_questions")
         c.execute("DELETE FROM topik_bank.schema_migrations WHERE version=%s", (MIGRATION,))
@@ -704,14 +702,14 @@ def test_017_startup_migration_backs_up_and_rolls_back_on_error(bank, tmp_path, 
 
 def test_exercise_page_batch_preview_and_subjective_mode(bank, tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
-    from topik_question_lab.ui import vocabulary_questions_ui as ui
+    from topik_question_lab.menus.vocabulary_generation import vocabulary_questions_ui as ui
     calls = []
     runner = VocabularyRunner(tmp_path, successful_caller(calls))
     batch_id = runner.start(bank.url, snapshots=[bank.snapshot(1)], config=CONFIG)
     finish(runner)
     monkeypatch.setenv("DATABASE_URL", bank.url)
     monkeypatch.setattr(ui, "get_vocabulary_runner", lambda _: runner)
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_questions_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_generation/vocabulary_questions_app.py"
     app = AppTest.from_file(str(page), default_timeout=20)
     app.session_state["vocab-model"] = ("claude", "claude-haiku-4-5-20251001")
     app.session_state["vocab-custom-model"] = "claude-haiku-4-5-20251001"
@@ -737,8 +735,8 @@ def test_exercise_page_batch_preview_and_subjective_mode(bank, tmp_path, monkeyp
 
 def test_prompt_editor_preview_actual_request_and_explicit_postgres_save(bank, tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
-    from topik_question_lab.step_02_planning.vocabulary_prompts import SYSTEM
-    from topik_question_lab.ui import vocabulary_questions_ui as ui
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import SYSTEM
+    from topik_question_lab.menus.vocabulary_generation import vocabulary_questions_ui as ui
     calls = []
     def invoke(**kwargs):
         calls.append(kwargs)
@@ -747,7 +745,7 @@ def test_prompt_editor_preview_actual_request_and_explicit_postgres_save(bank, t
     monkeypatch.setenv("DATABASE_URL", bank.url)
     monkeypatch.setattr(ui, "get_vocabulary_runner", lambda _: runner)
     monkeypatch.setattr(ui, "can_gateway_call", lambda _: True)
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_questions_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_generation/vocabulary_questions_app.py"
     app = AppTest.from_file(str(page), default_timeout=20).run()
     assert [item.value for item in app.subheader] == ["전체 단어 문제 생성 현황", "1. 단어·생성 범위 선택", "2. AI 프롬프트 확인",
                                                     "3. 생성·검수 실행", "4. 실행 결과"]
@@ -787,7 +785,7 @@ def test_prompt_editor_preview_actual_request_and_explicit_postgres_save(bank, t
 @pytest.mark.parametrize("invalid_structure", [False, True])
 def test_failure_ui_has_no_resume_or_save_and_next_start_is_fresh(bank, tmp_path, monkeypatch, invalid_structure):
     from streamlit.testing.v1 import AppTest
-    from topik_question_lab.ui import vocabulary_questions_ui as ui
+    from topik_question_lab.menus.vocabulary_generation import vocabulary_questions_ui as ui
     calls = []
     def invoke(**kwargs):
         calls.append(kwargs["operation"])
@@ -809,7 +807,7 @@ def test_failure_ui_has_no_resume_or_save_and_next_start_is_fresh(bank, tmp_path
     monkeypatch.setenv("DATABASE_URL", bank.url)
     monkeypatch.setattr(ui, "get_vocabulary_runner", lambda _: runner)
     monkeypatch.setattr(ui, "can_gateway_call", lambda _: True)
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_questions_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_generation/vocabulary_questions_app.py"
     app = AppTest.from_file(str(page), default_timeout=20).run()
     assert not app.exception and not any(b.key in {"vocab-save", "vocab-resume"} for b in app.button)
     assert any("초기 상태" in item.value for item in app.info)

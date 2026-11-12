@@ -14,14 +14,14 @@ from topik_question_lab.common.storage import Storage
 from topik_question_lab.common.listening_storage import ListeningStorage
 from topik_question_lab.common.models import Review
 from topik_question_lab.common.question_lifecycle import has_trash_column
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_06_publication.question_trash import QuestionTrash, trash_token
-from topik_question_lab.step_06_publication.registration_workflow import RegistrationWorkflow
-from topik_question_lab.step_06_publication.storage_overview import load_overview
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.menus.registration.question_trash import QuestionTrash, trash_token
+from topik_question_lab.menus.registration.registration_workflow import RegistrationWorkflow
+from topik_question_lab.common.question_bank.storage_overview import load_overview
 
 
-PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/postgres_publish_app.py"
+PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/registration/postgres_publish_app.py"
 META = {"level": 4, "difficulty": 0.0, "items": {}}
 
 
@@ -200,7 +200,7 @@ def test_ui_multiple_selection_and_restore_without_implicit_changes(trash_bank):
 
 
 def test_partial_commit_is_reported_and_remaining_files_roll_back(trash_bank, monkeypatch):
-    import topik_question_lab.step_06_publication.question_trash as module
+    import topik_question_lab.menus.registration.question_trash as module
     t = trash_bank
     keys = ["reading:content_match_short:1", "reading:grammar_blank:1"]
     tokens = expected(t, keys)

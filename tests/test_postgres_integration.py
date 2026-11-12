@@ -2,12 +2,8 @@ import os
 
 import pytest
 
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import (
-    PublicationCandidate,
-    PublicationItemMetadata,
-    build_set_draft,
-)
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import PublicationCandidate, PublicationItemMetadata, build_set_draft
 
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()

@@ -4,12 +4,12 @@ import psycopg
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.step_06_publication import vocabulary
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
+from topik_question_lab.common.vocabulary import vocabulary
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/vocabulary_app.py"
+PAGE = ROOT / "topik_question_lab/menus/vocabulary/vocabulary_app.py"
 SAMPLE = [
     ("사과", "명사", "Apple", "táo", "りんご", "사과를 먹어요.", "I eat an apple.", 3),
     ("환경", "명사", "environment", "môi trường", "環境", "지구를 보호해요.", "Protect the earth.", 4),
@@ -153,15 +153,15 @@ def test_empty_and_missing_table_do_not_create_schema(postgres_database_factory,
 
 
 def test_main_menu_opens_vocabulary_without_recovering_worker(tmp_path, monkeypatch):
-    from topik_question_lab.ui import runner_service
+    from topik_question_lab.common.generation import runner_service
 
     (tmp_path / "data").mkdir()
     (tmp_path / "data/bulk_generation.db").touch()
     monkeypatch.setattr(runner_service, "get_runner", lambda *a: pytest.fail("must not start a worker"))
     app = AppTest.from_file(str(ROOT / "topik_question_lab/main.py"))
-    app.switch_page("ui/vocabulary_app.py").run()
+    app.switch_page("menus/vocabulary/vocabulary_app.py").run()
     assert not app.exception
     assert app.title[0].value == "TOPIK II 단어장"
-    app.switch_page("ui/vocabulary_questions_app.py").run()
+    app.switch_page("menus/vocabulary_generation/vocabulary_questions_app.py").run()
     assert not app.exception
     assert app.title[0].value == "단어 연습문제 생성"

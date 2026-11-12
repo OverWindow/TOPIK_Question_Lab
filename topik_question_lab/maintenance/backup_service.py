@@ -119,7 +119,7 @@ def _sqlite_snapshot(path: Path) -> bytes:
 
 def create_backup(root: Path, options: BackupOptions | None = None) -> BackupArtifact:
     if (root / "data/bulk_generation.db").exists():
-        from topik_question_lab.step_03_generation.bulk_generation import execution_lock
+        from topik_question_lab.common.generation.bulk_generation import execution_lock
         with execution_lock(root):
             return _create_backup(root, options)
     return _create_backup(root, options)
@@ -197,7 +197,7 @@ def save_local_backup(root: Path, artifact: BackupArtifact) -> Path:
 
 
 def restore_backup(root: Path, data: bytes) -> tuple[dict, Path]:
-    from topik_question_lab.step_03_generation.bulk_generation import execution_lock
+    from topik_question_lab.common.generation.bulk_generation import execution_lock
     with execution_lock(root.resolve()):
         return _restore_backup(root, data)
 

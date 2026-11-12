@@ -3,9 +3,7 @@ import uuid
 import psycopg
 import pytest
 
-from topik_question_lab.step_06_publication.postgres_storage import (
-    MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError,
-)
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR, PostgresQuestionBank, PostgresUnavailableError
 
 
 VERSION = "016_exam_track_v4_only"

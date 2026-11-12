@@ -7,9 +7,9 @@ import psycopg
 import pytest
 
 from topik_question_lab.maintenance.item_audio_migration import migration_baseline, verify_migration, migrate_item_audio
-from topik_question_lab.step_06_publication.audio_bindings import bind_audio
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR, PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import build_set_draft
+from topik_question_lab.common.question_bank.audio_bindings import bind_audio
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR, PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import build_set_draft
 from test_unversioned_questions import candidate
 
 MIGRATION = MIGRATION_DIR / "011_item_audio_only.sql"
@@ -113,7 +113,7 @@ def test_failed_backup_does_not_change_database(legacy_audio, tmp_path, monkeypa
 
 
 def test_schema_preparation_cannot_bypass_backup(legacy_audio):
-    from topik_question_lab.step_06_publication.postgres_storage import PostgresUnavailableError
+    from topik_question_lab.common.question_bank.postgres_storage import PostgresUnavailableError
     url, _, _ = legacy_audio
     with psycopg.connect(url) as c:
         baseline = migration_baseline(c)

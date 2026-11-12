@@ -1,6 +1,6 @@
 import pytest
 
-from topik_question_lab.step_06_publication.media_validation import LocalMediaValidator, file_digest, object_path
+from topik_question_lab.common.media.media_validation import LocalMediaValidator, file_digest, object_path
 
 
 def completed_reading(root):

@@ -127,7 +127,7 @@ sh run_topik_lab.sh
 python3.11 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
 ./.venv/bin/python -m pip install -r requirements.txt
-./.venv/bin/python -m streamlit run topik_question_lab/ui/app.py
+./.venv/bin/python -m streamlit run topik_question_lab/menus/reading/app.py
 ```
 
 Apple Silicon과 Intel Mac 모두 같은 명령을 사용합니다. 앱 실행 후 브라우저에서 [http://localhost:8501](http://localhost:8501)을 엽니다. 종료할 때는 앱을 실행한 터미널에서 `Control+C`를 누릅니다.
@@ -326,24 +326,39 @@ PostgreSQL 편집본을 기존 `변경 내용 반영`으로 덮어쓰려면 별�
 S3 파일과 로컬 생성 기록은 삭제하지 않습니다. 업로드 이후 DB 저장이 실패한 경우에도 업로드 파일은 S3에 남습니다.
 새 HTTP API, DB 테이블, 마이그레이션 또는 백그라운드 작업은 추가하지 않습니다.
 
-## 코드 구조와 생성 순서
+## 코드 구조와 메뉴
 
-실행 시작점은 `topik_question_lab/main.py`이며, 단계별 코드는 다음 폴더에 있습니다.
+실행 시작점은 `topik_question_lab/main.py`입니다. 각 메뉴의 화면과 전용 로직은 아래 폴더에 함께 있습니다.
 
-| 순서 | 폴더 | 역할 |
-| --- | --- | --- |
-| 1 | `step_01_source/` | 읽기 기출 파싱과 듣기 자료 가져오기 |
-| 2 | `step_02_planning/` | 유형 규칙, 소재 선정과 프롬프트 구성 |
-| 3 | `step_03_generation/` | 모델 호출, 생성 결과 처리와 50문항 일괄 생성 |
-| 4 | `step_04_review/` | 응답·문항 검증과 밑줄 표시 |
-| 5 | `step_05_export/` | JSON·CSV·TXT·PDF 내보내기 |
-| 6 | `step_06_publication/` | 세트 구성, PostgreSQL 등록과 미디어 검증 |
+| 메뉴 | 폴더 |
+| --- | --- |
+| TOPIK II 읽기 | `menus/reading/` |
+| TOPIK II 듣기 | `menus/listening/` |
+| 문제 일괄 생성 | `menus/bulk_generation/` |
+| 문제 저장 현황 | `menus/storage_overview/` |
+| PostgreSQL 문제 관리 | `menus/bank_editor/` |
+| 소재 은행 | `menus/topic_bank/` |
+| 문제 등록·세트 만들기 | `menus/registration/` |
+| 서버에 문제 등록 | `menus/bank_transfer/` |
+| 백업·복원 | `menus/backup_restore/` |
+| TOPIK II 단어장 | `menus/vocabulary/` |
+| 단어 연습문제 생성 | `menus/vocabulary_generation/` |
+| 단어 문제 관리 | `menus/vocabulary_editor/` |
+| 서버에 단어장·문제 등록 | `menus/vocabulary_transfer/` |
+| 한국어 사전 등록 | `menus/korean_dictionary/` |
+| PostgreSQL 정리 | `menus/postgres_cleanup/` |
 
-모든 폴더는 `topik_question_lab/` 아래에 있습니다. `common/`은 모델·SQLite 저장·시각 자료,
-`ui/`는 Streamlit 화면과 화면 보조 코드, `maintenance/`는 백업·로컬 서버 관리를 담당합니다.
-SQL 마이그레이션과 AWS 정의는 `step_06_publication/migrations/`,
-`step_06_publication/cloudformation/`에 있습니다.
-데이터 경로는 프로젝트 루트의 `data/`를 사용합니다.
+모든 폴더는 `topik_question_lab/` 아래에 있습니다. 여러 메뉴가 사용하는 코드는
+`common/generation/`, `common/question_bank/`, `common/vocabulary/`, `common/media/`,
+`common/exports/`, `common/ui/`에 역할별로 모여 있으며 공용 모델·SQLite 저장소도 `common/`에 있습니다.
+메뉴 전용 코드는 해당 메뉴에 추가하고, 여러 메뉴에서 실제로 사용하는 부분만 공용으로 분리합니다.
+
+`common/paths.py`는 소스 리소스와 데이터 루트, `common/ui/navigation.py`는 메뉴 파일 경로를 관리합니다.
+기본 데이터 경로는 저장소 루트의 `data/`이며, 테스트에서는 `TOPIK_LAB_ROOT`로 격리합니다.
+기출·단어장·한국어기초사전 원본의 위치는 그대로 유지합니다.
+
+`maintenance/`는 백업·로컬 서버·이관 도구를 담당합니다. SQL 마이그레이션과 대상 은행 스키마는
+`maintenance/migrations/`, `maintenance/target_bank.sql`에 있고 AWS 정의는 `maintenance/cloudformation/`에 있습니다.
 
 ## 작업 흐름
 
@@ -685,6 +700,47 @@ UTF-8(BOM 포함 가능) CSV는 기존 8개 열 또는 위 순서의 10개 열�
 SELECT topik_level, count(*) FROM topik_bank.vocabulary GROUP BY topik_level ORDER BY topik_level;
 ```
 
+### 한국어 사전 등록
+
+`TOPIK 단어장 > 한국어 사전 등록`에서 저장소 루트의 `한국어기초사전/` 아래 XLS/XLSX 전체 분할 파일을
+로컬·운영 서버에 등록합니다. 현재 원본은 `1_30000_20261019.xls`, `2_30000_20261019.xls`,
+`3_16833_20261019.xls`이며 총 76,833개 뜻풀이입니다. 하위 폴더는 읽지 않습니다.
+
+의존성을 처음 준비하거나 이 기능을 업데이트한 뒤, 저장소 루트에서 아래 명령을 수동 실행하고 앱을 다시 시작합니다.
+이 명령은 XLS/XLSX 읽기용 `xlrd`, `openpyxl` 등을 설치하며 DB를 변경하지 않습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run topik_question_lab/main.py
+```
+
+1. 기존 `QUESTION_BANK_LOCAL_DATABASE_URL` / `QUESTION_BANK_PRODUCTION_DATABASE_URL`로 연결할 대상을 선택합니다.
+2. **등록 내용 확인**을 누릅니다. 원본 74개 열·필수값·유형·전체 행을 검증한 뒤 대상 DB를 읽기 전용으로 확인합니다.
+   파일별·유형별 건수, 11개 언어 번역 누락, 서버별 신규·변경·동일 건수를 표시합니다.
+3. **선택 서버에 사전 등록**을 누르면 선택한 DB의 기존 `public.korean_dictionary_senses`에 기록합니다.
+   자동 적재나 백그라운드 작업은 없습니다. 기존 단어장·문제 테이블과 원본 파일은 변경하지 않습니다.
+
+`unigate-main`의 사전 등록 규칙대로 표제어를 NFC 정규화하고, 번역·용례·나머지 원본 열을 보존합니다.
+속담·관용구는 부표제어 전용 열을 사용하며 부모 정보는 metadata에 보존합니다.
+뜻풀이 순서는 파일명의 자연 정렬 순서로 분할 파일 경계를 넘어 이어집니다. 같은 뜻풀이도 원본 행이 다르면 합치지 않습니다.
+번역 누락은 허용하지만 수식/오류가 있는 XLSX, 오류 셀이 있는 XLS, 잘못된 원본은 등록하지 않습니다.
+
+빈 테이블에는 전체 행을 추가합니다. 기존 자료가 있으면 파일명·행 번호 집합이 모두 같아야 하며 기존 ID를 유지해 변경 내용만 갱신합니다.
+일부 파일만 등록하거나 파일명·확장자를 바꾼 자료를 기존 배포본에 섞으면 중단합니다.
+빈 DB의 최초 적재 전에는 내려받은 전체 분할 파일을 준비했는지 확인하세요.
+원본 파일이나 대상 DB 내용·구조가 미리보기 이후 바뀌면 다시 확인해야 합니다.
+
+변경할 기존 자료는 `backups/korean_dictionary/before_import_*.jsonl.gz`에 구조·ID를 포함한 전체 행과 검증 해시를 백업합니다.
+첫 줄은 백업 메타데이터, 이후 줄은 행별 JSON이며 연결 문자열·비밀번호는 포함하지 않습니다. `pg_restore`용 덤프는 아닙니다.
+동일한 데이터의 재등록은 백업이나 데이터 갱신을 하지 않습니다.
+서버별로 500행씩 처리하되 전체 작업을 한 트랜잭션으로 확정하고, 커밋 전후 전체 내용과 기존 ID 보존을 검증합니다.
+커밋 전 실패 시 해당 서버의 사전 데이터 변경을 롤백합니다. 커밋 응답·최종 확인이 끊기면 결과 확인 필요로 표시합니다.
+다른 서버의 성공은 유지되므로 실패한 서버만 선택해 다시 확인·등록할 수 있습니다.
+
+새 HTTP API·DB 테이블·컬럼은 추가하지 않습니다. 대상 사전 테이블이 없으면 등록을 중단하고
+`unigate-main`의 기존 `vocabulary.0002_korean_dictionary_senses` 마이그레이션 적용을 안내합니다.
+Hub는 Django 마이그레이션을 실행하거나 테이블을 자동 생성하지 않습니다.
+
 ### 로컬·운영 서버에 단어장 등록
 
 `TOPIK 단어장 > 서버에 단어장·문제 등록`에서 등록 내용을 `단어장`으로 두고 로컬 서버, 운영 서버 또는 둘 다 선택한 뒤
@@ -859,7 +915,7 @@ Python 3.11을 설치한 뒤 터미널을 다시 열고 `python3.11 --version`�
 다른 포트로 실행합니다.
 
 ```bash
-./.venv/bin/python -m streamlit run topik_question_lab/ui/app.py --server.port 8502
+./.venv/bin/python -m streamlit run topik_question_lab/menus/reading/app.py --server.port 8502
 ```
 
 ### macOS에서 스크립트 실행 권한 오류

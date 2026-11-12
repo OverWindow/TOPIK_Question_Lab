@@ -7,12 +7,12 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_vocabulary_questions import CONFIG, bank, ready_task
-from topik_question_lab.common.vocabulary_models import source_snapshot
-from topik_question_lab.step_06_publication import vocabulary_question_transfer as transfer
-from topik_question_lab.step_06_publication import vocabulary_transfer as vocabulary
+from topik_question_lab.common.vocabulary.vocabulary_models import source_snapshot
+from topik_question_lab.menus.vocabulary_transfer import vocabulary_question_transfer as transfer
+from topik_question_lab.menus.vocabulary_transfer import vocabulary_transfer as vocabulary
 
 
-PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_transfer_app.py"
+PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_transfer/vocabulary_transfer_app.py"
 
 
 @pytest.fixture

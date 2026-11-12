@@ -4,9 +4,9 @@ import psycopg
 from psycopg import sql
 import pytest
 
-from topik_question_lab.step_06_publication.media_validation import file_digest, object_path, preview_local_media
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import PublicationCandidate, PublicationItemMetadata, build_set_draft
+from topik_question_lab.common.media.media_validation import file_digest, object_path, preview_local_media
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import PublicationCandidate, PublicationItemMetadata, build_set_draft
 
 
 def draft(section):

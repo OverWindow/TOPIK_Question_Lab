@@ -8,12 +8,10 @@ import uuid
 
 import pytest
 
-from topik_question_lab.step_06_publication.direct_publication import (
-    DirectPublicationService, PublicationBlocked, batch_set_id, make_package, package_draft,
-)
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_02_planning.prompt_profiles import QUESTION_TYPE_PROFILES
-from topik_question_lab.step_02_planning.listening_profiles import LISTENING_TYPE_PROFILES
+from topik_question_lab.common.question_bank.direct_publication import DirectPublicationService, PublicationBlocked, batch_set_id, make_package, package_draft
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.common.generation.prompt_profiles import QUESTION_TYPE_PROFILES
+from topik_question_lab.common.generation.listening_profiles import LISTENING_TYPE_PROFILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +66,7 @@ def change_question(root, type_id="grammar_blank", edit=lambda q: q, batch_id=No
 
 
 def local_package(service, batch_id):
-    from topik_question_lab.step_06_publication.direct_publication import read_batches
+    from topik_question_lab.common.question_bank.direct_publication import read_batches
     batch = next(b for b in read_batches(service.root) if b["id"] == batch_id)
     records = [r for r in service.catalog().records if r.candidate.batch_id == batch_id]
     return make_package(batch, records)
@@ -138,7 +136,7 @@ def test_unapproval_invalidates_prepared_job(tmp_path):
 
 
 def test_keyword_connection_targets_and_password_redaction():
-    from topik_question_lab.step_06_publication.direct_publication import _target_fingerprint, _safe_error
+    from topik_question_lab.common.question_bank.direct_publication import _target_fingerprint, _safe_error
     a = "host=localhost dbname=first user=test password=secret-example"
     b = "host=localhost dbname=second user=test password=secret-example"
     assert _target_fingerprint(a) != _target_fingerprint(b)
@@ -168,7 +166,7 @@ def test_ui_requires_local_postgres_url(tmp_path, monkeypatch):
     bid = seed_batch(tmp_path)
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(tmp_path))
     monkeypatch.setenv("DATABASE_URL", "")
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/postgres_publish_app.py"), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/registration/postgres_publish_app.py"), default_timeout=20).run()
     assert not app.exception
     assert app.title[0].value == "문제 등록·세트 만들기"
     assert any("로컬 PostgreSQL 연결이 필요합니다" in i.value for i in app.info)
@@ -186,7 +184,7 @@ def test_former_database_jobs_are_visible_but_readonly(tmp_path, monkeypatch):
     job = former.jobs.save(former.target, [local_package(former, bid)])
     former.jobs.update(job['id'], 'failed', message='synthetic prior failure')
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test@localhost/new')
-    app = AppTest.from_file(str(ROOT / 'topik_question_lab/ui/postgres_publish_app.py'), default_timeout=20).run()
+    app = AppTest.from_file(str(ROOT / 'topik_question_lab/menus/registration/postgres_publish_app.py'), default_timeout=20).run()
     assert not app.exception
     assert any('이전 DB · 조회 전용' in item.label for item in app.expander)
     assert next(b for b in app.button if b.label == '등록 결과 다시 확인').disabled
@@ -199,7 +197,7 @@ def test_local_validation_survives_empty_sqlite_catalog_without_legacy_history(l
     monkeypatch.setenv('DATABASE_URL', service.target_url)
     # The PostgreSQL bank can be used without any SQLite candidates.
     monkeypatch.setenv('TOPIK_LAB_ROOT', str(service.root / 'empty'))
-    path = str(ROOT / 'topik_question_lab/ui/postgres_publish_app.py')
+    path = str(ROOT / 'topik_question_lab/menus/registration/postgres_publish_app.py')
     app = AppTest.from_file(path, default_timeout=30).run()
     next(b for b in app.button if b.label == '로컬 DB 연결·구조 확인').click().run()
     assert not app.exception
@@ -210,7 +208,7 @@ def test_local_validation_survives_empty_sqlite_catalog_without_legacy_history(l
 
 def test_s3_validation_requires_click_and_uses_selected_sets(local_service, monkeypatch):
     from streamlit.testing.v1 import AppTest
-    import topik_question_lab.step_06_publication.media_cloud as cloud
+    import topik_question_lab.common.media.media_cloud as cloud
     service, ids = local_service
     published = service.publish(service.prepare(ids)['id'])
     set_id = published['result']['sets'][0]['set_id']
@@ -223,7 +221,7 @@ def test_s3_validation_requires_click_and_uses_selected_sets(local_service, monk
         return {'sets': 1, 'items': 50, 'files': 1, 'manifest_hash': 'a' * 64}
 
     monkeypatch.setattr(cloud, 'preview_s3_media', validate)
-    app = AppTest.from_file(str(ROOT / 'topik_question_lab/ui/postgres_publish_app.py'), default_timeout=30).run()
+    app = AppTest.from_file(str(ROOT / 'topik_question_lab/menus/registration/postgres_publish_app.py'), default_timeout=30).run()
     app.session_state['registration-mode'] = 'sets'
     app.run()
     assert not app.exception and not calls
@@ -237,7 +235,7 @@ def test_s3_validation_requires_click_and_uses_selected_sets(local_service, monk
 
 @pytest.fixture(scope="module")
 def target_database(postgres_database_factory):
-    from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+    from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
     url = postgres_database_factory()
     PostgresQuestionBank(url).ensure_schema()
     return url
@@ -374,7 +372,7 @@ def test_ui_registers_and_recovers_receipt_on_restart(local_service, monkeypatch
     service, ids = local_service
     monkeypatch.setenv("TOPIK_LAB_ROOT", str(service.root))
     monkeypatch.setenv("DATABASE_URL", service.target_url)
-    path = str(ROOT / "topik_question_lab/ui/postgres_publish_app.py")
+    path = str(ROOT / "topik_question_lab/menus/registration/postgres_publish_app.py")
     app = AppTest.from_file(path, default_timeout=30).run()
     app.session_state["publication-batch-link"] = ids[0]
     app.run()

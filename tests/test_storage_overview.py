@@ -8,13 +8,13 @@ from streamlit.testing.v1 import AppTest
 
 from test_direct_publication import seed_batch, change_question
 from test_media_generation import seed_media, pipeline
-from topik_question_lab.step_06_publication import storage_overview as overview
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank import storage_overview as overview
+from topik_question_lab.common.media.media_registration import MediaRegistration
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/storage_overview_app.py"
+PAGE = ROOT / "topik_question_lab/menus/storage_overview/storage_overview_app.py"
 
 
 def files(root):
@@ -170,7 +170,7 @@ def test_live_bank_pending_50_questions_35_audio_and_missing_media(postgres_data
     assert files(tmp_path) == before and database_rows() == pg_before
 
     calls = []
-    monkeypatch.setattr("topik_question_lab.step_06_publication.media_cloud.preview_s3_media",
+    monkeypatch.setattr("topik_question_lab.common.media.media_cloud.preview_s3_media",
                         lambda *args: calls.append(args) or {"items": 50, "files": 35 + expected_images})
     app = AppTest.from_file(str(PAGE), default_timeout=20).run()
     assert not app.exception and not calls
@@ -197,7 +197,7 @@ def test_empty_postgres_is_not_migrated(postgres_database_factory):
 
 def test_overview_navigation_does_not_start_recovery(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from topik_question_lab.step_03_generation.bulk_generation import BulkStore
+    from topik_question_lab.common.generation.bulk_generation import BulkStore
     import runpy
     import streamlit as st
     BulkStore(tmp_path)
@@ -207,7 +207,7 @@ def test_overview_navigation_does_not_start_recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "navigation", lambda *args, **kwargs: SimpleNamespace(title="문제 저장 현황", run=lambda: None))
     def forbidden(*args):
         raise AssertionError("Overview must not recover background jobs")
-    monkeypatch.setattr("topik_question_lab.ui.runner_service.get_runner", forbidden)
+    monkeypatch.setattr("topik_question_lab.common.generation.runner_service.get_runner", forbidden)
     runpy.run_path(str(ROOT / "topik_question_lab/main.py"))
     assert any(p[1]["title"] == "문제 저장 현황" for p in pages)
     assert files(tmp_path) == before

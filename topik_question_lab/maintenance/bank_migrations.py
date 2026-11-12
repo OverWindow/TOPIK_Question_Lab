@@ -11,8 +11,8 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from topik_question_lab.maintenance import bank_server
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR, PostgresQuestionBank
-from topik_question_lab.step_06_publication.media_registration import require_media_schema
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR, PostgresQuestionBank
+from topik_question_lab.common.media.media_registration import require_media_schema
 
 
 AUTO_VERSION = "010_exam_format"
@@ -84,7 +84,7 @@ def migrate_local_bank(root: Path, url: str) -> tuple[list[str], Path | None]:
             if "011_item_audio_only" in pending:
                 raise StartupMigrationError("문항 음원 통합(011)은 백업·검증 후 수동 적용해야 합니다. 자동 변경하지 않았습니다.")
             if pending == ["017_vocabulary_questions"]:
-                from topik_question_lab.step_06_publication.vocabulary_questions import apply_question_migration
+                from topik_question_lab.common.vocabulary.vocabulary_questions import apply_question_migration
                 backup = _backup_database(root, url, config, label="017")
                 apply_question_migration(c)
                 return pending, backup

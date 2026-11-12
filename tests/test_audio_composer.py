@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from topik_question_lab.step_03_generation.audio_composer import compose, validate_mp3
+from topik_question_lab.common.media.audio_composer import compose, validate_mp3
 
 
 @pytest.mark.parametrize("failure", [None, "encode", "duration", "decode", "timeout"])
 def test_intermediate_wav_is_removed_only_after_success(tmp_path, monkeypatch, failure):
-    import topik_question_lab.step_03_generation.audio_composer as composer
+    import topik_question_lab.common.media.audio_composer as composer
 
     target = tmp_path / "track.part.mp3"
     intermediate = target.with_suffix(".wav")

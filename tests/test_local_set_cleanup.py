@@ -10,16 +10,16 @@ from test_media_generation import seed_media, pipeline
 from test_storage_overview import files
 from topik_question_lab.common.local_cleanup import cleanup_receipts, batch_was_cleaned
 from topik_question_lab.maintenance.backup_service import inspect_backup, restore_backup
-from topik_question_lab.step_03_generation.bulk_generation import BulkRunner
-from topik_question_lab.step_06_publication.local_set_cleanup import LocalSetCleanup
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
-from topik_question_lab.step_06_publication.registration_workflow import RegistrationWorkflow
-from topik_question_lab.step_06_publication.storage_overview import load_overview
+from topik_question_lab.common.generation.bulk_generation import BulkRunner
+from topik_question_lab.menus.registration.local_set_cleanup import LocalSetCleanup
+from topik_question_lab.common.media.media_registration import MediaRegistration
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
+from topik_question_lab.menus.registration.registration_workflow import RegistrationWorkflow
+from topik_question_lab.common.question_bank.storage_overview import load_overview
 
 
-PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/postgres_publish_app.py"
+PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/registration/postgres_publish_app.py"
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_ineligible_sets_never_delete(cleanup_bank, kind):
 
 @pytest.mark.parametrize('phase', ['paused', 'failed'])
 def test_old_stopped_media_attempt_does_not_block_registered_set(cleanup_bank, phase):
-    from topik_question_lab.step_03_generation.bulk_generation import execution_lock
+    from topik_question_lab.common.generation.bulk_generation import execution_lock
     service, _ = cleanup_bank
     with sqlite3.connect(service.root / 'data/bulk_generation.db') as c:
         c.execute("UPDATE batches SET pipeline_status=?", (phase,))
@@ -151,7 +151,7 @@ def test_stale_plan_or_failed_backup_cannot_delete(cleanup_bank, monkeypatch, ki
 
 
 def test_partial_commit_is_recoverable_and_uncommitted_files_rollback(cleanup_bank, monkeypatch):
-    import topik_question_lab.step_06_publication.local_set_cleanup as module
+    import topik_question_lab.menus.registration.local_set_cleanup as module
     service, _ = cleanup_bank
     p = plan(service)
     original = sqlite3.connect
@@ -217,7 +217,7 @@ def test_reading_and_listening_multiple_sets_require_all_media(cleanup_bank, mon
         c.execute("UPDATE topik_bank.item_audio_bindings SET is_current=true WHERE item_id IN (SELECT item_id FROM topik_bank.items WHERE position=1)")
     def forbidden(*args, **kwargs):
         raise AssertionError('No S3 requests during cleanup')
-    monkeypatch.setattr('topik_question_lab.step_06_publication.media_cloud.S3MediaStore.__init__', forbidden)
+    monkeypatch.setattr('topik_question_lab.common.media.media_cloud.S3MediaStore.__init__', forbidden)
     remote = pg_rows(service)
     result = service.execute(service.prepare([r['set_id'] for r in service.candidates()]))
     assert result['complete'] and len(result['changed']) == 100
@@ -226,7 +226,7 @@ def test_reading_and_listening_multiple_sets_require_all_media(cleanup_bank, mon
 
 
 def test_backup_integrity_failure_and_lost_commit_acknowledgement(cleanup_bank, monkeypatch):
-    import topik_question_lab.step_06_publication.local_set_cleanup as module
+    import topik_question_lab.menus.registration.local_set_cleanup as module
     service, _ = cleanup_bank
     p = plan(service)
     before = db_files(service.root)

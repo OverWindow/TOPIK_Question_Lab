@@ -7,10 +7,10 @@ import pytest
 from test_bank_editor import bank, seed_listening, audio_binding, pick, edited, fake_uploaded
 from test_ibt_pipeline import generated_batch
 from test_media_generation import pipeline
-from topik_question_lab.step_06_publication.bank_editor import prepare_edit, item_metadata, media_ready
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration, check_media
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog, build_item_drafts
+from topik_question_lab.common.question_bank.bank_editor import prepare_edit, item_metadata, media_ready
+from topik_question_lab.common.media.media_registration import MediaRegistration, check_media
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog, build_item_drafts
 
 
 @pytest.mark.parametrize("slots", [[4], [21, 22]])
@@ -44,7 +44,7 @@ def test_standalone_edit_replace_and_shared_invalidation_preserve_history(bank, 
 
 @pytest.mark.parametrize("section", ["reading", "listening"])
 def test_ibt_registration_uses_only_item_bindings_and_retry_keeps_ids(postgres_database_factory, tmp_path, monkeypatch, section):
-    import topik_question_lab.step_03_generation.media_generation as generation
+    import topik_question_lab.common.media.media_generation as generation
     url = postgres_database_factory()
     PostgresQuestionBank(url).ensure_schema()
     _, bid, _, _ = generated_batch(tmp_path, section, monkeypatch)

@@ -6,12 +6,10 @@ import psycopg
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from topik_question_lab.step_06_publication.bank_transfer import (
-    TABLES, TransferError, _all_rows, _upsert, capture_source, connection,
-    execute_transfer, initialize_target, prepare_transfer,
-)
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import build_set_draft
+from topik_question_lab.menus.bank_transfer.bank_transfer import TABLES, _all_rows, _upsert, capture_source, execute_transfer, initialize_target, prepare_transfer
+from topik_question_lab.common.question_bank.connection import TransferError, connection
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import build_set_draft
 from test_unversioned_questions import candidate
 
 
@@ -166,7 +164,7 @@ def test_changes_after_preview_require_new_preview(banks):
 
 
 def test_failure_mid_transfer_rolls_back_all_tables(banks, monkeypatch):
-    import topik_question_lab.step_06_publication.bank_transfer as transfer
+    import topik_question_lab.menus.bank_transfer.bank_transfer as transfer
     source, target, first, _ = banks
     add_media(source, first)
     before = rows(target)
@@ -241,7 +239,7 @@ def test_replacing_item_id_preserves_reused_visual_id(banks):
 
 
 def test_commit_acknowledgement_loss_is_recoverable_without_duplicate(banks, monkeypatch):
-    import topik_question_lab.step_06_publication.bank_transfer as transfer
+    import topik_question_lab.menus.bank_transfer.bank_transfer as transfer
     from contextlib import contextmanager
     source, target, first, _ = banks
     plan = prepare_transfer(capture_source(source, [first]), target)
@@ -293,7 +291,7 @@ def test_empty_source_and_partial_target_do_not_create_partial_schema(postgres_d
 
 
 def test_media_check_contacts_only_configured_origin(monkeypatch):
-    from topik_question_lab.step_06_publication.bank_transfer import Snapshot, check_shared_media
+    from topik_question_lab.menus.bank_transfer.bank_transfer import Snapshot, check_shared_media
     import httpx
     contacted = []
     def head(self, url, **kwargs):
@@ -318,7 +316,7 @@ def test_ui_preview_and_registration_use_only_explicit_target(banks, monkeypatch
     monkeypatch.setenv('QUESTION_BANK_LOCAL_DATABASE_URL', target)
     # A production value must not be contacted when only local is selected.
     monkeypatch.setenv('QUESTION_BANK_PRODUCTION_DATABASE_URL', 'postgresql://invalid.example/unused')
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'topik_question_lab/ui/bank_transfer_app.py'), default_timeout=30).run()
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'topik_question_lab/menus/bank_transfer/bank_transfer_app.py'), default_timeout=30).run()
     next(b for b in app.button if b.label == '원본 세트 불러오기').click().run()
     app.multiselect[1].set_value([first]).run()
     next(b for b in app.button if b.label == '등록 내용 확인').click().run()
@@ -332,7 +330,7 @@ def test_ui_preview_and_registration_use_only_explicit_target(banks, monkeypatch
 
 
 def test_ui_starts_without_connections_and_defaults_to_local():
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'topik_question_lab/ui/bank_transfer_app.py')).run()
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'topik_question_lab/menus/bank_transfer/bank_transfer_app.py')).run()
     assert not app.exception
     assert app.multiselect[0].value == ['로컬 서버']
     assert next(b for b in app.button if b.label == '등록 내용 확인').disabled

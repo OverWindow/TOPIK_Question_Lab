@@ -8,13 +8,13 @@ from test_bulk_generation import caller_for, prepared, wait
 from test_direct_publication import seed_batch
 from test_media_generation import FakeRegistration, pipeline, seed_media
 from topik_question_lab.common.models import Review
-from topik_question_lab.step_03_generation.bulk_generation import BulkRunner, BulkStore, storage_for
-from topik_question_lab.step_03_generation.providers import call_provider
-from topik_question_lab.step_04_review.legacy_approval import digest
-from topik_question_lab.step_06_publication.direct_publication import PublicationBlocked
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank
-from topik_question_lab.step_06_publication.publication import collect_candidate_catalog
+from topik_question_lab.common.generation.bulk_generation import BulkRunner, BulkStore, storage_for
+from topik_question_lab.common.generation.providers import call_provider
+from topik_question_lab.common.question_bank.legacy_approval import digest
+from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked
+from topik_question_lab.common.media.media_registration import MediaRegistration
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank
+from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
 
 
 @pytest.mark.parametrize("section", ["reading", "listening"])
@@ -78,7 +78,7 @@ def test_retired_review_operations_never_open_api_client(monkeypatch):
 
 
 def test_legacy_listening_batch_retries_media_without_regeneration_or_secret_logging(tmp_path, monkeypatch):
-    import topik_question_lab.step_03_generation.media_generation as generation
+    import topik_question_lab.common.media.media_generation as generation
     from test_media_generation import settings
 
     snapshots = prepared(tmp_path, "listening", monkeypatch)

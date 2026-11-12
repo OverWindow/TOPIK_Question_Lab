@@ -12,8 +12,8 @@ import psycopg
 
 from topik_question_lab.maintenance import bank_server
 from topik_question_lab.maintenance.bank_migrations import _backup_database, _local_config
-from topik_question_lab.step_06_publication.postgres_storage import MIGRATION_DIR
-from topik_question_lab.step_06_publication.vocabulary_languages import LANGUAGE_FIELDS, apply_language_migration
+from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR
+from topik_question_lab.common.vocabulary.vocabulary_languages import LANGUAGE_FIELDS, apply_language_migration
 
 
 VERSION = "012_vocabulary"

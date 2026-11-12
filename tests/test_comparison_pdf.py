@@ -4,7 +4,7 @@ import io
 
 from pypdf import PdfReader
 
-from topik_question_lab.step_05_export.comparison_pdf import build_comparison_pdf, build_comparison_rows
+from topik_question_lab.common.exports.comparison_pdf import build_comparison_pdf, build_comparison_rows
 from topik_question_lab.common.models import QuestionExample, Review
 
 

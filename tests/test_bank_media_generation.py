@@ -10,13 +10,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_media_generation import FakeGoogle, seed_media, settings
-from topik_question_lab.step_06_publication import bank_media_generation as generation
-from topik_question_lab.step_06_publication.bank_editor import BankEditor, item_metadata, prepare_edit, upload_media
-from topik_question_lab.step_06_publication.direct_publication import PublicationBlocked, expected_item, package_draft, _hash
-from topik_question_lab.step_06_publication.media_registration import MediaRegistration
+from topik_question_lab.menus.bank_editor import bank_media_generation as generation
+from topik_question_lab.common.question_bank.bank_editor import BankEditor, item_metadata, prepare_edit, upload_media
+from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked, expected_item, package_draft, _hash
+from topik_question_lab.common.media.media_registration import MediaRegistration
 
 
-PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/bank_editor_app.py"
+PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bank_editor/bank_editor_app.py"
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def test_selected_image_and_manual_upload_are_prepared_without_writes(snapshot, 
     question["visual_options"][0]["image_prompt"] = "새로운 그림 설명"
     prepared = prepare_edit(current, question, item_metadata(current["item"]), [image_target(), upload], allow_generation=True)
     monkeypatch.setattr(BankEditor, "connect", lambda *a, **k: pytest.fail("generation must not connect to PostgreSQL"))
-    monkeypatch.setattr("topik_question_lab.step_06_publication.media_cloud.S3MediaStore", lambda *a, **k: pytest.fail("generation must not upload"))
+    monkeypatch.setattr("topik_question_lab.common.media.media_cloud.S3MediaStore", lambda *a, **k: pytest.fail("generation must not upload"))
     client = FakeGoogle()
     result = generate(prepared, client)
     assert client.images == ["새로운 그림 설명"]
@@ -146,7 +146,7 @@ def test_shared_audio_uses_edited_script_and_reuses_repeated_speech(snapshot, mo
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg required")
 def test_audio_preview_is_a_playable_mp3(snapshot, tmp_path):
-    from topik_question_lab.step_03_generation.audio_composer import validate_mp3
+    from topik_question_lab.common.media.audio_composer import validate_mp3
     result = generate(plan(snapshot(slot=4), [dict(kind="audio", generate=True)]))
     path = tmp_path / "preview.mp3"
     path.write_bytes(result["replacements"][0]["data"])
@@ -178,8 +178,8 @@ def test_generated_audio_upload_preserves_metadata_and_validates_bytes(monkeypat
             checked.append("verify")
         def close(self):
             pass
-    monkeypatch.setattr("topik_question_lab.step_06_publication.media_cloud.S3MediaStore", Store)
-    monkeypatch.setattr("topik_question_lab.step_03_generation.audio_composer.validate_mp3", lambda *a: 1200)
+    monkeypatch.setattr("topik_question_lab.common.media.media_cloud.S3MediaStore", Store)
+    monkeypatch.setattr("topik_question_lab.common.media.audio_composer.validate_mp3", lambda *a: 1200)
     metadata = dict(provider="google_cloud_tts", model_name="test-model", female_voice="female", male_voice="male",
                     tts_style=dict(speakingRate=1.0, stylePrompt=""), input_hash="test")
     result = upload_media(dict(kind="audio", data=b"test-mp3", generation=metadata))
@@ -196,9 +196,9 @@ def editor_ui(snapshot, monkeypatch):
     editor = SimpleNamespace(target="test", load=lambda _: deepcopy(current), save=Mock(return_value={"message": "저장 완료"}))
     bank = dict(available=True, media_available=True, items=[current["item"]], sets=[])
     monkeypatch.setenv("DATABASE_URL", "test")
-    monkeypatch.setattr("topik_question_lab.step_06_publication.bank_editor.BankEditor", lambda _: editor)
-    monkeypatch.setattr("topik_question_lab.step_06_publication.storage_overview.read_bank", lambda _: bank)
-    monkeypatch.setattr("topik_question_lab.step_06_publication.direct_publication.read_batches", lambda _: [])
+    monkeypatch.setattr("topik_question_lab.common.question_bank.bank_editor.BankEditor", lambda _: editor)
+    monkeypatch.setattr("topik_question_lab.common.question_bank.storage_overview.read_bank", lambda _: bank)
+    monkeypatch.setattr("topik_question_lab.common.question_bank.direct_publication.read_batches", lambda _: [])
     return editor
 
 

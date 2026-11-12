@@ -9,7 +9,7 @@ from typing import Iterator
 from topik_question_lab.common.models import ProviderResult, QuestionExample, Review
 from topik_question_lab.common.generation_storage import GenerationStorageMixin, ensure_generation_schema
 from topik_question_lab.common.question_lifecycle import active_condition, guard_active_edit
-from topik_question_lab.step_04_review.validation import discard_resolved_validation_issues, normalize_question_blank_markers
+from topik_question_lab.common.generation.validation import discard_resolved_validation_issues, normalize_question_blank_markers
 
 
 SCHEMA = """

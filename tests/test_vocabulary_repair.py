@@ -6,10 +6,10 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_vocabulary_questions import CONFIG, WORD, FakeBank, bank, bundle, finish, result, review
-from topik_question_lab.common.vocabulary_models import balance_answer_positions, digest, merge_repair, validate_bundle
-from topik_question_lab.step_02_planning.vocabulary_prompts import prompt_config
-from topik_question_lab.step_03_generation.vocabulary_bulk import VocabularyRunner
-from topik_question_lab.step_04_review.vocabulary_validation import apply_review
+from topik_question_lab.common.vocabulary.vocabulary_models import balance_answer_positions, digest, merge_repair, validate_bundle
+from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import prompt_config
+from topik_question_lab.menus.vocabulary_generation.vocabulary_bulk import VocabularyRunner
+from topik_question_lab.menus.vocabulary_generation.vocabulary_validation import apply_review
 
 
 def reviewed_candidate(kwargs):
@@ -220,7 +220,7 @@ def test_malformed_final_review_resets_to_generation_without_automatic_repeat(tm
 
 @pytest.mark.parametrize("retry_stage", ["repair", "final"])
 def test_transient_error_retries_current_step_without_another_repair(tmp_path, monkeypatch, retry_stage):
-    from topik_question_lab.step_03_generation.vocabulary_bulk import RateGate
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_bulk import RateGate
     monkeypatch.setattr(RateGate, "wait", lambda *a: None)
     bank, calls, good_calls = FakeBank(), [], []
     normal = repair_caller(good_calls)
@@ -256,7 +256,7 @@ def test_old_workflow_is_archived_without_running_or_overwriting_recorded_prompt
 
 
 def test_repaired_bundle_is_auto_saved_after_final_review(bank, tmp_path, monkeypatch):
-    from topik_question_lab.ui import vocabulary_questions_ui as ui
+    from topik_question_lab.menus.vocabulary_generation import vocabulary_questions_ui as ui
     calls = []
     runner = VocabularyRunner(tmp_path, repair_caller(calls))
     batch_id = runner.start(bank.url, snapshots=[bank.snapshot(1)], config=CONFIG)
@@ -264,7 +264,7 @@ def test_repaired_bundle_is_auto_saved_after_final_review(bank, tmp_path, monkey
     task = runner.store.tasks(batch_id)[0]
     monkeypatch.setenv("DATABASE_URL", bank.url)
     monkeypatch.setattr(ui, "get_vocabulary_runner", lambda _: runner)
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_questions_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_generation/vocabulary_questions_app.py"
     app = AppTest.from_file(str(page), default_timeout=20).run()
     assert not app.exception and not any(b.key in {"vocab-save", "vocab-resume"} for b in app.button)
     assert len(bank.snapshot(1)["existing"]) == 7
@@ -278,9 +278,9 @@ def test_repaired_bundle_is_auto_saved_after_final_review(bank, tmp_path, monkey
 
 
 def test_existing_prompt_draft_is_preserved_and_can_restore_new_defaults(bank, monkeypatch):
-    from topik_question_lab.step_02_planning.vocabulary_prompts import SYSTEM, REPAIR
+    from topik_question_lab.menus.vocabulary_generation.vocabulary_prompts import SYSTEM, REPAIR
     monkeypatch.setenv("DATABASE_URL", bank.url)
-    page = Path(__file__).resolve().parents[1] / "topik_question_lab/ui/vocabulary_questions_app.py"
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/vocabulary_generation/vocabulary_questions_app.py"
     app = AppTest.from_file(str(page), default_timeout=20)
     draft_key = f"vocab-prompt-draft-{bank.identity()}"
     prefix = f"vocab-prompt-{bank.identity()}"

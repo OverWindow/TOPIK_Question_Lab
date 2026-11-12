@@ -7,11 +7,11 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_vocabulary import SAMPLE
-from topik_question_lab.step_06_publication import vocabulary_transfer as transfer
+from topik_question_lab.menus.vocabulary_transfer import vocabulary_transfer as transfer
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/vocabulary_transfer_app.py"
+PAGE = ROOT / "topik_question_lab/menus/vocabulary_transfer/vocabulary_transfer_app.py"
 
 
 def stored(url):
@@ -270,7 +270,7 @@ def test_incompatible_target_is_rejected(banks, tmp_path, ddl):
 
 
 def test_unconfigured_page_and_main_menu_do_not_start_workers(tmp_path, monkeypatch):
-    from topik_question_lab.ui import runner_service
+    from topik_question_lab.common.generation import runner_service
 
     monkeypatch.setattr(transfer, "capture_vocabulary", lambda *a: pytest.fail("must not connect"))
     app = AppTest.from_file(str(PAGE)).run()
@@ -280,7 +280,7 @@ def test_unconfigured_page_and_main_menu_do_not_start_workers(tmp_path, monkeypa
     (tmp_path / "data/bulk_generation.db").touch()
     monkeypatch.setattr(runner_service, "get_runner", lambda *a: pytest.fail("must not recover a worker"))
     main = AppTest.from_file(str(ROOT / "topik_question_lab/main.py"))
-    main.switch_page("ui/vocabulary_transfer_app.py").run()
+    main.switch_page("menus/vocabulary_transfer/vocabulary_transfer_app.py").run()
     assert not main.exception and main.title[0].value == "서버에 단어장·문제 등록"
 
 

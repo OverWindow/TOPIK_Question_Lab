@@ -7,15 +7,13 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_direct_publication import seed_batch, local_package
-from topik_question_lab.step_06_publication.bank_editor import (
-    BankEditor, prepare_edit, item_metadata, media_ready, set_health, upload_media,
-)
-from topik_question_lab.step_06_publication.direct_publication import DirectPublicationService, PublicationBlocked, package_draft
-from topik_question_lab.step_06_publication.postgres_storage import PostgresQuestionBank, PublicationStateChanged
+from topik_question_lab.common.question_bank.bank_editor import BankEditor, prepare_edit, item_metadata, media_ready, set_health, upload_media
+from topik_question_lab.common.question_bank.direct_publication import DirectPublicationService, PublicationBlocked, package_draft
+from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank, PublicationStateChanged
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = ROOT / "topik_question_lab/ui/bank_editor_app.py"
+PAGE = ROOT / "topik_question_lab/menus/bank_editor/bank_editor_app.py"
 
 
 @pytest.fixture
@@ -320,12 +318,12 @@ def test_ui_edit_confirmation_save_and_delete_confirmation(bank):
 
 
 def test_registration_requires_acknowledgement_before_overwriting_bank_edit(bank, tmp_path):
-    from topik_question_lab.step_06_publication.registration_workflow import RegistrationWorkflow
+    from topik_question_lab.menus.registration.registration_workflow import RegistrationWorkflow
     snapshot = pick(bank)
     bank.save(prepare_edit(snapshot, edited(snapshot, explanation="PostgreSQL 편집본"), item_metadata(snapshot["item"])))
     workflow = RegistrationWorkflow(tmp_path, bank.url)
     plan = workflow.prepare("update", [snapshot["item"]["source_key"]], {"level": 4, "difficulty": 0.0, "items": {}})
-    app = AppTest.from_file(str(ROOT / "topik_question_lab/ui/postgres_publish_app.py"), default_timeout=25).run()
+    app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/registration/postgres_publish_app.py"), default_timeout=25).run()
     app.session_state["registration-plan"] = plan
     app.run()
     assert not app.exception
@@ -337,7 +335,7 @@ def test_registration_requires_acknowledgement_before_overwriting_bank_edit(bank
 
 def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
     from PIL import Image
-    from topik_question_lab.step_06_publication import media_cloud
+    from topik_question_lab.common.media import media_cloud
     checked = []
     class Store:
         bucket = "test-bucket"
@@ -368,7 +366,7 @@ def test_upload_image_decodes_and_verifies_cloud_bytes(monkeypatch):
 
 def test_generated_image_replaces_only_selected_choice(bank, tmp_path):
     from test_media_generation import FakeGoogle, settings
-    from topik_question_lab.step_06_publication.bank_media_generation import generate_replacements
+    from topik_question_lab.menus.bank_editor.bank_media_generation import generate_replacements
     seed_listening(bank, tmp_path)
     with bank.connect() as c:
         for n in range(1, 5):
@@ -390,8 +388,8 @@ def test_generated_image_replaces_only_selected_choice(bank, tmp_path):
 
 def test_generated_shared_audio_keeps_provenance_and_manual_upload_still_works(bank, tmp_path, monkeypatch):
     from test_media_generation import FakeGoogle, settings
-    from topik_question_lab.step_06_publication import bank_media_generation as generation
-    from topik_question_lab.step_06_publication.bank_editor import AUDIO_GENERATION_FIELDS
+    from topik_question_lab.menus.bank_editor import bank_media_generation as generation
+    from topik_question_lab.common.question_bank.bank_editor import AUDIO_GENERATION_FIELDS
     seed_listening(bank, tmp_path)
     other_audio = audio_binding(bank, [4])
     audio_binding(bank, [21, 22])

@@ -3,38 +3,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from topik_question_lab.step_05_export.exports import to_csv, to_json, to_txt
-from topik_question_lab.step_04_review.highlights import highlighted_html, parse_highlight_marker
+from topik_question_lab.menus.reading.exports import to_csv, to_json, to_txt
+from topik_question_lab.menus.reading.highlights import highlighted_html, parse_highlight_marker
 from topik_question_lab.common.listening_storage import ListeningStorage
 from topik_question_lab.common.models import EnrichmentPayload, GeneratedQuestion, ProviderResult, QuestionExample, Review
-from topik_question_lab.ui.navigation import next_sequence_item
-from topik_question_lab.step_02_planning.prompt_profiles import (
-    DEFAULT_PROVIDER_INSTRUCTIONS,
-    QUESTION_TYPE_PROFILES,
-    apply_provider_instruction,
-)
-from topik_question_lab.step_02_planning.prompts import build_enrichment_prompt, build_generation_prompt
-from topik_question_lab.step_03_generation.providers import (
-    DEFAULT_ACTIVE_PROVIDERS,
-    DEFAULT_PROVIDERS,
-    GENERATION_PRESETS,
-    call_provider,
-    can_gateway_call,
-    extract_json,
-    has_api_key,
-    has_deepseek_api_key,
-    dump_generation_presets,
-    generation_parameter_family,
-    generation_preset_prompt,
-    generation_request_parameters,
-    list_chatkhu_models,
-    manual_result,
-    parse_generation_presets,
-    provider_label,
-    resolve_generation_preset,
-)
+from topik_question_lab.common.ui.navigation import next_sequence_item
+from topik_question_lab.common.generation.prompt_profiles import DEFAULT_PROVIDER_INSTRUCTIONS, QUESTION_TYPE_PROFILES, apply_provider_instruction
+from topik_question_lab.common.generation.prompts import build_enrichment_prompt, build_generation_prompt
+from topik_question_lab.common.generation.providers import DEFAULT_ACTIVE_PROVIDERS, DEFAULT_PROVIDERS, GENERATION_PRESETS, call_provider, can_gateway_call, extract_json, has_api_key, has_deepseek_api_key, dump_generation_presets, generation_parameter_family, generation_preset_prompt, generation_request_parameters, list_chatkhu_models, manual_result, parse_generation_presets, provider_label, resolve_generation_preset
 from topik_question_lab.common.storage import Storage
-from topik_question_lab.step_04_review.validation import normalize_text, validate_generation_payload, validate_question
+from topik_question_lab.common.generation.validation import normalize_text, validate_generation_payload, validate_question
 
 
 def sample_question(stem: str = "비가 그친 후에 공원에 ( ).") -> dict:
@@ -240,7 +218,7 @@ def test_deepseek_v4_1_flash_uses_official_model_and_presets(monkeypatch):
 
     monkeypatch.delenv("CHATKHU_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
-    monkeypatch.setattr("topik_question_lab.step_03_generation.providers.DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setattr("topik_question_lab.common.generation.providers.DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setattr("openai.OpenAI", FakeClient)
     config = DEFAULT_PROVIDERS["deepseek_v4_1_flash"]
 

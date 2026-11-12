@@ -1,3 +1,4 @@
+from topik_question_lab.common.vocabulary import vocabulary_backup
 from dataclasses import replace
 import io
 import json
@@ -12,10 +13,11 @@ from streamlit.testing.v1 import AppTest
 
 from test_vocabulary import bank, PAGE
 from test_vocabulary_transfer import banks, stored, send, prepare
-from topik_question_lab.step_03_generation.media_provider import MediaSettings
-from topik_question_lab.step_06_publication import vocabulary_audio as audio, vocabulary_transfer as transfer
-from topik_question_lab.step_06_publication.vocabulary import search_vocabulary
-from topik_question_lab.ui import vocabulary_audio_ui as ui
+from topik_question_lab.common.media.media_provider import MediaSettings
+from topik_question_lab.common.vocabulary import vocabulary_audio as audio
+from topik_question_lab.menus.vocabulary_transfer import vocabulary_transfer as transfer
+from topik_question_lab.common.vocabulary.vocabulary import search_vocabulary
+from topik_question_lab.menus.vocabulary import vocabulary_audio_ui as ui
 
 
 @pytest.fixture
@@ -94,7 +96,7 @@ def test_schema_upgrade_preserves_words_and_backup_can_restore(bank, tmp_path, p
 
 def test_backup_failure_does_not_add_columns(bank, tmp_path, monkeypatch):
     before = stored(bank)
-    monkeypatch.setattr(transfer, "_backup", lambda *a: (_ for _ in ()).throw(OSError("synthetic-secret")))
+    monkeypatch.setattr(vocabulary_backup, "_backup", lambda *a: (_ for _ in ()).throw(OSError("synthetic-secret")))
     with pytest.raises(audio.VocabularyAudioError) as error:
         audio.prepare_audio_schema(bank, tmp_path)
     assert "synthetic-secret" not in str(error.value)

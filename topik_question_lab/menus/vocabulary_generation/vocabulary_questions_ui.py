@@ -28,7 +28,7 @@ def preview(questions, word, *, key):
     for q in questions:
         st.markdown(f"**{q['position']}. {TYPES[q['question_type']]}**")
         subjective = q["question_type"] == "sentence_blank" and mode == "주관식"
-        st.write(f"‘{word}’를 알맞게 바꾸어 빈칸을 채우세요." if subjective else q["instruction"])
+        st.write(f"‘{word}’를 사용해 빈칸을 채우세요. 필요한 경우 문맥에 맞게 형태를 바꾸세요." if subjective else q["instruction"])
         st.write(q["stem"])
         if not subjective:
             for index, choice in enumerate(q["choices"], 1):

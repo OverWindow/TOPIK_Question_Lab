@@ -31,7 +31,10 @@ def normalized(value: str) -> str:
 
 
 def conjugates(word: dict) -> bool:
-    pos = normalized(word.get("part_of_speech", "")).lower()
+    pos = normalized(word.get("part_of_speech") or "").lower()
+    # Unspecified entries can test usage without requiring conjugation exercises.
+    if not pos:
+        return False
     if pos in {"동사", "형용사", "verb", "adjective", "v", "v.", "adj", "adj."}:
         return True
     if pos in {"명사", "부사", "관형사", "대명사", "수사", "감탄사", "조사", "의존 명사", "의존명사",

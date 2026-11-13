@@ -8,4 +8,4 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Write-Host "설치 완료. .\run_topik_lab.ps1 로 앱을 실행하세요."
+Write-Host "설치 완료. start_topik_lab.cmd를 더블클릭하거나 .\start_topik_lab.cmd 로 앱을 실행하세요."

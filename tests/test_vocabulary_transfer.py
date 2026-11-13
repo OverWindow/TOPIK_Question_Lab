@@ -53,7 +53,7 @@ def test_preview_is_readonly_and_first_transfer_preserves_ids_and_other_tables(b
         c.execute("INSERT INTO public.unrelated VALUES ('preserve')")
     plan = prepare(source, target)
     assert plan.create_table and plan.target_count == 0
-    assert plan.effects == {"created": 4, "updated": 0, "unchanged": 0, "conflicts": [], "extra": 0}
+    assert plan.effects == {"created": 4, "updated": 0, "unchanged": 0, "deleted": 0}
     assert plan.snapshot.levels == {3: 1, 4: 1, 5: 1, 6: 1}
     assert stored(target) is None and not list(tmp_path.rglob("*"))
     result = transfer.execute_vocabulary_transfer(source, target, plan, tmp_path)
@@ -110,7 +110,7 @@ def test_schema_matches_legacy_catalog_and_sort_order(banks, reverse_order):
     assert all(column[2] for column in current["columns"])
 
 
-def test_updates_preserve_target_only_words_and_write_verified_backup(banks, tmp_path):
+def test_updates_delete_target_only_words_and_write_verified_backup(banks, tmp_path):
     source, target = banks
     send(source, target, tmp_path)
     with psycopg.connect(target) as c:
@@ -121,9 +121,9 @@ def test_updates_preserve_target_only_words_and_write_verified_backup(banks, tmp
         transfer._upsert(c, [{**extra, "vocabulary_id": 10, "korean": "원본 추가"}])
     before, seq = stored(target), sequence(target)
     result = send(source, target, tmp_path)
-    assert (result["created"], result["updated"], result["unchanged"], result["extra"]) == (1, 1, 3, 1)
-    assert stored(target)[-1] == extra
-    assert sequence(target)["last_value"] == 501 and not sequence(target)["is_called"]
+    assert (result["created"], result["updated"], result["unchanged"], result["deleted"]) == (1, 1, 3, 1)
+    assert stored(target) == stored(source)
+    assert sequence(target)["last_value"] == 11 and not sequence(target)["is_called"]
     backup = json.loads(Path(result["backup"]).read_text(encoding="utf-8"))
     assert backup["rows"] == before and backup["sequence"] == seq
     assert backup["content_hash"] == transfer.digest((backup["schema"], before, seq))
@@ -131,7 +131,7 @@ def test_updates_preserve_target_only_words_and_write_verified_backup(banks, tmp
 
 
 @pytest.mark.parametrize("change", ["korean='다른 단어'", "part_of_speech='동사'", "vocabulary_id=99"])
-def test_id_and_natural_key_conflicts_block_before_backup(banks, tmp_path, monkeypatch, change):
+def test_id_and_natural_key_differences_are_overwritten_with_backup(banks, tmp_path, change):
     source, target = banks
     send(source, target, tmp_path)
     with psycopg.connect(target) as c:
@@ -143,11 +143,32 @@ def test_id_and_natural_key_conflicts_block_before_backup(banks, tmp_path, monke
             c.execute("UPDATE topik_bank.vocabulary SET " + change + " WHERE vocabulary_id=1")
     before = stored(target)
     plan = prepare(source, target)
-    assert len(plan.effects["conflicts"]) == 1
-    monkeypatch.setattr(transfer, "_backup", lambda *a: pytest.fail("must reject before backup"))
-    with pytest.raises(transfer.TransferError, match="충돌"):
-        transfer.execute_vocabulary_transfer(source, target, plan, tmp_path)
-    assert stored(target) == before
+    result = transfer.execute_vocabulary_transfer(source, target, plan, tmp_path)
+    assert stored(target) == stored(source)
+    assert result["deleted"] == int(change == "vocabulary_id=99")
+    assert json.loads(Path(result["backup"]).read_text(encoding="utf-8"))["rows"] == before
+
+
+@pytest.mark.parametrize("same_headword", [False, True])
+def test_unique_word_and_pos_swaps_keep_ids_and_references(banks, tmp_path, same_headword):
+    source, target = banks
+    if same_headword:
+        with psycopg.connect(source) as c:
+            c.execute("UPDATE topik_bank.vocabulary SET korean='사과',part_of_speech='동사' WHERE vocabulary_id=2")
+    send(source, target, tmp_path)
+    with psycopg.connect(target) as c:
+        c.execute("CREATE TABLE public.word_reference(word_id BIGINT REFERENCES topik_bank.vocabulary)")
+        c.execute("INSERT INTO public.word_reference VALUES (1),(2)")
+        first, second = transfer._rows(c)[:2]
+        c.execute("UPDATE topik_bank.vocabulary SET part_of_speech='temporary-' || vocabulary_id WHERE vocabulary_id IN (1,2)")
+        c.execute("UPDATE topik_bank.vocabulary SET korean=%s,part_of_speech=%s WHERE vocabulary_id=1",
+                  (second['korean'], second['part_of_speech']))
+        c.execute("UPDATE topik_bank.vocabulary SET korean=%s,part_of_speech=%s WHERE vocabulary_id=2",
+                  (first['korean'], first['part_of_speech']))
+    assert send(source, target, tmp_path)["updated"] == 2
+    assert stored(target) == stored(source)
+    with psycopg.connect(target) as c:
+        assert c.execute("SELECT word_id FROM public.word_reference ORDER BY word_id").fetchall() == [(1,), (2,)]
 
 
 @pytest.mark.parametrize("side", ["source", "target", "schema"])

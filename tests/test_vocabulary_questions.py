@@ -104,12 +104,15 @@ def ready_task(bank, candidate=None):
                 "review": {"passed": True}, "reviewed_hash": digest(candidate)}}
 
 
-@pytest.mark.parametrize("conjugation,relation,count", [(True, True, 7), (True, False, 6), (False, True, 4), (False, False, 3)])
-def test_counts_and_subjective_answers(conjugation, relation, count):
-    word = {**WORD, "part_of_speech": "동사" if conjugation else "명사"}
+@pytest.mark.parametrize("pos,conjugation", [("동사", True), ("형용사", True), ("명사", False), ("부사", False)])
+@pytest.mark.parametrize("relation", [True, False])
+def test_counts_and_subjective_answers(pos, conjugation, relation):
+    word = {**WORD, "part_of_speech": pos}
     value = validate_bundle(bundle(conjugation=conjugation, relation=relation), word)
-    assert len(value.questions) == count
+    assert len(value.questions) == (6 if conjugation else 3) + int(relation)
     assert value.questions[0].accepted_answers == ["미뤘어요", "미루었어요"]
+    with pytest.raises(ValueError, match="필수 문항"):
+        validate_bundle(bundle(conjugation=not conjugation, relation=relation), word)
 
 
 @pytest.mark.parametrize("conjugation,relation", [(True, True), (True, False), (False, True), (False, False)])
@@ -160,7 +163,7 @@ def test_invalid_bundles_are_rejected(change):
 
 def test_unknown_pos_and_optional_review():
     with pytest.raises(ValueError, match="품사"):
-        validate_bundle(bundle(), {**WORD, "part_of_speech": ""})
+        validate_bundle(bundle(), {**WORD, "part_of_speech": "잘못 입력한 품사"})
     candidate, verdict, failed = apply_review(review(bundle(), failed=(7,)), bundle(), WORD)
     assert verdict["passed"] and not failed
     assert len(candidate["questions"]) == 6 and candidate["skipped_reason"]

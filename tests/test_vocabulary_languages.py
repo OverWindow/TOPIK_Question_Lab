@@ -94,7 +94,8 @@ def test_transfer_upgrade_migration_order_and_backup_restore(banks, tmp_path, po
     with psycopg.connect(source) as c:
         c.execute("UPDATE topik_bank.vocabulary SET chinese_simplified='',indonesian='' WHERE vocabulary_id=1")
     send(source, target, tmp_path)
-    assert stored(target)[0]["indonesian"] == "buah apel"
+    assert stored(target) == stored(source)
+    assert stored(target)[0]["indonesian"] == stored(target)[0]["chinese_simplified"] == ""
 
 
 def test_failed_language_upgrade_rolls_back(banks, tmp_path, monkeypatch):

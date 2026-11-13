@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import uuid
 
 from psycopg import sql
 from psycopg.types.json import Jsonb
@@ -29,19 +30,6 @@ def _with_languages(rows):
 
 def _with_audio(rows):
     return [{**dict.fromkeys(AUDIO_FIELDS), **row} for row in rows]
-
-
-def _effective_rows(source, target):
-    by_id = {row["vocabulary_id"]: row for row in target}
-    result = []
-    for row in source:
-        old = by_id.get(row["vocabulary_id"], {})
-        if "audio_storage_path" in row and not row["audio_storage_path"] and old.get("audio_storage_path"):
-            row = {**row, **{key: old[key] for key in AUDIO_FIELDS}}
-        row = {**row, **{key: old.get(key, "") for key in LANGUAGE_FIELDS
-                         if key in row and not row[key].strip()}}
-        result.append(row)
-    return result
 
 
 def _levels(rows):
@@ -75,6 +63,8 @@ class VocabularyTransferPlan:
     target_levels: dict
     upgrade_audio: bool = False
     upgrade_languages: bool = False
+    question_signature: str | None = None
+    deleted_questions: int = 0
 
 
 def capture_vocabulary(source_url):
@@ -95,27 +85,13 @@ def _effects(source, target):
     if source and LANGUAGE_FIELDS[0] in source[0]:
         target = _with_languages(target)
     by_id = {row["vocabulary_id"]: row for row in target}
-    preserved = sum("audio_storage_path" in row and not row["audio_storage_path"]
-                    and bool(by_id.get(row["vocabulary_id"], {}).get("audio_storage_path")) for row in source)
-    source = _effective_rows(source, target)
-    by_word = {(row["korean"], row["part_of_speech"]): row for row in target}
-    result = {"created": 0, "updated": 0, "unchanged": 0, "conflicts": []}
+    result = {"created": 0, "updated": 0, "unchanged": 0}
     for row in source:
         old = by_id.get(row["vocabulary_id"])
-        word = by_word.get((row["korean"], row["part_of_speech"]))
-        if old and (old["korean"], old["part_of_speech"]) != (row["korean"], row["part_of_speech"]):
-            reason = "같은 ID가 다른 단어·품사에 사용 중"
-        elif word and word["vocabulary_id"] != row["vocabulary_id"]:
-            reason = "같은 단어·품사의 ID가 다름"
-        else:
-            result["created" if old is None else "unchanged" if old == row else "updated"] += 1
-            continue
-        result["conflicts"].append({"ID": row["vocabulary_id"], "단어": row["korean"],
-                                    "품사": row["part_of_speech"] or "미지정", "사유": reason})
+        result["created" if old is None else "unchanged" if old == row else "updated"] += 1
     ids = {row["vocabulary_id"] for row in source}
-    result["extra"] = sum(row["vocabulary_id"] not in ids for row in target)
+    result["deleted"] = sum(row["vocabulary_id"] not in ids for row in target)
     if audio:
-        result["audio_preserved"] = preserved
         result["audio_created"] = sum(bool(row["audio_storage_path"]) and not by_id.get(row["vocabulary_id"], {}).get("audio_storage_path")
                                       for row in source)
         result["audio_updated"] = sum(bool(by_id.get(row["vocabulary_id"], {}).get("audio_storage_path"))
@@ -126,7 +102,15 @@ def _effects(source, target):
 
 def prepare_vocabulary_transfer(snapshot, target_url):
     with connection(target_url) as c:
-        return _prepare_vocabulary_transfer(c, snapshot)
+        plan = _prepare_vocabulary_transfer(c, snapshot)
+        if plan.effects["deleted"]:
+            from topik_question_lab.menus.vocabulary_transfer import vocabulary_question_transfer as questions
+            schema = questions._schema(c)
+            rows = questions._rows(c) if schema else []
+            ids = {row["vocabulary_id"] for row in snapshot.rows}
+            plan.question_signature = digest((schema, rows))
+            plan.deleted_questions = sum(row["vocabulary_id"] not in ids for row in rows)
+        return plan
 
 
 def _prepare_vocabulary_transfer(c, snapshot):
@@ -152,10 +136,24 @@ def _upsert(c, rows):
         fields += LANGUAGE_FIELDS
     names = sql.SQL(",").join(map(sql.Identifier, fields))
     updates = sql.SQL(",").join(sql.SQL("{}=EXCLUDED.{}").format(sql.Identifier(name), sql.Identifier(name))
-                              for name in fields[3:])
+                              for name in fields[1:])
     c.execute(sql.SQL("""INSERT INTO topik_bank.vocabulary ({names}) OVERRIDING SYSTEM VALUE
         SELECT {names} FROM jsonb_populate_recordset(NULL::topik_bank.vocabulary,%s)
         ON CONFLICT (vocabulary_id) DO UPDATE SET {updates}""").format(names=names, updates=updates), (Jsonb(rows),))
+
+
+def _sync_rows(c, rows, previous):
+    by_id = {row["vocabulary_id"]: row for row in previous}
+    ids = [row["vocabulary_id"] for row in rows]
+    c.execute("DELETE FROM topik_bank.vocabulary WHERE NOT(vocabulary_id=ANY(%s))", (ids,))
+    renamed = [row["vocabulary_id"] for row in rows if row["vocabulary_id"] in by_id
+               and (row["korean"], row["part_of_speech"]) !=
+                   (by_id[row["vocabulary_id"]]["korean"], by_id[row["vocabulary_id"]]["part_of_speech"])]
+    if renamed:
+        # Release unique word/POS keys before swaps; IDs and references stay intact.
+        c.execute("UPDATE topik_bank.vocabulary SET part_of_speech=%s || vocabulary_id::text WHERE vocabulary_id=ANY(%s)",
+                  ("__sync_" + uuid.uuid4().hex, renamed))
+    _upsert(c, [row for row in rows if by_id.get(row["vocabulary_id"]) != row])
 
 
 def _verify(c, expected, schema):
@@ -187,22 +185,29 @@ def execute_vocabulary_transfer(source_url, target_url, plan, root):
             if digest((schema, previous)) != plan.target_signature:
                 raise TransferError("미리보기 이후 대상 단어장이 변경되었습니다. 등록 내용을 다시 확인하세요.")
             effects = _effects(fresh.rows, previous)
-            if effects["conflicts"]:
-                raise TransferError("단어장 ID·단어·품사 충돌을 해결한 후 다시 확인하세요.")
-            normalized = _with_audio(previous) if _has_audio(fresh.schema) else previous
-            if _has_languages(fresh.schema):
-                normalized = _with_languages(normalized)
-            effective = _effective_rows(fresh.rows, normalized)
-            expected = {row["vocabulary_id"]: row for row in normalized}
-            expected.update({row["vocabulary_id"]: row for row in effective})
-            expected = sorted(expected.values(), key=lambda row: row["vocabulary_id"])
+            expected = fresh.rows
+            question_schema, previous_questions, remaining_questions = None, [], []
+            if plan.question_signature is not None:
+                from topik_question_lab.menus.vocabulary_transfer import vocabulary_question_transfer as questions
+                question_schema = questions._schema(c)
+                if question_schema:
+                    c.execute("LOCK TABLE topik_bank.vocabulary_questions IN SHARE ROW EXCLUSIVE MODE")
+                    question_schema = questions._schema(c)
+                    previous_questions = questions._rows(c)
+                if digest((question_schema, previous_questions)) != plan.question_signature:
+                    raise TransferError("미리보기 이후 대상 문제가 변경되었습니다. 등록 내용을 다시 확인하세요.")
+                ids = {row["vocabulary_id"] for row in fresh.rows}
+                remaining_questions = [row for row in previous_questions if row["vocabulary_id"] in ids]
             sequence = _sequence_state(c) if schema else None
             current_next = sequence["last_value"] + int(sequence["is_called"]) if sequence else 1
             next_id = max(current_next, max(row["vocabulary_id"] for row in expected) + 1)
             changes = (schema is None or plan.upgrade_audio or plan.upgrade_languages
-                       or effects["created"] or effects["updated"] or current_next != next_id)
+                       or effects["created"] or effects["updated"] or effects["deleted"] or current_next != next_id)
             if changes:
-                if schema:
+                if question_schema:
+                    backup = questions._backup(root, plan.target_identity, schema, previous, sequence,
+                                               question_schema, previous_questions, questions._sequence_state(c))
+                elif schema:
                     backup = _backup(root, plan.target_identity, schema, previous, sequence)
                 else:
                     c.execute("CREATE SCHEMA IF NOT EXISTS topik_bank")
@@ -213,21 +218,28 @@ def execute_vocabulary_transfer(source_url, target_url, plan, root):
                     apply_language_migration(c)
                 if _schema(c) != fresh.schema:
                     raise TransferError("원본 단어장이 지원하는 생성 구조와 다릅니다.")
-                by_id = {row["vocabulary_id"]: row for row in normalized}
-                _upsert(c, [row for row in effective if by_id.get(row["vocabulary_id"]) != row])
+                if question_schema:
+                    c.execute("DELETE FROM topik_bank.vocabulary_questions WHERE NOT(vocabulary_id=ANY(%s))",
+                              ([row["vocabulary_id"] for row in fresh.rows],))
+                _sync_rows(c, fresh.rows, previous)
                 # RESTART is transactional; setval would survive a later rollback.
                 if current_next != next_id:
                     c.execute(sql.SQL("ALTER TABLE topik_bank.vocabulary ALTER COLUMN vocabulary_id RESTART WITH {}")
                               .format(sql.Literal(next_id)))
             _verify(c, expected, fresh.schema)
+            if question_schema and questions._rows(c) != remaining_questions:
+                raise TransferError("연결 문제 삭제 결과가 예상 내용과 다릅니다.")
             commit_attempted = True
         committed = True
         with connection(target_url) as c:
             if _distinct_target(c, fresh.identity) != plan.target_identity:
                 raise TransferError("대상 DB가 변경되었습니다.")
             _verify(c, expected, fresh.schema)
+            if question_schema and questions._rows(c) != remaining_questions:
+                raise TransferError("연결 문제 삭제 결과가 예상 내용과 다릅니다.")
         return {"status": "verified", "created": effects["created"], "updated": effects["updated"],
-                "unchanged": effects["unchanged"], "extra": effects["extra"], "source_count": len(fresh.rows),
+                "unchanged": effects["unchanged"], "deleted": effects["deleted"],
+                "deleted_questions": plan.deleted_questions, "source_count": len(fresh.rows),
                 "target_count": len(expected), "levels": fresh.levels, "created_table": schema is None,
                 "backup": str(backup) if backup else None}
     except Exception as exc:

@@ -56,7 +56,7 @@ def test_preview_first_registration_and_unrelated_data(banks, tmp_path):
         c.execute("INSERT INTO public.unrelated VALUES ('preserve')")
     plan = prepare(source, target)
     assert plan.create_table and plan.vocabulary.create_table
-    assert plan.effects == {"created": 7, "updated": 0, "unchanged": 0, "conflicts": [], "extra": 0}
+    assert plan.effects == {"created": 7, "updated": 0, "unchanged": 0, "deleted": 0}
     assert state(target)["questions"] is None and not list(tmp_path.rglob("*"))
     result = transfer.execute_question_transfer(source, target, plan, tmp_path)
     assert result["status"] == "verified" and result["created"] == 7 and result["word_count"] == 1
@@ -104,7 +104,9 @@ def test_audio_language_columns_and_metadata_transfer_together(banks, tmp_path, 
         c.execute("UPDATE topik_bank.vocabulary SET " + ",".join(f"{key}=NULL" for key in vocabulary.AUDIO_FIELDS))
     before = state(target)
     assert send(source, target, tmp_path)["unchanged"] == 7
-    assert state(target) == before
+    assert state(target)["words"] == state(source)["words"]
+    assert state(target)["questions"] == before["questions"]
+    assert all(state(target)["words"][0][key] is None for key in vocabulary.AUDIO_FIELDS)
 
 
 def test_failed_upgrade_rolls_back_columns_and_migration_record(banks, tmp_path, monkeypatch):
@@ -158,7 +160,7 @@ def test_updates_preserve_target_ids_references_and_backup_both_tables(banks, tm
         assert c.execute("SELECT * FROM public.question_reference").fetchall() == [(100,)]
 
 
-def test_target_only_word_and_questions_are_preserved(banks, tmp_path):
+def test_target_only_word_and_questions_are_deleted_with_backup(banks, tmp_path):
     source, target = banks
     send(source, target, tmp_path)
     with psycopg.connect(target) as c:
@@ -169,17 +171,22 @@ def test_target_only_word_and_questions_are_preserved(banks, tmp_path):
              explanation,provider,model,generation_id,source_hash)
             SELECT 40,question_type,position,instruction,stem,choices,correct_answer,accepted_answers,
              explanation,provider,model,generation_id,source_hash FROM topik_bank.vocabulary_questions WHERE vocabulary_id=1""")
-    extra_before = [q for q in state(target)["questions"] if q["vocabulary_id"] == 40]
+    before = state(target)
     change_source(source)
     result = send(source, target, tmp_path)
-    assert result["extra"] == 7
-    assert [q for q in state(target)["questions"] if q["vocabulary_id"] == 40] == extra_before
+    assert result["deleted"] == 7 and result["deleted_words"] == 1
+    assert state(target)["words"] == state(source)["words"]
+    assert all(q["vocabulary_id"] == 1 for q in state(target)["questions"])
+    backup = json.loads(Path(result["backup"]).read_text(encoding="utf-8"))
+    assert backup["tables"]["vocabulary"]["rows"] == before["words"]
+    assert backup["tables"]["vocabulary_questions"]["rows"] == before["questions"]
     assert state(target)["word_sequence"]["last_value"] >= 41
 
 
 @pytest.mark.parametrize("change", ["missing", "partial", "stale", "invalid"])
-def test_invalid_bundles_are_excluded_with_reason(banks, change):
+def test_invalid_bundles_are_excluded_and_server_questions_are_removed(banks, tmp_path, change):
     source, target = banks
+    send(source, target, tmp_path)
     with psycopg.connect(source) as c:
         if change == "missing":
             c.execute("DELETE FROM topik_bank.vocabulary_questions")
@@ -190,23 +197,28 @@ def test_invalid_bundles_are_excluded_with_reason(banks, change):
         else:
             c.execute("""UPDATE topik_bank.vocabulary_questions SET choices='["a","a","a","a"]'::jsonb WHERE position=1""")
     snapshot = transfer.capture_questions(source)
-    assert not snapshot.questions and not snapshot.vocabulary.rows
+    assert not snapshot.questions and len(snapshot.vocabulary.rows) == 1
     assert len(snapshot.excluded) == 1 and snapshot.excluded[0]["사유"]
-    with pytest.raises(transfer.TransferError, match="유효한 문제"):
-        transfer.prepare_question_transfer(snapshot, target)
+    plan = transfer.prepare_question_transfer(snapshot, target)
+    assert plan.effects["deleted"] == 7
+    result = transfer.execute_question_transfer(source, target, plan, tmp_path)
+    assert result["deleted"] == 7 and result["word_count"] == 1
+    assert state(target)["words"] == state(source)["words"] and state(target)["questions"] == []
+    assert send(source, target, tmp_path)["backup"] is None
 
 
-def test_only_words_with_ready_bundles_are_transferred(banks, tmp_path):
+def test_all_words_and_only_ready_bundles_are_transferred(banks, tmp_path):
     source, target = banks
     with psycopg.connect(source) as c:
         vocabulary._upsert(c, [{**vocabulary._rows(c)[0], "vocabulary_id": 2, "korean": "미생성"}])
     result = send(source, target, tmp_path)
-    assert result["excluded"] == 1 and result["word_count"] == 1
-    assert [w["vocabulary_id"] for w in state(target)["words"]] == [1]
+    assert result["excluded"] == 1 and result["word_count"] == 2
+    assert [w["vocabulary_id"] for w in state(target)["words"]] == [1, 2]
+    assert all(q["vocabulary_id"] == 1 for q in state(target)["questions"])
 
 
 @pytest.mark.parametrize("collision", ["word", "extra_question", "preserved_meaning"])
-def test_conflicts_block_without_deleting_or_overwriting(banks, tmp_path, collision):
+def test_word_changes_extra_questions_and_empty_meanings_sync(banks, tmp_path, collision):
     source, target = banks
     send(source, target, tmp_path)
     if collision == "word":
@@ -223,10 +235,127 @@ def test_conflicts_block_without_deleting_or_overwriting(banks, tmp_path, collis
             c.execute("UPDATE topik_bank.vocabulary SET chinese_simplified='existing meaning'")
     before = state(target)
     plan = prepare(source, target)
-    assert plan.effects["conflicts"] or plan.vocabulary.effects["conflicts"]
-    with pytest.raises(transfer.TransferError, match="충돌"):
-        transfer.execute_question_transfer(source, target, plan, tmp_path)
+    result = transfer.execute_question_transfer(source, target, plan, tmp_path)
+    after = state(target)
+    assert after["words"] == state(source)["words"]
+    assert [transfer._content(q) for q in after["questions"]] == [transfer._content(q) for q in state(source)["questions"]]
+    assert [q["question_id"] for q in after["questions"]] == [q["question_id"] for q in before["questions"][:len(after["questions"])]]
+    assert result["deleted"] == int(collision == "extra_question")
+
+
+@pytest.fixture
+def extra_target(banks, tmp_path):
+    source, target = banks
+    send(source, target, tmp_path)
+    with psycopg.connect(target) as c:
+        extra = {**vocabulary._rows(c)[0], "vocabulary_id": 40, "korean": "서버 전용"}
+        vocabulary._upsert(c, [extra])
+        fields = ','.join(transfer.COPY_FIELDS)
+        values = ','.join(transfer.COPY_FIELDS[1:])
+        c.execute(f"INSERT INTO topik_bank.vocabulary_questions({fields}) "
+                  f"SELECT 40,{values} FROM topik_bank.vocabulary_questions WHERE vocabulary_id=1")
+    return source, target
+
+
+def test_words_only_sync_backs_up_and_deletes_children_of_removed_words(extra_target, tmp_path):
+    source, target = extra_target
+    before = state(target)
+    plan = vocabulary.prepare_vocabulary_transfer(vocabulary.capture_vocabulary(source), target)
+    assert plan.effects["deleted"] == 1 and plan.deleted_questions == 7
+    result = vocabulary.execute_vocabulary_transfer(source, target, plan, tmp_path)
+    assert result["deleted"] == 1 and result["deleted_questions"] == 7
+    after = state(target)
+    assert after["words"] == state(source)["words"]
+    assert after["questions"] == [q for q in before["questions"] if q["vocabulary_id"] == 1]
+    assert after["sequence"] == before["sequence"]
+    backup = json.loads(Path(result["backup"]).read_text(encoding="utf-8"))
+    assert backup["tables"]["vocabulary"]["rows"] == before["words"]
+    assert backup["tables"]["vocabulary_questions"]["rows"] == before["questions"]
+    assert vocabulary.execute_vocabulary_transfer(source, target,
+        vocabulary.prepare_vocabulary_transfer(vocabulary.capture_vocabulary(source), target), tmp_path)["backup"] is None
+
+
+@pytest.mark.parametrize("change", ["edit", "drop"])
+def test_words_only_sync_rejects_changed_question_preview(extra_target, tmp_path, change):
+    source, target = extra_target
+    plan = vocabulary.prepare_vocabulary_transfer(vocabulary.capture_vocabulary(source), target)
+    with psycopg.connect(target) as c:
+        c.execute("UPDATE topik_bank.vocabulary_questions SET explanation='최신 수정' WHERE vocabulary_id=40"
+                  if change == "edit" else "DROP TABLE topik_bank.vocabulary_questions")
+    before = state(target)
+    with pytest.raises(transfer.TransferError, match="대상 문제"):
+        vocabulary.execute_vocabulary_transfer(source, target, plan, tmp_path)
     assert state(target) == before
+
+
+@pytest.mark.parametrize("words_only", [False, True])
+@pytest.mark.parametrize("failure", ["backup", "verification", "reference"])
+def test_deletion_failures_roll_back_words_questions_and_sequences(extra_target, tmp_path, monkeypatch, words_only, failure):
+    source, target = extra_target
+    with psycopg.connect(target) as c:
+        c.execute("UPDATE topik_bank.vocabulary SET part_of_speech='명사' WHERE vocabulary_id=1")
+        if failure == "reference":
+            c.execute("CREATE TABLE public.question_reference(question_id BIGINT REFERENCES topik_bank.vocabulary_questions)")
+            c.execute("INSERT INTO public.question_reference SELECT question_id FROM topik_bank.vocabulary_questions "
+                      "WHERE vocabulary_id=40 AND position=1")
+    before = state(target)
+    if failure != "reference":
+        def fail(*args):
+            raise RuntimeError("synthetic-secret")
+        owner = vocabulary if words_only and failure == "verification" else transfer
+        monkeypatch.setattr(owner, "_backup" if failure == "backup" else "_verify", fail)
+    expected_error = "SQLSTATE 23503" if failure == "reference" else "롤백"
+    with pytest.raises(transfer.TransferError, match=expected_error) as error:
+        if words_only:
+            vocabulary.execute_vocabulary_transfer(source, target,
+                vocabulary.prepare_vocabulary_transfer(vocabulary.capture_vocabulary(source), target), tmp_path)
+        else:
+            send(source, target, tmp_path)
+    assert "synthetic-secret" not in str(error.value)
+    assert state(target) == before
+    if failure == "reference":
+        with psycopg.connect(target) as c:
+            assert c.execute("SELECT count(*) FROM public.question_reference").fetchone()[0] == 1
+
+
+def test_noun_correction_removes_conjugation_questions_but_keeps_remaining_ids(banks, tmp_path):
+    source, target = banks
+    send(source, target, tmp_path)
+    before = state(target)
+    with psycopg.connect(source) as c:
+        c.execute("UPDATE topik_bank.vocabulary SET korean='정세',part_of_speech='명사'")
+        c.execute("DELETE FROM topik_bank.vocabulary_questions WHERE position>3")
+        c.execute("UPDATE topik_bank.vocabulary_questions SET source_hash=%s",
+                  (transfer.digest(source_snapshot(vocabulary._rows(c)[0])),))
+    plan = prepare(source, target)
+    assert plan.vocabulary.effects["updated"] == 1 and plan.effects["deleted"] == 4
+    result = transfer.execute_question_transfer(source, target, plan, tmp_path)
+    after = state(target)
+    assert result["deleted"] == 4 and after["words"] == state(source)["words"]
+    assert [q["question_id"] for q in after["questions"]] == [q["question_id"] for q in before["questions"][:3]]
+    assert transfer.question_status({"word": source_snapshot(after["words"][0]), "existing": after["questions"]}) == "ready"
+
+
+def test_ui_previews_full_sync_deletions_and_overwrites_changed_pos(extra_target, monkeypatch):
+    source, target = extra_target
+    with psycopg.connect(target) as c:
+        c.execute("UPDATE topik_bank.vocabulary SET part_of_speech='명사' WHERE vocabulary_id=1")
+    monkeypatch.setenv("DATABASE_URL", source)
+    monkeypatch.setenv("QUESTION_BANK_LOCAL_DATABASE_URL", target)
+    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    app.radio[0].set_value("단어 연습문제").run()
+    app.button[0].click().run()
+    assert not app.exception and not app.error
+    word_counts = next(df.value for df in app.dataframe if "현재 단어" in df.value.columns)
+    question_counts = next(df.value for df in app.dataframe if "현재 문제" in df.value.columns)
+    assert word_counts.iloc[0]["변경"] == word_counts.iloc[0]["삭제"] == 1
+    assert question_counts.iloc[0]["삭제"] == 7
+    button = next(b for b in app.button if b.label == "선택 서버에 단어 문제 등록")
+    assert not button.disabled
+    button.click().run()
+    assert not app.exception and any("삭제 7" in notice.value for notice in app.success)
+    assert state(target)["words"] == state(source)["words"]
+    assert len(state(target)["questions"]) == 7
 
 
 @pytest.mark.parametrize("side", ["source", "target"])
@@ -373,7 +502,7 @@ def test_ui_partial_failure_retry_and_mode_change(banks, postgres_database_facto
     assert not any(b.label == "선택 서버에 단어 문제 등록" for b in app.button)
 
 
-def test_ui_exclusions_and_duplicate_destinations_block_execution(banks, monkeypatch):
+def test_ui_exclusions_allow_sync_and_duplicate_destinations_block_execution(banks, monkeypatch):
     source, target = banks
     for key, value in (("DATABASE_URL", source), ("QUESTION_BANK_LOCAL_DATABASE_URL", target),
                        ("QUESTION_BANK_PRODUCTION_DATABASE_URL", target)):
@@ -388,8 +517,9 @@ def test_ui_exclusions_and_duplicate_destinations_block_execution(banks, monkeyp
         c.execute("DELETE FROM topik_bank.vocabulary_questions WHERE position=1")
     app.multiselect[0].set_value(["로컬 서버"]).run()
     app.button[0].click().run()
-    assert not app.exception and any("유효한 문제 묶음" in e.value for e in app.error)
-    assert next(b for b in app.button if b.label == "선택 서버에 단어 문제 등록").disabled
+    assert not app.exception and not app.error
+    assert any("해당 단어의 기존 서버 문제도 삭제" in caption.value for caption in app.caption)
+    assert not next(b for b in app.button if b.label == "선택 서버에 단어 문제 등록").disabled
     assert state(target)["questions"] is None
 
 

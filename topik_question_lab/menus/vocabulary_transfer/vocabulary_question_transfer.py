@@ -99,12 +99,13 @@ def capture_questions(source_url):
         grouped = defaultdict(list)
         for question in _rows(c):
             grouped[question["vocabulary_id"]].append(question)
-        words, questions, excluded = [], [], []
-        for word in vocabulary._rows(c):
+        words, questions, excluded = vocabulary._rows(c), [], []
+        if not words:
+            raise TransferError("생성기 원본에 등록할 단어가 없습니다.")
+        for word in words:
             bundle = grouped[word["vocabulary_id"]]
             state = question_status({"word": source_snapshot(word), "existing": bundle})
             if state == "ready":
-                words.append(word)
                 questions.extend(bundle)
             else:
                 excluded.append({"ID": word["vocabulary_id"], "단어": word["korean"],
@@ -124,19 +125,8 @@ def _content(row):
 def _effects(snapshot, previous_words, previous):
     by_key = {_key(row): row for row in previous}
     source_keys = {_key(row) for row in snapshot.questions}
-    words = {row["vocabulary_id"]: row for row in snapshot.vocabulary.rows}
-    effective = vocabulary._effective_rows(snapshot.vocabulary.rows, previous_words)
-    conflicts = []
-    for word in effective:
-        if source_snapshot(word) != source_snapshot(words[word["vocabulary_id"]]):
-            conflicts.append({"ID": word["vocabulary_id"], "단어": word["korean"],
-                              "사유": "대상에 보존할 뜻이 문제의 원본 단어와 다름"})
-    extras = sorted({row["vocabulary_id"] for row in previous
-                     if row["vocabulary_id"] in words and _key(row) not in source_keys})
-    conflicts.extend({"ID": key, "단어": words[key]["korean"], "사유": "같은 단어에 원본에 없는 추가 문항이 있음"}
-                     for key in extras)
-    result = {"created": 0, "updated": 0, "unchanged": 0, "conflicts": conflicts,
-              "extra": sum(_key(row) not in source_keys for row in previous)}
+    result = {"created": 0, "updated": 0, "unchanged": 0,
+              "deleted": sum(_key(row) not in source_keys for row in previous)}
     for row in snapshot.questions:
         old = by_key.get(_key(row))
         result["created" if old is None else "unchanged" if _content(old) == _content(row) else "updated"] += 1
@@ -144,8 +134,6 @@ def _effects(snapshot, previous_words, previous):
 
 
 def prepare_question_transfer(snapshot, target_url):
-    if not snapshot.questions:
-        raise TransferError("등록할 유효한 문제 묶음이 없습니다. 제외 사유를 확인하세요.")
     with connection(target_url) as c:
         word_plan = vocabulary._prepare_vocabulary_transfer(c, snapshot.vocabulary)
         schema = _schema(c)
@@ -180,13 +168,6 @@ def _backup(root, identity, word_schema, words, word_sequence, schema, questions
 
 
 def _write_words(c, snapshot, schema, previous, next_id):
-    normalized = vocabulary._with_audio(previous) if vocabulary._has_audio(snapshot.schema) else previous
-    if vocabulary._has_languages(snapshot.schema):
-        normalized = vocabulary._with_languages(normalized)
-    effective = vocabulary._effective_rows(snapshot.rows, normalized)
-    expected = {row["vocabulary_id"]: row for row in normalized}
-    changed = [row for row in effective if expected.get(row["vocabulary_id"]) != row]
-    expected.update({row["vocabulary_id"]: row for row in effective})
     if schema is None:
         c.execute("CREATE SCHEMA IF NOT EXISTS topik_bank")
         c.execute(vocabulary.SCHEMA_FILE.read_text(encoding="utf-8"))
@@ -194,16 +175,24 @@ def _write_words(c, snapshot, schema, previous, next_id):
         vocabulary.apply_audio_migration(c)
     if vocabulary._has_languages(snapshot.schema) and not vocabulary._has_languages(schema):
         vocabulary.apply_language_migration(c)
-    vocabulary._upsert(c, changed)
+    vocabulary._sync_rows(c, snapshot.rows, previous)
     sequence = vocabulary._sequence_state(c)
     if sequence["last_value"] + int(sequence["is_called"]) != next_id:
         c.execute(sql.SQL("ALTER TABLE topik_bank.vocabulary ALTER COLUMN vocabulary_id RESTART WITH {}")
                   .format(sql.Literal(next_id)))
-    return sorted(expected.values(), key=lambda row: row["vocabulary_id"])
+    return snapshot.rows
+
+
+def _delete_extra_questions(c, rows):
+    keys = [{"vocabulary_id": row["vocabulary_id"], "position": row["position"]} for row in rows]
+    c.execute("""DELETE FROM topik_bank.vocabulary_questions q WHERE NOT EXISTS (
+        SELECT 1 FROM jsonb_to_recordset(%s) AS s(vocabulary_id bigint, position smallint)
+        WHERE s.vocabulary_id=q.vocabulary_id AND s.position=q.position)""", (Jsonb(keys),))
 
 
 def _write_questions(c, rows, previous):
-    expected = {_key(row): row for row in previous}
+    source_keys = {_key(row) for row in rows}
+    expected = {_key(row): row for row in previous if _key(row) in source_keys}
     changed = [row for row in rows if _key(row) not in expected or _content(expected[_key(row)]) != _content(row)]
     if changed:
         names = sql.SQL(",").join(map(sql.Identifier, COPY_FIELDS))
@@ -229,7 +218,7 @@ def _verify(c, snapshot, words, questions):
     if _schema(c) != snapshot.schema or _rows(c) != questions:
         raise TransferError("등록된 단어 문제 구조 또는 전체 내용이 예상 결과와 다릅니다.")
     sequence = _sequence_state(c)
-    if sequence["last_value"] + int(sequence["is_called"]) <= max(row["question_id"] for row in questions):
+    if sequence["last_value"] + int(sequence["is_called"]) <= max((row["question_id"] for row in questions), default=0):
         raise TransferError("단어 문제의 다음 자동 생성 번호를 확인하지 못했습니다.")
 
 
@@ -258,8 +247,6 @@ def execute_question_transfer(source_url, target_url, plan, root):
                 raise TransferError("미리보기 이후 대상 단어·문제가 변경되었습니다. 등록 내용을 다시 확인하세요.")
             effects = _effects(fresh, words, previous)
             word_effects = vocabulary._effects(fresh.vocabulary.rows, words)
-            if effects["conflicts"] or word_effects["conflicts"]:
-                raise TransferError("단어·문제 충돌을 해결한 후 다시 확인하세요.")
             word_sequence = vocabulary._sequence_state(c) if word_schema else None
             sequence = _sequence_state(c) if schema else None
             word_next = word_sequence["last_value"] + int(word_sequence["is_called"]) if word_sequence else 1
@@ -268,11 +255,15 @@ def execute_question_transfer(source_url, target_url, plan, root):
             next_question_id = max(question_next, max((row["question_id"] for row in previous), default=0) + 1)
             changes = (word_schema is None or schema is None or plan.vocabulary.upgrade_audio
                        or plan.vocabulary.upgrade_languages or word_effects["created"] or word_effects["updated"]
-                       or effects["created"] or effects["updated"] or next_id != word_next or next_question_id != question_next)
+                       or word_effects["deleted"] or effects["created"] or effects["updated"] or effects["deleted"]
+                       or next_id != word_next or next_question_id != question_next)
             if changes:
                 if word_schema or schema:
                     backup = _backup(root, plan.vocabulary.target_identity, word_schema, words, word_sequence,
                                      schema, previous, sequence)
+                if effects["deleted"]:
+                    # Remove child rows before deleting words; never use CASCADE.
+                    _delete_extra_questions(c, fresh.questions)
                 words = _write_words(c, fresh.vocabulary, word_schema, words, next_id)
                 if schema is None:
                     c.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
@@ -294,7 +285,8 @@ def execute_question_transfer(source_url, target_url, plan, root):
                 raise TransferError("대상 DB가 변경되었습니다.")
             _verify(c, fresh, words, questions)
         return {"status": "verified", "created": effects["created"], "updated": effects["updated"],
-                "unchanged": effects["unchanged"], "extra": effects["extra"], "source_count": len(fresh.questions),
+                "unchanged": effects["unchanged"], "deleted": effects["deleted"],
+                "deleted_words": word_effects["deleted"], "source_count": len(fresh.questions),
                 "target_count": len(questions), "word_count": len(fresh.vocabulary.rows), "excluded": len(fresh.excluded),
                 "backup": str(backup) if backup else None}
     except Exception as exc:

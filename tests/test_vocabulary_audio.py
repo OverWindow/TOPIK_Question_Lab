@@ -237,7 +237,7 @@ def test_legacy_target_upgrade_rolls_back_on_verification_failure(banks, tmp_pat
     assert stored(target) == before
 
 
-def test_source_without_audio_preserves_target_audio(banks, tmp_path, settings, media):
+def test_source_without_audio_clears_target_audio(banks, tmp_path, settings, media):
     source, target = banks
     audio.prepare_audio_schema(source, tmp_path)
     send(source, target, tmp_path)
@@ -246,11 +246,13 @@ def test_source_without_audio_preserves_target_audio(banks, tmp_path, settings, 
     with psycopg.connect(source) as c:
         c.execute("UPDATE topik_bank.vocabulary SET english='updated translation' WHERE vocabulary_id=1")
     plan = prepare(source, target)
-    assert plan.effects["audio_preserved"] == 1 and plan.effects["audio_updated"] == 0
+    assert plan.effects["audio_updated"] == 1
     send(source, target, tmp_path)
     after = word(target)
     assert after["english"] == "updated translation"
-    assert all(after[key] == before[key] for key in audio.AUDIO_FIELDS)
+    assert before['audio_storage_path']
+    assert all(after[key] is None for key in audio.AUDIO_FIELDS)
+    assert stored(target) == stored(source)
 
 
 def test_ui_prepares_and_generates_selected_and_filtered_batch(bank, tmp_path, settings, media, monkeypatch):

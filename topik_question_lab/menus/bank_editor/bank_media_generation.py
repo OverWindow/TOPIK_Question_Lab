@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from topik_question_lab.common.media.audio_composer import compose
 from topik_question_lab.common.media.media_generation import image_tasks, render_image
-from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaSettings, RequestRunner
+from topik_question_lab.common.media.media_provider import MediaClient, MediaSettings, RequestRunner
 from topik_question_lab.common.question_bank.bank_editor import prepare_edit, replacement_signature
 from topik_question_lab.common.question_bank.direct_publication import _hash, PublicationBlocked
 
@@ -24,11 +24,12 @@ def generate_replacements(plan, *, settings=None, client=None, progress=None):
         raise PublicationBlocked("자동 생성할 이미지의 설명·도표 데이터를 확인하세요.")
     settings = settings or MediaSettings.from_env()
     audio = any(r["kind"] == "audio" for r in pending)
-    remote = audio or any(t.get("model_chart") or not (t.get("banner_text") or t["chart_spec"]) for t in images.values())
+    remote_images = any(t.get("model_chart") or t.get("model_banner") or not (t.get("banner_text") or t["chart_spec"]) for t in images.values())
+    remote = audio or remote_images
     if remote:
-        settings.validate("listening" if audio else "reading")
+        settings.validate("listening" if audio else "reading", images=remote_images, delivery=False)
     owned_client = client is None and remote
-    client = GoogleMediaClient(settings) if owned_client else client
+    client = MediaClient(settings) if owned_client else client
     requests = RequestRunner(settings)
     speech_cache = {}
 
@@ -40,6 +41,8 @@ def generate_replacements(plan, *, settings=None, client=None, progress=None):
 
     replacements = []
     try:
+        if owned_client:
+            client.authenticate("listening" if audio else "reading", images=remote_images)
         for replacement in plan["replacements"]:
             if not replacement.get("generate"):
                 replacements.append(replacement)
@@ -59,8 +62,10 @@ def generate_replacements(plan, *, settings=None, client=None, progress=None):
                                   tts_style={"speakingRate": settings.speaking_rate, "stylePrompt": settings.style_prompt})
             else:
                 task = images[(replacement["visual_role"], replacement["option_number"])]
-                local = bool(task.get("banner_text") or task["chart_spec"]) and not task.get("model_chart")
+                local = bool(task.get("banner_text") or task["chart_spec"]) and not (task.get("model_chart") or task.get("model_banner"))
                 data = render_image(task, client) if local else requests.call("image", lambda: render_image(task, client))
+                if not local:
+                    generation.update(provider=settings.image_provider, model_name=settings.image_model)
             replacements.append({k: v for k, v in replacement.items() if k != "generate"} | {"data": data, "generation": generation})
     except Exception:
         raise PublicationBlocked("미디어 자동 생성에 실패했습니다. 생성 설정과 입력 내용을 확인한 뒤 다시 시도하세요. 기존 미디어는 변경하지 않았습니다.") from None

@@ -19,7 +19,7 @@ from topik_question_lab.common.generation.slot_topic_catalog import default_slot
 
 
 RECENT_TOPIC_LIMIT = 50
-TOPIC_STORE_SCHEMA_VERSION = 3
+TOPIC_STORE_SCHEMA_VERSION = 5
 TOPIC_METADATA_FIELDS = ("topic_id", "topic_domain", "topic_title", "topic_angle")
 TOPIC_FREE_READING_TYPES = {"grammar_blank", "similar_expression"}
 TOPIC_FREE_LISTENING_TYPES = {
@@ -181,6 +181,27 @@ class InsufficientTopicsError(ValueError):
 
 class SlotPoolConfigurationError(ValueError):
     pass
+
+
+@dataclass
+class TopicSource:
+    source: Literal["slot_pool", "global", "none"]
+    slot_numbers: list[int]
+    reference_slots: list[int]
+    pool: SlotTopicPool | None
+    topics: list[TopicDefinition]
+
+
+def topic_reference(section: str, question_type: str, slot_numbers: list[int]) -> tuple[str, list[int]]:
+    """Resolve displayed exam numbers to the shared pool's PBT references."""
+    if section not in {"reading", "listening"}:
+        raise ValueError(f"알 수 없는 영역입니다: {section}")
+    if question_type.startswith("ibt_"):
+        from .exam_profiles import profile_for
+        profile = profile_for(section, question_type)
+        mapping = dict(zip(profile.question_numbers, profile.topic_slots))
+        return profile.base_type_id, [mapping[number] for number in slot_numbers]
+    return question_type, list(slot_numbers)
 
 
 SCHEMA = """
@@ -486,6 +507,20 @@ class TopicStore:
             )
         return next(pool for pool in by_slot if pool is not None)
 
+    def resolve_source(self, section: str, question_type: str, slot_numbers: list[int]) -> TopicSource:
+        """Use the same source and candidates for inspection and generation."""
+        base_type, references = topic_reference(section, question_type, slot_numbers)
+        pool = self._pool_for_unit(section, references)
+        if pool is not None:
+            return TopicSource("slot_pool", list(slot_numbers), references, pool, [])
+        if not uses_topic_bank(section, base_type):
+            return TopicSource("none", list(slot_numbers), references, None, [])
+        topics = [
+            topic for topic in self.list_topics(active_only=True)
+            if base_type in (topic.reading_types if section == "reading" else topic.listening_types)
+        ]
+        return TopicSource("global", list(slot_numbers), references, None, topics)
+
     def list_topics(
         self,
         *,
@@ -695,18 +730,6 @@ class TopicStore:
         initial_domain_counts: Counter[str] | None = None,
         rng: random.Random | random.SystemRandom | None = None,
     ) -> list[TopicBrief]:
-        if question_type.startswith("ibt_"):
-            from .exam_profiles import profile_for
-            profile = profile_for(section, question_type)
-            slot_map = dict(zip(profile.question_numbers, profile.topic_slots))
-            plans = self.select_plan(
-                section=section, question_type=profile.base_type_id,
-                units=[(key, [slot_map[n] for n in slots]) for key, slots in units],
-                forbidden_pairs=forbidden_pairs, initial_pair_counts=initial_pair_counts,
-                forbidden_topic_ids=forbidden_topic_ids, initial_domain_counts=initial_domain_counts, rng=rng,
-            )
-            original = dict(units)
-            return [brief.model_copy(update={"slot_numbers": original[brief.unit_key]}) for brief in plans]
         if section not in {"reading", "listening"}:
             raise ValueError(f"알 수 없는 영역입니다: {section}")
 
@@ -716,25 +739,18 @@ class TopicStore:
         for pair in externally_forbidden_pairs:
             external_pair_counts[pair] = max(1, external_pair_counts[pair])
         unavailable_topic_ids = set(forbidden_topic_ids or set())
-        unit_pools = [
-            (unit_key, slot_numbers, self._pool_for_unit(section, slot_numbers))
+        sources = [
+            (unit_key, self.resolve_source(section, question_type, slot_numbers))
             for unit_key, slot_numbers in units
         ]
+        unit_pools = [(key, source.slot_numbers, source.pool) for key, source in sources]
         global_units = [
-            (unit_key, slot_numbers)
-            for unit_key, slot_numbers, pool in unit_pools
-            if pool is None and uses_topic_bank(section, question_type)
+            (key, source.slot_numbers) for key, source in sources if source.source == "global"
         ]
 
         global_by_key: dict[str, TopicBrief] = {}
         if global_units:
-            topics = [
-                topic
-                for topic in self.list_topics(active_only=True)
-                if question_type in (
-                    topic.reading_types if section == "reading" else topic.listening_types
-                )
-            ]
+            topics = next(source.topics for _, source in sources if source.source == "global")
             unavailable_pairs = self.recent_pairs() | externally_forbidden_pairs
             available_topics = [
                 topic

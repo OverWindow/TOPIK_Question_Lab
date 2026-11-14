@@ -32,7 +32,7 @@ from topik_question_lab.common.generation.providers import CHATKHU_BASE_URL, CHA
 from topik_question_lab.common.generation.providers import BIZROUTER_PREFIX, BIZROUTER_WEB_URL, SERVICE_LABELS, bizrouter_capabilities, has_bizrouter_api_key, parse_bizrouter_models, provider_model
 from topik_question_lab.common.ui.provider_ui import generation_service, render_bizrouter_sync, service_providers
 from topik_question_lab.common.storage import Storage
-from topik_question_lab.common.generation.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore, uses_topic_bank
+from topik_question_lab.common.generation.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore
 from topik_question_lab.common.ui.topic_ui import invalidate_topic_planner, render_topic_planner
 from topik_question_lab.common.generation.validation import validate_question
 
@@ -1178,25 +1178,17 @@ elif stage == "4. 문제 생성":
     st.caption(f"선택 모델 {len(selected_providers)}개 · 예상 API 요청 {sum(can_gateway_call(p) for p in selected_providers)}회")
     topic_planner_key = f"reading-{selected_type_id}"
     topic_plan_providers = list(dict.fromkeys([preview_provider, *selected_providers]))
-    if uses_topic_bank("reading", selected_type_id) or topic_store.has_active_slot_pool(
-        "reading", selected_type_profile.question_numbers
-    ):
-        topic_plans, topic_plan_error = render_topic_planner(
-            topic_store,
-            section="reading",
-            question_type=selected_type_id,
-            providers=topic_plan_providers,
-            question_numbers=selected_type_profile.question_numbers,
-            count=expected_count,
-            shared=selected_type_profile.shared_passage,
-            key_prefix=topic_planner_key,
-            provider_label=provider_label,
-        )
-    else:
-        invalidate_topic_planner(topic_planner_key)
-        topic_plans = {provider: [] for provider in topic_plan_providers}
-        topic_plan_error = ""
-        st.info("이 유형은 번호별 지정 풀이 없어서 별도 지문 소재를 배정하지 않습니다.")
+    topic_plans, topic_plan_error = render_topic_planner(
+        topic_store,
+        section="reading",
+        question_type=selected_type_id,
+        providers=topic_plan_providers,
+        question_numbers=selected_type_profile.question_numbers,
+        count=expected_count,
+        shared=selected_type_profile.shared_passage,
+        key_prefix=topic_planner_key,
+        provider_label=provider_label,
+    )
     preview_topics = topic_plans.get(preview_provider, [])
     system_prompt, user_prompt = generation_prompts_for(preview_provider, preview_topics)
     with st.expander("이번 실행 프롬프트"):
@@ -1349,6 +1341,9 @@ elif stage == "5. 검수·비교":
                 if question.exam_format == "ibt" and material_kind == "material_combo_chart":
                     st.caption("그래프 원본 수치입니다. 이미지는 음원·이미지 생성 단계에서 만들며, 등록 후 문제 편집 화면에서 확인할 수 있습니다.")
                     st.json(material.get("chart_spec"))
+                elif question.exam_format == "ibt" and material_kind == "material_banner":
+                    st.caption("배너 원문입니다. 음원·이미지 생성 단계에서 이 문구로 광고 배너를 만듭니다. 등록 후 문제 편집 화면에서 이미지의 문구가 원문과 일치하는지 확인하세요.")
+                    st.text(material.get("text", ""))
                 else:
                     preview = render_banner(material.get("text", "")) if material_kind == "material_banner" else render_chart(ChartSpec.model_validate(material.get("chart_spec")))
                     st.image(preview, caption="생성 자료 미리보기", width=640)
@@ -1356,9 +1351,7 @@ elif stage == "5. 검수·비교":
                 st.warning(f"자료 이미지 확인 필요: {exc}")
 
         topic_values = [getattr(question, field) for field in TOPIC_METADATA_FIELDS]
-        slot_uses_topics = uses_topic_bank("reading", selected_type_id) or topic_store.has_active_slot_pool(
-            "reading", [question.type_slot]
-        )
+        slot_uses_topics = topic_store.resolve_source("reading", selected_type_id, [question.type_slot]).source != "none"
         if any(topic_values) and not all(value.strip() for value in topic_values) and not slot_uses_topics:
             question = question.model_copy(
                 update={field: "" for field in TOPIC_METADATA_FIELDS}

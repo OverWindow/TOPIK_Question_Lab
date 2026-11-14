@@ -230,8 +230,8 @@ def test_empty_service_catalog_keeps_existing_batch_controls(tmp_path, monkeypat
     store.set_setting("generation_service", "bizrouter")
     app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
-    assert any(item.label == "실패·미완료 유형 재시도" for item in app.button)
-    assert not any(item.label == "읽기 50문제 생성" for item in app.button)
+    assert any(item.label == "이어서 완료" for item in app.button)
+    assert not any((item.key or "").startswith("bulk-start-") for item in app.button)
 
 
 def test_new_bulk_plan_uses_refreshed_catalog(tmp_path, monkeypatch):
@@ -241,6 +241,7 @@ def test_new_bulk_plan_uses_refreshed_catalog(tmp_path, monkeypatch):
     store.set_setting("bizrouter_models", json.dumps([catalog()]))
     store.set_setting("generation_service", "bizrouter")
     app = AppTest.from_file(str(ROOT / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
+    app.radio(key="bulk-section").set_value("reading").run()
     assert not app.exception
     assert app.session_state["bulk-plan-reading"][1][0]["model_capabilities"]["max_output_tokens"] == 8192
     store.set_setting("bizrouter_models", json.dumps([catalog(max_output_tokens=4096)]))

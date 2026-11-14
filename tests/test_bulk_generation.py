@@ -274,13 +274,19 @@ def test_bulk_db_and_question_membership_round_trip_in_backup(tmp_path, monkeypa
     assert storage_for(destination, "reading", "grammar_blank").generation_receipt(batch_id)["count"] == 2
 
 
-def test_topic_usage_retry_is_idempotent(tmp_path):
+@pytest.mark.parametrize(("type_id", "slot", "source"), [
+    ("sentence_insertion", 41, "global"),
+    ("main_topic", 35, "slot_pool"),
+])
+def test_topic_usage_retry_is_idempotent(tmp_path, type_id, slot, source):
     store = TopicStore(tmp_path / "topics.db")
-    brief = store.select_plan(section="reading", question_type="main_topic", units=[("item-1", [31])])[0]
-    kwargs = dict(section="reading", question_type="main_topic", provider="test", model="test", run_id=1, usage_key="batch:main_topic")
+    brief = store.select_plan(section="reading", question_type=type_id, units=[("item-1", [slot])])[0]
+    assert brief.source == source
+    kwargs = dict(section="reading", question_type=type_id, provider="test", model="test", run_id=1, usage_key=f"batch:{type_id}")
     store.record_usages([brief], **kwargs)
     store.record_usages([brief], **kwargs)
-    assert len(store.list_usages()) == 1
+    assert len(store.list_usages()) == (1 if source == "global" else 0)
+    assert len(store.list_slot_pool_usages()) == (1 if source == "slot_pool" else 0)
 
 
 def test_publication_collects_auto_approved_batch_and_respects_rejection(tmp_path, monkeypatch):
@@ -308,9 +314,12 @@ def test_bulk_page_renders_and_disables_unprepared_execution(tmp_path, monkeypat
     root = Path(__file__).resolve().parents[1]
     app = AppTest.from_file(str(root / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["듣기 50문제", "읽기 50문제"]
+    assert app.radio(key="bulk-section").value == "listening"
+    assert not next(e for e in app.expander if e.label == "고급 설정").proto.expanded
     assert next(widget for widget in app.selectbox if widget.label == "생성 프리셋").value == "precise_generation"
-    assert all(button.disabled for button in app.button if button.label in {"듣기 50문제 생성", "읽기 50문제 생성"})
+    assert app.button(key="bulk-start-listening").disabled
+    app.radio(key="bulk-section").set_value("reading").run()
+    assert app.button(key="bulk-start-reading").disabled
     picker = next(widget for widget in app.selectbox if widget.label == "모델")
     picker.set_value(("claude", "claude-haiku-4-5-20251001")).run()
     assert not app.exception
@@ -346,16 +355,52 @@ def test_bulk_page_runs_to_completion_and_remembers_common_preset(tmp_path, monk
     app = AppTest.from_file(str(root / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"), default_timeout=30).run()
     assert not app.exception
     assert next(widget for widget in app.selectbox if widget.label == "생성 프리셋").value == "fast_draft"
+    app.radio(key="bulk-section").set_value("reading").run()
     next(widget for widget in app.checkbox if widget.label == "음원·이미지 생성 및 DB 자동 등록").uncheck().run()
-    next(button for button in app.button if button.label == "읽기 50문제 생성").click().run()
+    app.button(key="bulk-start-reading").click().run()
     assert not app.exception
     wait(runner)
     app.run()
     assert not app.exception
     assert any("검수 완료(자동 승인)" in message.value for message in app.success)
-    assert not next(button for button in app.button if button.label == "읽기 50문제 생성").disabled
-    assert next(button for button in app.button if button.label == "실패·미완료 유형 재시도").disabled
+    assert not app.button(key="bulk-start-reading").disabled
+    assert not app.button(key="bulk-resume").disabled
+    assert app.button(key="bulk-resume").label == "이어서 완료"
     assert len(calls) == 18
+
+
+@pytest.mark.parametrize("exam_format,total", [("pbt", 50), ("ibt", 30)])
+@pytest.mark.parametrize("section", ["reading", "listening"])
+def test_one_click_starts_selected_exam_with_media_registration(monkeypatch, exam_format, total, section):
+    from types import SimpleNamespace
+    import topik_question_lab.common.generation.bulk_generation as bulk
+    import topik_question_lab.common.generation.runner_service as runners
+    import topik_question_lab.common.media.media_generation as media
+
+    starts, preflights = [], []
+    config = {"settings": {}, "target": "synthetic-target"}
+    store = SimpleNamespace(settings=lambda: {}, set_setting=lambda *args: None, batches=lambda: [])
+    runner = SimpleNamespace(store=store, thread=None, recover_idle=lambda: None,
+                             start=lambda snapshots, **kwargs: starts.append((snapshots, kwargs)) or "new-batch")
+    monkeypatch.setattr(runners, "get_runner", lambda _: runner)
+    monkeypatch.setattr(bulk, "model_options", lambda _: [("deepseek_v4_1_flash", "deepseek-flash")])
+    monkeypatch.setattr(bulk, "prepare_batch", lambda root, selected, provider, model, preset, exam:
+                        ([{"slots": [1], "type_id": "synthetic", "count": 1, "approved_count": 1,
+                           "difficulty": "standard", "section": selected, "exam_format": exam}], []))
+    monkeypatch.setattr(media, "preflight", lambda root, settings, selected, url, exam:
+                        preflights.append((selected, exam)) or config)
+    page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"
+    app = AppTest.from_file(str(page), default_timeout=30).run()
+    app.radio(key="bulk-exam-format").set_value(exam_format)
+    app.radio(key="bulk-section").set_value(section).run()
+    button = app.button(key=f"bulk-start-{section}")
+    assert f"{total}문제 생성하고 등록" in button.label
+    button.click().run()
+    assert not app.exception
+    assert preflights == [(section, exam_format)] and len(starts) == 1
+    assert starts[0][0][0]["section"] == section
+    assert starts[0][0][0]["exam_format"] == exam_format
+    assert starts[0][1] == {"media_config": config}
 
 
 def test_generation_batch_review_filter_shows_only_selected_batch(tmp_path, monkeypatch):

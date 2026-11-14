@@ -32,7 +32,6 @@ navigation = st.navigation(
             st.Page(menu_page("storage_overview_app.py"), title="문제 저장 현황", icon="📊"),
             st.Page(menu_page("bank_editor_app.py"), title="PostgreSQL 문제 관리", icon="✏️"),
             st.Page(menu_page("topic_bank_app.py"), title="소재 은행", icon="🗂️"),
-            st.Page(menu_page("postgres_publish_app.py"), title="문제 등록·세트 만들기", icon="📤"),
             st.Page(menu_page("bank_transfer_app.py"), title="서버에 문제 등록", icon="📡"),
             st.Page(menu_page("backup_restore_app.py"), title="백업·복원", icon="💾"),
         ],
@@ -50,6 +49,6 @@ navigation = st.navigation(
     position="sidebar",
     expanded=True,
 )
-if navigation.title not in {"문제 저장 현황", "문제 등록·세트 만들기", "서버에 문제 등록", "PostgreSQL 문제 관리", "TOPIK II 단어장", "단어 연습문제 생성", "단어 문제 관리", "서버에 단어장·문제 등록", "한국어 사전 등록", "정리 작업"} and (ROOT / "data/bulk_generation.db").exists():
+if navigation.title not in {"문제 저장 현황", "서버에 문제 등록", "PostgreSQL 문제 관리", "TOPIK II 단어장", "단어 연습문제 생성", "단어 문제 관리", "서버에 단어장·문제 등록", "한국어 사전 등록", "정리 작업"} and (ROOT / "data/bulk_generation.db").exists():
     get_runner(str(ROOT)).recover_idle()
 navigation.run()

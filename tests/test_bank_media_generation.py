@@ -5,11 +5,10 @@ import shutil
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from PIL import Image
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from test_media_generation import FakeGoogle, seed_media, settings
+from test_media_generation import FakeGoogle, assert_image_color, seed_media, settings
 from topik_question_lab.menus.bank_editor import bank_media_generation as generation
 from topik_question_lab.common.question_bank.bank_editor import BankEditor, item_metadata, prepare_edit, upload_media
 from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked, expected_item, package_draft, _hash
@@ -57,8 +56,9 @@ def generate(prepared, client=None):
                                             client=client or FakeGoogle())
 
 
-def test_selected_image_and_manual_upload_are_prepared_without_writes(snapshot, monkeypatch):
-    current = snapshot()
+@pytest.mark.parametrize("exam_format", ["pbt", "ibt"])
+def test_selected_image_and_manual_upload_are_prepared_without_writes(snapshot, monkeypatch, exam_format):
+    current = snapshot(exam_format=exam_format)
     old = deepcopy(current)
     upload = dict(kind="image", visual_role="choice", option_number=2, data=FakeGoogle().image("upload"))
     question = deepcopy(current["item"]["content_json"])
@@ -72,8 +72,8 @@ def test_selected_image_and_manual_upload_are_prepared_without_writes(snapshot, 
     assert result["replacements"][1] == upload
     generated = result["replacements"][0]
     assert "generate" not in generated
-    with Image.open(io.BytesIO(generated["data"])) as image:
-        assert image.format == "PNG"
+    assert client.image_colors == [exam_format == "ibt"]
+    assert_image_color(generated["data"], color=exam_format == "ibt")
     assert result["affected"] == [current["item"]["item_id"]]
     assert current == old
 
@@ -111,9 +111,9 @@ def test_generated_image_cannot_follow_changed_description(snapshot):
 
 def test_material_chart_uses_local_renderer_without_google(snapshot, monkeypatch):
     prepared = plan(snapshot("reading", 10), [dict(kind="image", visual_role="material", option_number=1, generate=True)])
-    monkeypatch.setattr(generation, "GoogleMediaClient", lambda *a: pytest.fail("PBT chart must render locally"))
+    monkeypatch.setattr(generation, "MediaClient", lambda *a: pytest.fail("PBT chart must render locally"))
     result = generation.generate_replacements(prepared)
-    assert result["replacements"][0]["data"].startswith(b"\x89PNG")
+    assert_image_color(result["replacements"][0]["data"], color=False)
 
 
 @pytest.mark.parametrize("exam_format,slot", [("pbt", 21), ("ibt", 15)])
@@ -129,7 +129,7 @@ def test_shared_audio_uses_edited_script_and_reuses_repeated_speech(snapshot, mo
                 speech(turn["speaker"], turn["text"])
         path.write_bytes(b"test-mp3")
     monkeypatch.setattr(generation, "compose", compose)
-    monkeypatch.setattr(generation.MediaSettings, "validate", lambda *a: None)
+    monkeypatch.setattr(generation.MediaSettings, "validate", lambda *a, **kw: None)
     client = FakeGoogle()
     result = generate(prepared, client)
     assert scripts[0]["positions"] == [slot, slot + 1]
@@ -161,6 +161,7 @@ def test_ibt_chart_replacement_uses_image_model(snapshot, section, slot, role, n
     ready = generate(pending, client)
     assert len(client.images) == len(client.chart_prompts) == 1
     assert ready["replacements"][0]["option_number"] == number
+    assert_image_color(ready["replacements"][0]["data"], color=True)
 
 
 def test_generated_audio_upload_preserves_metadata_and_validates_bytes(monkeypatch):
@@ -211,7 +212,9 @@ def test_ui_generation_preview_does_not_repeat_on_rerun_and_requires_save(editor
         calls.append(prepared)
         return real_generate(prepared, settings=settings(tts_delay=0, image_delay=0, retries=0), client=client)
     monkeypatch.setattr(generation, "generate_replacements", fake_generate)
-    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    app = AppTest.from_file(str(PAGE), default_timeout=20)
+    app.session_state["bank-editor-open-item"] = editor.load("")["item"]["item_id"]
+    app.run()
     assert not app.exception and not app.error
     assert len(app.get("file_uploader")) == 5
     next(r for r in app.radio if r.label == "선지 1 이미지 교체 방식").set_value("자동 생성")
@@ -236,7 +239,9 @@ def test_ui_generation_preview_does_not_repeat_on_rerun_and_requires_save(editor
 
 def test_ui_failed_generation_keeps_edits_and_never_saves(editor_ui, monkeypatch):
     monkeypatch.setattr(generation, "generate_replacements", Mock(side_effect=PublicationBlocked("생성 실패")))
-    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    app = AppTest.from_file(str(PAGE), default_timeout=20)
+    app.session_state["bank-editor-open-item"] = editor_ui.load("")["item"]["item_id"]
+    app.run()
     next(r for r in app.radio if r.label == "선지 1 이미지 교체 방식").set_value("자동 생성")
     next(t for t in app.text_area if t.label == "해설").set_value("보존할 수정 내용")
     next(b for b in app.button if b.label == "변경 내용 확인").click().run()
@@ -257,7 +262,9 @@ def test_ui_manual_upload_keeps_preview_and_does_not_generate(editor_ui, monkeyp
     monkeypatch.setattr(st, "file_uploader", uploaded)
     generate_mock = Mock(side_effect=AssertionError("manual uploads must not generate"))
     monkeypatch.setattr(generation, "generate_replacements", generate_mock)
-    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    app = AppTest.from_file(str(PAGE), default_timeout=20)
+    app.session_state["bank-editor-open-item"] = editor_ui.load("")["item"]["item_id"]
+    app.run()
     next(b for b in app.button if b.label == "변경 내용 확인").click().run()
     assert not app.exception and not app.error and len(app.get("imgs")) == 1
     generate_mock.assert_not_called()

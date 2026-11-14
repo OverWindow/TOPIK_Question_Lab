@@ -6,7 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.local_script_runner import LocalScriptRunner
 
-from topik_question_lab.menus.bulk_generation.bulk_progress import completed_batches, needs_progress_refresh
+from topik_question_lab.menus.bulk_generation.bulk_progress import batch_review_details, completed_batches, needs_progress_refresh
 
 
 PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"
@@ -142,6 +142,55 @@ def test_idle_page_has_no_timer_and_keeps_snapshot_until_manual_refresh(progress
     assert not app.exception and len(progress_page.calls) == 2
 
 
+@pytest.mark.parametrize("state", ["text_only", "text_failed", "media_failed", "media_completed"])
+def test_one_resume_button_finishes_remaining_work(progress_page, monkeypatch, state):
+    import json
+    import topik_question_lab.common.media.media_generation as media
+
+    app, batch = progress_page.app, progress_page.batches[0]
+    config = {"settings": {"tts_delay": 9}, "target": "original-target"}
+    calls, preflights = [], []
+    progress_page.data["batches"][0]["coverage"]["images_ready"] = 0
+    batch["status"] = "partial" if state == "text_failed" else "succeeded"
+    if state.startswith("media"):
+        batch.update(media_config=json.dumps(config), next_attempt_at=0,
+                     pipeline_status="succeeded" if state == "media_completed" else "failed")
+        progress_page.runner.store.media_tasks = lambda _: []
+    monkeypatch.setattr(media, "preflight", lambda root, settings, section, url, exam:
+                        preflights.append((section, exam)) or config)
+    progress_page.runner.start = lambda **kwargs: calls.append(kwargs)
+    app.button(key="bulk-refresh-registration").click().run()
+    assert not app.exception and app.button(key="bulk-resume").label == "이어서 완료"
+    assert not any(b.key in {"bulk-media", "bulk-open-publication"} for b in app.button)
+    app.button(key="bulk-resume").click().run()
+    assert not app.exception
+    assert calls == [{"batch_id": "reading", "media_config": config}]
+    assert preflights == ([] if state.startswith("media") else [("reading", batch.get("exam_format", "pbt"))])
+
+
+def test_completed_set_opens_server_transfer_with_selection(progress_page, monkeypatch):
+    from topik_question_lab.common.paths import PACKAGE_ROOT
+    from topik_question_lab.common.ui.navigation import menu_page
+    import topik_question_lab.menus.bank_transfer.bank_transfer as transfer
+
+    reads = []
+    monkeypatch.setenv("DATABASE_URL", "synthetic-source")
+    monkeypatch.setattr(transfer, "list_source_sets", lambda url: reads.append(url) or [
+        {"set_id": "reading", "section": "reading", "model": "deepseek-flash", "sequence": 1, "status": "reviewed", "items": 50}])
+    import topik_question_lab.maintenance.startup as startup
+    monkeypatch.setattr(startup, "prepare_local_database", lambda *args: None)
+    app = AppTest.from_file(str(PACKAGE_ROOT / "main.py"), default_timeout=30)
+    app.switch_page(menu_page("bulk_generation_app.py").relative_to(PACKAGE_ROOT).as_posix()).run()
+    assert not app.exception
+    app.button(key="bulk-transfer").click().run()
+    assert not app.exception
+    assert app.title[0].value == "서버에 문제 등록"
+    assert app.session_state["bank-transfer-selected"] == ["reading"]
+    table = app.dataframe[0].value
+    assert table.loc[table["_set_id"] == "reading", "선택"].item()
+    assert reads == ["synthetic-source"]
+
+
 @pytest.mark.parametrize('terminal', ['succeeded', 'paused', 'failed'])
 def test_active_page_polls_then_refreshes_once_and_stops(progress_page, terminal):
     app, batch = progress_page.app, progress_page.batches[0]
@@ -164,8 +213,15 @@ def test_active_page_polls_then_refreshes_once_and_stops(progress_page, terminal
     assert len(progress_page.calls) == before + 1
 
     if terminal != 'succeeded':
-        def resume(*, batch_id):
+        import json
+        config = {"settings": {"tts_delay": 9}, "target": "original-target"}
+        batch["media_config"] = json.dumps(config)
+        progress_page.runner.store.media_tasks = lambda _: []
+        batch["next_attempt_at"] = 0
+
+        def resume(*, batch_id, media_config):
             assert batch_id == batch['id']
+            assert media_config == config
             batch.update(status='running', pipeline_status='generating', auto_resume=1)
 
         progress_page.runner.start = resume
@@ -197,3 +253,102 @@ def test_retry_wait_needs_auto_resume_and_terminal_states_are_idle():
         assert not needs_progress_refresh([{**batch, 'pipeline_status': phase}])
     assert not needs_progress_refresh([])
     assert needs_progress_refresh([], runner_active=True)
+
+
+@pytest.mark.parametrize("section,type_id,slot", [
+    ("reading", "ibt_chart_content_match", 7), ("listening", "ibt_visual_chart", 2),
+])
+def test_bulk_review_button_opens_exact_question_and_refreshes_after_save(tmp_path, monkeypatch, section, type_id, slot):
+    from test_ibt_pipeline import generated_batch
+    from topik_question_lab.common.generation.bulk_generation import storage_for
+    from topik_question_lab.common.models import ProviderResult
+    from topik_question_lab.common.paths import PACKAGE_ROOT
+    from topik_question_lab.common.ui.navigation import menu_page
+    import topik_question_lab.common.generation.runner_service as runners
+    import topik_question_lab.common.generation.bulk_generation as bulk
+
+    runner, bid, snapshots, _ = generated_batch(tmp_path, section, monkeypatch)
+    for saved in snapshots:
+        current = storage_for(tmp_path, section, saved["type_id"])
+        for row in current.list_generated():
+            current.save_validation(row["id"], [])
+    storage = storage_for(tmp_path, section, type_id)
+    item = storage.list_generated()[0]
+    question = deepcopy(item["question"])
+    if section == "reading":
+        question["passage"] = question["passage"].replace("인구:", "인구(막대):").replace("고령 비율:", "고령 비율(꺾은선):")
+        issue = {"code": "visual_material", "message": "시각 자료 확인 필요: 복합 도표 계열 이름이 지문에 없습니다.", "severity": "error"}
+    else:
+        question["choices"] = ["같은 제목"] * 4
+        issue = {"code": "duplicate_choices", "message": "서로 같은 보기가 있습니다.", "severity": "error"}
+    storage.save_generated_edit(item["id"], question)
+    storage.save_validation(item["id"], [issue])
+    other = {**item["question"], "stem": "별개의 자료를 다루는 다른 문항입니다.",
+             "passage": "별개의 자료를 다루는 다른 문항입니다."}
+    result = ProviderResult(provider=item["provider"], model=item["model"], operation="generation")
+    storage.save_generation_result(result, "", "", type_id, "standard", [other],
+                                   [[{"code": "similar_duplicate", "message": "다른 묶음의 경고", "severity": "warning"}]], "other-batch")
+    assert storage.list_generated()[0]["id"] != item["id"]
+    runner.store.update_task(bid, type_id, "succeeded", count=1, review_count=1, run_id=item["run_id"])
+    monkeypatch.setenv("CHATKHU_API_KEY", "")
+    monkeypatch.setattr(runners, "get_runner", lambda _: runner)
+    monkeypatch.setattr(bulk, "prepare_batch", lambda *args: ([], ["synthetic no generation"]))
+    before = storage.list_generated()
+    details = batch_review_details(tmp_path, bid)
+    assert details["counts"][type_id] == 1
+    assert [(q["id"], q["slot"]) for q in details["questions"]] == [(item["id"], slot)]
+    assert storage.list_generated() == before
+    assert not batch_review_details(tmp_path, "missing-batch")["questions"]
+
+    app = AppTest.from_file(str(PACKAGE_ROOT / "main.py"), default_timeout=30)
+    bulk_page = menu_page("bulk_generation_app.py").relative_to(PACKAGE_ROOT).as_posix()
+    app.switch_page(bulk_page).run()
+    assert not app.exception
+    if section == "reading":
+        assert any("‘인구:’" in e.value and "‘고령 비율:’" in e.value and "작성 예:" in e.value for e in app.error)
+    else:
+        assert any("듣기 2번 · 오류: 서로 같은 보기가 있습니다." in e.value for e in app.error)
+    assert "검사 지적 문항 1" in app.get("progress")[0].proto.text
+    next(b for b in app.button if b.label == f"{slot}번 검수하기").click().run()
+    assert not app.exception
+    assert app.sidebar.radio(key=f"{section}-exam-format").value == "ibt"
+    assert app.sidebar.radio(key=f"{section}-work-stage").value == "5. 검수·비교"
+    selector_key = f"generated-review-selection-{type_id}" if section == "reading" else f"listening-generated-review-selection-{type_id}"
+    assert app.selectbox(key=selector_key).value == item["id"]
+    # AppTest retains the previous page hash/widgets after a server-side switch.
+    review_page = menu_page("app.py" if section == "reading" else "listening_app.py")
+    app.switch_page(review_page.relative_to(PACKAGE_ROOT).as_posix())._run()
+    assert not app.exception and app.selectbox(key=selector_key).value == item["id"]
+    if section == "reading":
+        # Save the unchanged chart data with corrected passage headings.
+        passage = next(w for w in app.text_area if w.value == question["passage"])
+        passage.set_value(item["question"]["passage"])
+        next(b for b in app.button if b.label == "문제 수정 저장").click().run()
+    else:
+        next(b for b in app.button if b.label == "수정·평가 저장하고 다음 문항").click().run()
+    assert not app.exception
+    assert not next(row for row in storage.list_generated() if row["id"] == item["id"])["validation"], [e.value for e in app.error]
+    app.switch_page(bulk_page).run()
+    assert not app.exception
+    assert not any(b.label == f"{slot}번 검수하기" for b in app.button), batch_review_details(tmp_path, bid)["questions"]
+    assert "검사 지적 문항 0" in app.get("progress")[0].proto.text
+    table = next(frame.value for frame in app.dataframe if "검사 지적" in frame.value.columns)
+    assert table.loc[table["유형"] == type_id, "검사 지적"].item() == 0
+    assert next(t for t in runner.store.tasks(bid) if t["type_id"] == type_id)["review_count"] == 1
+
+
+def test_bulk_review_distinguishes_warnings_and_keeps_multiple_diagnostics(progress_page, monkeypatch):
+    import topik_question_lab.menus.bulk_generation.bulk_progress as progress
+    progress_page.data["batches"][0]["coverage"]["images_ready"] = 0
+    details = {"counts": {"synthetic": 1}, "approved": 50, "errors": [], "questions": [
+        {"section": "reading", "type_id": "synthetic", "id": 42, "slot": 7, "issues": [
+            {"severity": "warning", "message": "기존 지문과 유사합니다."},
+            {"severity": "error", "message": "지문에 필요한 수치가 없습니다."}]}]}
+    monkeypatch.setattr(progress, "batch_review_details", lambda *args: deepcopy(details))
+    app = progress_page.app
+    app.button(key="bulk-refresh-registration").click().run()
+    assert not app.exception
+    assert any("읽기 7번 · 경고: 기존 지문과 유사합니다." == w.value for w in app.warning)
+    assert any("읽기 7번 · 오류: 지문에 필요한 수치가 없습니다." == e.value for e in app.error)
+    assert "검사 지적 문항 1" in app.get("progress")[0].proto.text
+    assert len([b for b in app.button if b.label == "7번 검수하기"]) == 1

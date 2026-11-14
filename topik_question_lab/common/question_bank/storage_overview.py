@@ -158,6 +158,7 @@ def preparation_progress(batch, records, tasks):
     try:
         from topik_question_lab.common.media.media_generation import media_plan
         plan = media_plan(make_package(batch, records, require_approval=False), None)
+        media_settings = _json(batch.get("media_config", "{}")).get("settings", {})
         parsed = [(t, _json(t["snapshot_json"]), _json(t["result_json"])) for t in tasks]
         verified = {r.get("file_sha256") for t, _, r in parsed if t["kind"] == "verify" and t["status"] == "succeeded"}
         audio_positions, audio_files, images_ready = set(), set(), 0
@@ -165,12 +166,18 @@ def preparation_progress(batch, records, tasks):
             for task, snapshot, artifact in parsed:
                 if task["status"] != "succeeded" or not artifact.get("file_sha256") or artifact["file_sha256"] not in verified:
                     continue
+                if task["kind"] == "image" and media_settings:
+                    provider = media_settings.get("image_provider", "google")
+                    if (snapshot.get("provider", "google") != provider
+                            or snapshot.get("model") != media_settings.get("image_model")
+                            or (provider == "bizrouter" and snapshot.get("base_url") != media_settings.get("image_base_url"))):
+                        continue
                 if expected["kind"] == "audio" and task["kind"] == "compose" and snapshot.get("script") == expected["script"]:
                     audio_positions.update(expected["positions"])
                     audio_files.add(tuple(expected["positions"]))
                     break
                 if expected["kind"] == "image" and task["kind"] in ("image", "chart") and all(
-                    snapshot.get(k) == expected[k] for k in ("prompt", "chart_spec")
+                    snapshot.get(k) == expected[k] for k in ("prompt", "chart_spec", "color")
                 ):
                     images_ready += 1
                     break

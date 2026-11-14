@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 import streamlit as st
 
 from topik_question_lab.common.question_bank.connection import TransferError, digest
+from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked, batch_set_id, read_batches
+from topik_question_lab.common.ui.set_identity import SECTION, korean_datetime, korean_time
 from topik_question_lab.menus.bank_transfer.bank_transfer import capture_source, check_shared_media, execute_transfer, initialize_target, list_source_sets, prepare_transfer
 
 
@@ -20,38 +22,81 @@ targets = {
     "운영 서버": os.getenv("QUESTION_BANK_PRODUCTION_DATABASE_URL", "").strip(),
 }
 selection = st.multiselect("등록 대상", list(targets), default=["로컬 서버"])
-mode = st.radio("등록 범위", ["선택 세트", "전체 문제은행"], horizontal=True)
+linked_set = st.session_state.pop("bank-transfer-set-link", None)
+if linked_set:
+    for key in ("bank-transfer-preview", "bank-transfer-result", "bank-transfer-sets"):
+        st.session_state.pop(key, None)
+reset_table = "bank-transfer-table-rows" not in st.session_state
 config_key = digest((source, targets))
 if st.session_state.get("bank-transfer-config") != config_key:
-    for key in ("bank-transfer-preview", "bank-transfer-sets", "bank-transfer-result"):
+    for key in ("bank-transfer-preview", "bank-transfer-sets", "bank-transfer-result", "bank-transfer-selected"):
         st.session_state.pop(key, None)
     st.session_state["bank-transfer-config"] = config_key
+    reset_table = True
 
 configured = bool(source and selection and all(targets[label] for label in selection))
 if not configured:
     st.info("DATABASE_URL과 선택 대상의 QUESTION_BANK_LOCAL_DATABASE_URL / QUESTION_BANK_PRODUCTION_DATABASE_URL을 설정하세요.")
 
-if st.button("원본 세트 불러오기", disabled=not source):
+refresh = st.button("세트 목록 새로고침", disabled=not source)
+if source and (refresh or reset_table or "bank-transfer-sets" not in st.session_state):
+    reset_table = True
+    st.session_state.pop("bank-transfer-preview", None)
+    st.session_state.pop("bank-transfer-result", None)
+    dates = {}
     try:
-        st.session_state["bank-transfer-sets"] = list_source_sets(source)
+        dates = {batch_set_id(b["section"], b["id"]): korean_datetime(b["created_at"]) for b in read_batches(ROOT)}
+    except PublicationBlocked:
+        st.warning("생성 기록을 읽지 못해 생성일시를 표시할 수 없습니다.")
+    try:
+        sets = [{**row, "generation_created_at": dates.get(row["set_id"])} for row in list_source_sets(source)]
+        sets.sort(key=lambda row: (row["generation_created_at"].timestamp() if row["generation_created_at"] else float("-inf"),
+                                   row["set_id"]), reverse=True)
+        st.session_state["bank-transfer-sets"] = sets
     except TransferError as exc:
+        st.session_state["bank-transfer-sets"] = []
         st.error(str(exc))
 catalog = {r["set_id"]: r for r in st.session_state.get("bank-transfer-sets", [])}
-
-
-def set_label(set_id):
-    r = catalog[set_id]
-    return f"{r['section']} · {r['model']} · {r['sequence']}번 세트 · {r['items']}문항 · {r['status']} · {set_id[:8]}"
-
-
-selected_sets = st.multiselect("복사할 세트", list(catalog), format_func=set_label, disabled=mode == "전체 문제은행")
-if mode == "전체 문제은행":
-    st.caption("미배정 문항과 과거 미디어 기록도 포함합니다. 대상에만 있는 별도 세트는 유지합니다.")
+if linked_set:
+    reset_table = True
+    st.session_state["bank-transfer-selected"] = [linked_set] if linked_set in catalog else []
+    if linked_set not in catalog:
+        st.warning("선택한 세트를 불러오지 못했습니다. 세트 목록을 새로고침하고 등록할 세트를 확인하세요.")
+else:
+    st.session_state["bank-transfer-selected"] = [sid for sid in st.session_state.get("bank-transfer-selected", []) if sid in catalog]
+previous_selected = st.session_state["bank-transfer-selected"]
+if reset_table:
+    # Freeze editor input until refresh; preserve selections by ID, never row position.
+    st.session_state["bank-transfer-table-rows"] = [
+        {"선택": sid in previous_selected, "생성일시(KST)": korean_time(row.get("generation_created_at")),
+         "형식": row.get("exam_format", "pbt").upper(), "영역": SECTION.get(row["section"], row["section"]),
+         "모델": row["model"], "세트 번호": row["sequence"], "문항 수": row["items"],
+         "식별코드": sid.replace("-", "")[:8].upper(), "_set_id": sid}
+        for sid, row in catalog.items()]
+    st.session_state["bank-transfer-table-version"] = st.session_state.get("bank-transfer-table-version", 0) + 1
+rows = st.session_state["bank-transfer-table-rows"]
+st.subheader("등록할 세트 선택")
+st.caption("최신 생성 순 · 생성일시는 한국 시간(KST)입니다. 생성 기록이 없으면 ‘기록 없음’으로 표시합니다.")
+selected_sets = []
+if rows:
+    edited = st.data_editor(rows, hide_index=True, width="stretch", num_rows="fixed",
+        disabled=[column for column in rows[0] if column != "선택"],
+        column_config={"선택": st.column_config.CheckboxColumn("선택", required=True), "_set_id": None},
+        key=f"bank-transfer-table-{st.session_state['bank-transfer-table-version']}")
+    selected_sets = [row["_set_id"] for row in edited if row["선택"] and row["_set_id"] in catalog]
+else:
+    st.info("등록할 세트가 없습니다. 원본 DB 연결과 세트 목록을 확인하세요.")
+if set(selected_sets) != set(previous_selected):
+    st.session_state.pop("bank-transfer-preview", None)
+    st.session_state.pop("bank-transfer-result", None)
+st.session_state["bank-transfer-selected"] = selected_sets
+st.caption(f"선택 {len(selected_sets)}개 세트 · 총 {sum(catalog[sid]['items'] for sid in selected_sets)}문항")
 st.caption("세트에서 빠진 기존 문항은 미배정으로 보존합니다. 원본의 검수 상태도 그대로 복사합니다.")
 if "운영 서버" in selection:
     st.warning("운영 서버가 선택되어 있습니다. 아래 작업은 운영 DB에 적용됩니다.")
 
-with st.expander("최초 대상 DB 구조 준비"):
+with st.expander("고급 설정", expanded=False):
+    st.markdown("**최초 대상 DB 구조 준비**")
     st.write("빈 대상 DB에 문제 테이블 5개와 조회 뷰 2개를 생성합니다. 기존 구조가 다르면 변경하지 않고 중단합니다.")
     if st.button("선택 서버 구조 초기화", disabled=not configured):
         for label in selection:
@@ -62,11 +107,11 @@ with st.expander("최초 대상 DB 구조 준비"):
                 st.error(f"{label}: {exc}")
         st.session_state.pop("bank-transfer-preview", None)
 
-request_key = digest((config_key, selection, mode, sorted(selected_sets)))
-if st.button("등록 내용 확인", disabled=not configured or (mode == "선택 세트" and not selected_sets)):
+request_key = digest((config_key, selection, sorted(selected_sets)))
+if st.button("등록 내용 확인", disabled=not configured or not selected_sets) and selected_sets:
     try:
         with st.spinner("원본과 대상 내용을 확인합니다."):
-            snapshot = capture_source(source, selected_sets if mode == "선택 세트" else None)
+            snapshot = capture_source(source, selected_sets)
             media = check_shared_media(snapshot, os.getenv("CLOUDFRONT_BASE_URL", "").strip())
             plans, errors = {}, {}
             for label in selection:

@@ -67,6 +67,8 @@ class FakeGoogle:
         self.speeches = []
         self.images = []
         self.chart_prompts = []
+        self.banner_prompts = []
+        self.image_colors = []
 
     def speech(self, speaker, text):
         import wave
@@ -77,16 +79,27 @@ class FakeGoogle:
             audio.writeframes(bytes(4800))
         return data.getvalue()
 
-    def image(self, prompt, *, chart=False):
+    def image(self, prompt, *, chart=False, color=False, banner=False):
         self.images.append(prompt)
+        self.image_colors.append(color)
         if chart:
             self.chart_prompts.append(prompt)
+        if banner:
+            self.banner_prompts.append(prompt)
         data = io.BytesIO()
-        Image.new("RGB", (80, 60), "white").save(data, "PNG")
+        # Return color even for monochrome requests to exercise output conversion.
+        Image.new("RGB", (80, 60), "#35a76f").save(data, "PNG")
         return data.getvalue()
 
     def close(self):
         pass
+
+
+def assert_image_color(data, *, color):
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.format == "PNG" and image.mode == "RGB"
+        red, green, blue = (band.tobytes() for band in image.split())
+        assert (red != green or green != blue) == color
 
 
 class FakeCloud:
@@ -480,8 +493,9 @@ def test_missing_media_config_blocks_ui_before_any_model_call(tmp_path, monkeypa
     assert not any(c.label == "자동 검수·수정" for c in app.checkbox)
     assert next(c for c in app.checkbox if c.label == "음원·이미지 생성 및 DB 자동 등록").value
     assert not next(c for c in app.checkbox if c.label == "음원·이미지 생성 및 DB 자동 등록").disabled
-    next(b for b in app.button if b.label == "읽기 50문제 생성").click().run()
-    assert not app.exception and any("GOOGLE_CLOUD_PROJECT_ID" in e.value for e in app.error)
+    app.radio(key="bulk-section").set_value("reading").run()
+    app.button(key="bulk-start-reading").click().run()
+    assert not app.exception and any("S3_BUCKET" in e.value for e in app.error)
     assert BulkStore(tmp_path).batches() == []
 
 

@@ -8,12 +8,19 @@ import httpx
 import pytest
 
 from test_ibt_pipeline import COMBO, generated_batch
-from test_media_generation import Clock, FakeGoogle, pipeline, seed_media, settings
+from test_media_generation import Clock, FakeGoogle, assert_image_color, pipeline, seed_media, settings
+from topik_question_lab.common.listening_models import ChartSpec
 from topik_question_lab.common.media import media_generation as media
 from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaError
 from topik_question_lab.common.question_bank.direct_publication import expected_item, package_draft
 from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
 from topik_question_lab.common.question_bank.storage_overview import preparation_progress
+
+
+def test_local_chart_preview_defaults_to_grayscale_and_can_preserve_color():
+    spec = ChartSpec.model_validate(COMBO)
+    assert_image_color(media.render_chart(spec), color=False)
+    assert_image_color(media.render_chart(spec, color=True), color=True)
 
 
 def test_chart_request_keeps_endpoint_and_body_shape_without_scene_text_prohibition():
@@ -36,16 +43,60 @@ def test_chart_request_keeps_endpoint_and_body_shape_without_scene_text_prohibit
         prompt = media.chart_image_prompt(COMBO)
         assert client.image(prompt, chart=True) == png
         assert client.image("학생이 책을 읽는 장면") == png
+        assert client.image("학생이 책을 읽는 흑백 삽화", color=True) == png
     finally:
         client.close()
-    chart, scene = [json.loads(r.content) for r in requests]
+    chart, scene, color_scene = [json.loads(r.content) for r in requests]
     assert requests[0].method == requests[1].method == "POST"
-    assert requests[0].url == requests[1].url
-    assert chart["generationConfig"] == scene["generationConfig"]
+    assert requests[0].url == requests[1].url == requests[2].url
+    assert chart["generationConfig"] == scene["generationConfig"] == color_scene["generationConfig"]
     assert chart["contents"][0]["parts"] == [{"text": prompt}]
     assert json.loads(prompt.split("\n", 1)[1]) == COMBO
     assert "no text, labels, numbers" not in prompt
     assert "no text, labels, numbers" in scene["contents"][0]["parts"][0]["text"]
+    assert "Black-and-white line art" in scene["contents"][0]["parts"][0]["text"]
+    color_prompt = color_scene["contents"][0]["parts"][0]["text"]
+    assert "Full-color illustration" in color_prompt
+    assert "no text, labels, numbers" in color_prompt
+    assert color_prompt.endswith("Use full color even if the scene description requests monochrome styling.")
+    assert "full-color palette" in prompt
+
+
+@pytest.mark.parametrize("exam_format", ["pbt", "ibt"])
+@pytest.mark.parametrize("cached_style", ["legacy", "opposite"])
+def test_scene_color_cache_and_progress_follow_exam_format(tmp_path, monkeypatch, exam_format, cached_style):
+    if exam_format == "ibt":
+        _, bid, _, _ = generated_batch(tmp_path, "listening", monkeypatch)
+    else:
+        bid = seed_media(tmp_path, "listening")
+    run = pipeline(tmp_path, bid)
+    task = next(t for t in media.media_plan(run.registration.package(bid), run.settings)
+                if t["kind"] == "image" and not t["chart_spec"])
+    color = exam_format == "ibt"
+    assert task["color"] == color
+    snapshot = {"prompt": task["prompt"], "chart_spec": None, "model": run.settings.image_model,
+                "version": "exam_image_v1"}
+    if cached_style == "opposite":
+        snapshot["color"] = not color
+    old_data = media.render_image({**task, "color": not color}, FakeGoogle())
+
+    def old_image(key):
+        path = run.directory / f"{key}.png"
+        path.write_bytes(old_data)
+        return run._artifact(path, mime_type="image/png")
+
+    old = run._perform("image", snapshot, old_image, artifact=True, network=False)
+    run._upload(old, "generated-images")
+    batch = run.store.batches()[0]
+    records = collect_candidate_catalog(tmp_path).records
+    assert preparation_progress(batch, records, run.store.media_tasks(bid))["images_ready"] == 0
+    asset = run._image(task)
+    assert run.client.image_colors == [color]
+    assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=color)
+    assert preparation_progress(batch, records, run.store.media_tasks(bid))["images_ready"] > 0
+    assert run._image(task) == asset
+    assert run.client.image_colors == [color]
+    assert run._local(old["local_path"]).read_bytes() == old_data
 
 
 @pytest.mark.parametrize("section,chart_count", [("reading", 1), ("listening", 4)])
@@ -76,8 +127,10 @@ def test_ibt_chart_images_preserve_items_and_ignore_legacy_render_cache(tmp_path
 
     monkeypatch.setattr(media, "render_chart", no_render)
     assets = [run._image(t) for t in plan if t["kind"] == "image"]
+    for asset in assets:
+        assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=True)
     assert set(run.client.chart_prompts) == {t["prompt"] for t in charts}
-    assert len(run.client.images) == len(set(t["prompt"] for t in plan if t["kind"] == "image" and not t.get("banner_text")))
+    assert len(run.client.images) == len(set(t["prompt"] for t in plan if t["kind"] == "image"))
     for task in charts:
         asset = next(a for a in assets if a["item_id"] == task["item_id"] and a["option_number"] == task["option_number"])
         assert asset["content_hash"] == task["content_hash"]
@@ -130,7 +183,9 @@ def test_pbt_charts_still_render_locally(tmp_path, section):
     charts = [t for t in media.media_plan(run.registration.package(bid), run.settings) if t.get("chart_spec")]
     assert charts and all(not t.get("model_chart") for t in charts)
     for task in charts:
-        assert run._image(task)["mime_type"] == "image/png"
+        asset = run._image(task)
+        assert asset["mime_type"] == "image/png"
+        assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=False)
     assert not run.client.images
 
 
@@ -144,7 +199,7 @@ def test_ibt_reading_registration_waits_for_model_image_and_preserves_package(tm
         raise MediaError("403")
 
     monkeypatch.setattr(run.client, "image", denied)
-    with pytest.raises(ValueError, match="필수 미디어 1건"):
+    with pytest.raises(ValueError, match="필수 미디어 4건"):
         run.run()
     assert not run.registration.registered
     assert run.registration.package(bid) == before

@@ -11,6 +11,7 @@ import streamlit as st
 
 from topik_question_lab.common.question_bank.bank_editor import BankEditor, item_metadata, prepare_edit, question_profile, shared_members, audio_members, media_ready, set_health
 from topik_question_lab.menus.bank_editor.bank_media_generation import generate_replacements
+from topik_question_lab.menus.bank_editor.bank_set_editor_ui import render_set_browser
 from topik_question_lab.common.question_bank.direct_publication import _hash, read_batches, PublicationBlocked
 from topik_question_lab.common.question_bank.storage_overview import read_bank, bank_coverage, REVIEW_LABELS, visual_requirements
 from topik_question_lab.common.ui.question_display import show_question
@@ -22,8 +23,21 @@ ACTIONS = {"approve": "검수 승인", "retire": "사용 중지", "restore": "�
 
 
 def refresh():
-    for key in ("bank-editor-list", "bank-editor-snapshot", "bank-editor-plan", "bank-editor-draft", "registration-snapshot",
+    for key in ("bank-editor-list", "bank-editor-table", "bank-editor-snapshot", "bank-editor-plan", "bank-editor-draft", "registration-snapshot",
                 "registration-plan", "storage-overview", "storage-file-check"):
+        st.session_state.pop(key, None)
+
+
+def change_management_mode():
+    for key in ("bank-editor-plan", "bank-editor-snapshot", "bank-editor-draft", "bank-editor-choice",
+                "bank-editor-table", "bank-set-delete-plan"):
+        st.session_state.pop(key, None)
+    st.session_state["bank-editor-selected"] = []
+
+
+def choose_item(item_id):
+    st.session_state["bank-editor-choice"] = item_id
+    for key in ("bank-editor-snapshot", "bank-editor-draft"):
         st.session_state.pop(key, None)
 
 
@@ -302,6 +316,10 @@ def render_app(url):
         editor = BankEditor(url)
         saved = st.session_state.get("bank-editor-list")
         if not saved or saved["target"] != editor.target:
+            if st.session_state.get("bank-editor-selection-target") != editor.target:
+                st.session_state["bank-editor-selected"] = []
+                choose_item(None)
+            st.session_state["bank-editor-selection-target"] = editor.target
             refresh()
             try:
                 batches = read_batches(ROOT)
@@ -318,51 +336,102 @@ def render_app(url):
             members = [i for i in bank["items"] if str(i["set_id"]) == str(s["set_id"])]
             views[str(s["set_id"])] = set_view({**s, "item_count": len(members),
                 "coverage": bank_coverage(members) if bank["media_available"] else None}, batches=saved.get("batches", []))
+        focus = st.session_state.pop("bank-editor-open-item", None)
+        if focus:
+            st.session_state.pop("bank-editor-plan", None)
+            st.session_state["bank-editor-mode"] = "문항별"
+        mode = st.radio("관리 단위", ["문항별", "세트별"], horizontal=True,
+                        key="bank-editor-mode", on_change=change_management_mode)
         prepared = st.session_state.get("bank-editor-plan")
         if prepared:
+            # Rebuild checked rows after returning from the confirmation screen.
+            st.session_state.pop("bank-editor-table", None)
             snapshot = prepared["plan"]["snapshot"] if prepared["action"] == "edit" else prepared["snapshot"]
             if str(snapshot["item"]["set_id"]) in views:
                 render_set_summary(views[str(snapshot["item"]["set_id"])])
             confirm_plan(editor, prepared)
             return
-        exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key="bank-editor-exam")
-        items = [r for r in bank["items"] if exam == "all" or r.get("exam_format", "pbt") == exam]
-        sets = {str(s["set_id"]): s for s in bank["sets"] if exam == "all" or s.get("exam_format", "pbt") == exam}
-        filters = st.columns(3)
-        section = filters[0].selectbox("영역", ["all", "reading", "listening"], format_func=lambda v: SECTION.get(v, "전체"))
-        types = sorted({r["item_type"] for r in items if section == "all" or r["section"] == section})
-        selected_type = filters[1].selectbox("유형 필터", ["all", *types], format_func=lambda v: "전체" if v == "all" else v)
-        set_options = ["all", "none", *sorted(sets)]
-        selected_set = filters[2].selectbox("세트 필터", set_options, format_func=lambda v: "전체" if v == "all" else "미배정" if v == "none" else set_label(views[v]))
-        search = st.text_input("문제 내용 검색").strip().lower()
-        show_retired = st.checkbox("사용 중지 문항 포함")
-        focus = st.session_state.pop("bank-editor-open-item", None)
-        rows = [r for r in items if (section == "all" or r["section"] == section)
-                and (selected_type == "all" or r["item_type"] == selected_type)
-                and (selected_set == "all" or (not r["set_id"] if selected_set == "none" else str(r["set_id"]) == selected_set))
-                and (show_retired or r["review_status"] != "retired")
-                and (not search or search in json.dumps(r["content_json"], ensure_ascii=False).lower())]
         if focus:
-            focused = next((r for r in items if str(r["item_id"]) == focus), None)
-            if focused and focused not in rows:
-                rows.append(focused)
-        st.caption(f"{len(rows)}문항")
-        if not rows:
-            if selected_set in views:
-                render_set_summary(views[selected_set])
-            st.info("조건에 맞는 문제가 없습니다.")
-            return
-        st.dataframe([{"시험": r.get("exam_format", "pbt").upper(), "영역": SECTION.get(r["section"]), "번호": r["type_slot"], "유형": r["item_type"],
+            focused = next((r for r in bank["items"] if str(r["item_id"]) == focus), None)
+            st.session_state["bank-editor-selected"] = [focus] if focused else []
+            st.session_state.pop("bank-editor-table", None)
+            choose_item(focus if focused else None)
+            if focused:
+                st.session_state.update({"bank-editor-exam": focused.get("exam_format", "pbt"),
+                    "bank-editor-section": focused["section"], "bank-editor-type": "all",
+                    "bank-editor-set": str(focused["set_id"]) if focused["set_id"] else "none",
+                    "bank-editor-search": "", "bank-editor-retired": focused["review_status"] == "retired"})
+            else:
+                st.warning("열려는 문항을 찾을 수 없습니다. 목록을 새로고침하세요.")
+        if mode == "세트별":
+            rows = render_set_browser(bank, views, editor, ROOT, refresh)
+            if rows is None:
+                return
+            st.subheader("세트 문항")
+        else:
+            exam = st.selectbox("시험 형식", ["all", "pbt", "ibt"], format_func=lambda x: "전체" if x == "all" else x.upper(), key="bank-editor-exam")
+            items = [r for r in bank["items"] if exam == "all" or r.get("exam_format", "pbt") == exam]
+            sets = {str(s["set_id"]): s for s in bank["sets"] if exam == "all" or s.get("exam_format", "pbt") == exam}
+            filters = st.columns(3)
+            section = filters[0].selectbox("영역", ["all", "reading", "listening"], format_func=lambda v: SECTION.get(v, "전체"), key="bank-editor-section")
+            types = sorted({r["item_type"] for r in items if section == "all" or r["section"] == section})
+            if st.session_state.get("bank-editor-type") not in ["all", *types]:
+                st.session_state["bank-editor-type"] = "all"
+            selected_type = filters[1].selectbox("유형 필터", ["all", *types], format_func=lambda v: "전체" if v == "all" else v, key="bank-editor-type")
+            set_options = ["all", "none", *sorted(sets)]
+            if st.session_state.get("bank-editor-set") not in set_options:
+                st.session_state["bank-editor-set"] = "all"
+            selected_set = filters[2].selectbox("세트 필터", set_options, format_func=lambda v: "전체" if v == "all" else "미배정" if v == "none" else set_label(views[v]), key="bank-editor-set")
+            search = st.text_input("문제 내용 검색", key="bank-editor-search").strip().lower()
+            show_retired = st.checkbox("사용 중지 문항 포함", key="bank-editor-retired")
+            rows = [r for r in items if (section == "all" or r["section"] == section)
+                    and (selected_type == "all" or r["item_type"] == selected_type)
+                    and (selected_set == "all" or (not r["set_id"] if selected_set == "none" else str(r["set_id"]) == selected_set))
+                    and (show_retired or r["review_status"] != "retired")
+                    and (not search or search in json.dumps(r["content_json"], ensure_ascii=False).lower())]
+            st.caption(f"{len(rows)}문항")
+            if not rows:
+                st.session_state["bank-editor-selected"] = []
+                st.session_state.pop("bank-editor-table", None)
+                choose_item(None)
+                if selected_set in views:
+                    render_set_summary(views[selected_set])
+                st.info("조건에 맞는 문제가 없습니다.")
+                return
+        display_rows = [{"시험": r.get("exam_format", "pbt").upper(), "영역": SECTION.get(r["section"]), "번호": r["type_slot"], "유형": r["item_type"],
                        "세트": set_label(views[str(r["set_id"])]) if str(r["set_id"]) in views else "미배정",
                        "상태": REVIEW_LABELS.get(r["review_status"], r["review_status"]), "문제": r["stem"][:90],
-                       "문항 ID": str(r["item_id"])} for r in rows], hide_index=True, width="stretch")
+                       "문항 ID": str(r["item_id"])} for r in rows]
         options = [str(r["item_id"]) for r in rows]
-        if focus in options:
-            st.session_state["bank-editor-choice"] = focus
-        elif st.session_state.get("bank-editor-choice") not in options:
-            st.session_state["bank-editor-choice"] = options[0]
-        labels = {str(r["item_id"]): f"{SECTION.get(r['section'])} {r['type_slot']}번 · {r['item_type']} · {r['stem'][:45]} · {r['item_id']}" for r in rows}
-        item_id = st.selectbox("편집할 문제", options, format_func=labels.get, key="bank-editor-choice")
+        identity = _hash((editor.target, display_rows))
+        table = st.session_state.get("bank-editor-table")
+        if not table or table["identity"] != identity:
+            selected = set(st.session_state.get("bank-editor-selected", [])) & set(options)
+            table = {"identity": identity, "rows": [{"선택": r["문항 ID"] in selected, **r} for r in display_rows]}
+            st.session_state["bank-editor-table"] = table
+            st.session_state["bank-editor-table-version"] = st.session_state.get("bank-editor-table-version", 0) + 1
+        checked = st.data_editor(table["rows"], hide_index=True, width="stretch", num_rows="fixed",
+            disabled=list(display_rows[0]),
+            column_config={"선택": st.column_config.CheckboxColumn("선택", required=True), "문항 ID": None},
+            key=f"bank-editor-table-{st.session_state['bank-editor-table-version']}")
+        selected = [r["문항 ID"] for r in checked if r["선택"] and r["문항 ID"] in options]
+        st.session_state["bank-editor-selected"] = selected
+        if not selected:
+            choose_item(None)
+            st.info("표에서 수정할 문제를 체크하세요.")
+            return
+        if st.session_state.get("bank-editor-choice") not in selected:
+            choose_item(selected[0])
+        item_id = st.session_state["bank-editor-choice"]
+        index = selected.index(item_id)
+        st.caption(f"선택 {len(selected)}문항 · 현재 {index + 1}/{len(selected)}")
+        if len(selected) > 1:
+            left, right = st.columns(2)
+            left.button("이전 선택 문제", disabled=index == 0, key="bank-editor-previous",
+                        on_click=choose_item, args=(selected[max(0, index - 1)],))
+            right.button("다음 선택 문제", disabled=index == len(selected) - 1, key="bank-editor-next",
+                         on_click=choose_item, args=(selected[min(len(selected) - 1, index + 1)],))
+            st.caption("이동하기 전에 수정 내용을 확인하고 저장하세요.")
         cached = st.session_state.get("bank-editor-snapshot")
         if not cached or cached["target"] != editor.target or cached["item"]["item_id"] != item_id:
             cached = editor.load(item_id)

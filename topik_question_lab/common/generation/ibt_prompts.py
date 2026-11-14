@@ -36,7 +36,7 @@ def build_ibt_prompt(section, examples, guide, count, difficulty, type_id, topic
                             repeat_count=profile.repeat_count, visual_kind=profile.visual_kind, visual_options=[], answer_source="ai_suggested")
                 if profile.visual_kind != "none":
                     item["choices"] = []
-                    item["visual_options"] = [{"number": n, "description": f"선택지 {n}의 의미", "image_prompt": "선택지 장면 설명", "chart_spec": None} for n in range(1, 5)]
+                    item["visual_options"] = [{"number": n, "description": f"선택지 {n}의 의미", "image_prompt": "자연스러운 컬러 삽화로 표현할 선택지 장면 설명", "chart_spec": None} for n in range(1, 5)]
                     if profile.visual_kind == "chart":
                         for option in item["visual_options"]:
                             option["chart_spec"] = {"chart_type": "pie" if option["number"] <= 2 else "bar", "title": "자료 제목", "labels": ["항목 A", "항목 B"], "values": [40, 60], "unit": "%"}
@@ -66,6 +66,7 @@ PBT 참고 예시:
 광고·표어는 visual_material.text를 passage의 문구와 동일하게 합니다.
 복합 도표는 두 계열의 이름·단위·항목·수치를 passage에 명시합니다. 각 계열은 '계열명: 항목: 수치단위'로 표현합니다.
 듣기 시각 선택지는 네 개이며 의미가 분명히 달라야 합니다. 그래프 종류는 선택지별로 지정합니다.
+IBT 이미지는 컬러입니다. image_prompt에 컬러 삽화를 지시하고 PBT 예시의 흑백 스타일 지시는 따르지 마십시오.
 정답은 보기 1~4 중 하나이며 정답과 해설을 반드시 검증하십시오.
 {topic_plan_prompt(topics or [], shared=shared)}
 다음 필드와 문항별 번호·역할을 지켜 JSON만 출력하십시오. 예시의 빈 문구는 실제 내용으로 채우십시오.

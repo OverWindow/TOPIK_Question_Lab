@@ -416,7 +416,7 @@ class BulkRunner:
             if config:
                 from topik_question_lab.common.media.media_generation import preflight
                 current = preflight(self.root, MediaSettings(**config["settings"]),
-                    next(b for b in self.store.batches() if b["id"] == batch_id)["section"], os.getenv("DATABASE_URL", ""))
+                    batch["section"], os.getenv("DATABASE_URL", ""), batch.get("exam_format", "pbt"))
                 if current["target"] != config["target"]:
                     raise ValueError("실행 당시와 DB 대상이 달라 자동 실행을 중단했습니다.")
             topics_store = TopicStore(self.root / "data/topic_bank.db")

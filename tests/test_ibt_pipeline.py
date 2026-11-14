@@ -147,6 +147,19 @@ def test_ibt_combo_chart_accepts_grouped_population_values():
         chart_spec(spec, source.replace("2022년: 18%", "2022년: 20%"))
 
 
+def test_combo_chart_error_names_all_missing_series_and_gives_usable_example():
+    spec = {**COMBO, "series_name": "서울시 인구 수", "line_name": "65세 이상 인구 비율"}
+    source = ("도시 인구\n인구 수(막대): 2020년: 100만명, 2025년: 120만명\n"
+              "65세 이상 인구 비율(꺾은선): 2020년: 10%, 2025년: 15%")
+    with pytest.raises(ValueError) as error:
+        chart_spec(spec, source)
+    message = str(error.value)
+    assert "‘서울시 인구 수:’" in message and "‘65세 이상 인구 비율:’" in message
+    assert "'(막대)'·'(꺾은선)'" in message
+    example = message.split("작성 예: ", 1)[1]
+    assert chart_spec(spec, spec["title"] + "\n" + example) == spec
+
+
 def test_mapping_and_renderers():
     assert len(ibt_profiles("reading")) == 13
     assert len(ibt_profiles("listening")) == 14

@@ -66,7 +66,29 @@ def schema_description(c):
     }
 
 
+def _normalize_legacy_audio_target(expected, actual):
+    required_script = ["tts_audio_assets", "script_snapshot", "jsonb", True]
+    optional_script = ["tts_audio_assets", "script_snapshot", "jsonb", False]
+    v4_check = ["tts_audio_assets", "CHECK ((narration_version = 'exam_track_v4'::text))"]
+    legacy_checks = [
+        ["tts_audio_assets", "CHECK ((narration_version = ANY (ARRAY['dialogue_v1'::text, "
+         "'exam_track_v2'::text, 'exam_track_v3'::text, 'exam_track_v4'::text])))"],
+        ["tts_audio_assets", "CHECK (((narration_version = 'dialogue_v1'::text) OR (script_snapshot IS NOT NULL)))"],
+    ]
+    if not (required_script in expected["columns"] and optional_script in actual["columns"]
+            and v4_check in expected["constraints"]
+            and all(check in actual["constraints"] for check in legacy_checks)):
+        return actual
+    # This known legacy schema accepts every v4 source row; normalize only for comparison.
+    return {
+        **actual,
+        "columns": [required_script if row == optional_script else row for row in actual["columns"]],
+        "constraints": sorted([row for row in actual["constraints"] if row not in legacy_checks] + [v4_check]),
+    }
+
+
 def schema_problems(expected, actual):
+    actual = _normalize_legacy_audio_target(expected, actual)
     problems = []
     for part in ("columns", "indexes", "views"):
         if expected[part] != actual[part]:
@@ -145,8 +167,9 @@ def capture_source(source_url, set_ids=None):
 
 def list_source_sets(source_url):
     with connection(source_url) as c:
-        return [dict(zip(("set_id", "section", "model", "sequence", "status", "items"), r)) for r in c.execute("""
-            SELECT s.set_id::text,s.section,s.generator_version,s.set_sequence,s.review_status,count(i.item_id)
+        return [dict(zip(("set_id", "section", "model", "sequence", "status", "items", "exam_format"), r)) for r in c.execute("""
+            SELECT s.set_id::text,s.section,s.generator_version,s.set_sequence,s.review_status,count(i.item_id),
+                COALESCE(to_jsonb(s)->>'exam_format','pbt')
             FROM topik_bank.question_sets s LEFT JOIN topik_bank.items i ON i.set_id=s.set_id
             GROUP BY s.set_id ORDER BY s.section,s.generator_version,s.set_sequence""")]
 

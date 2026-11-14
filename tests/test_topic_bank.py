@@ -36,7 +36,7 @@ def test_default_bank_seeds_once_and_restore_does_not_overwrite_edits(tmp_path):
 def test_default_slot_pools_seed_exactly_and_restore_without_overwrite(tmp_path):
     store = TopicStore(tmp_path / "topic_bank.db")
     pools = store.list_slot_pools()
-    assert len(pools) == 8
+    assert len(pools) == 32
     assert {
         (pool.section, tuple(pool.slot_numbers)): len(pool.items)
         for pool in pools
@@ -48,7 +48,16 @@ def test_default_slot_pools_seed_exactly_and_restore_without_overwrite(tmp_path)
         ("reading", (11, 12)): 8,
         ("reading", (25, 26, 27)): 9,
         ("reading", (44, 45, 46, 47, 48, 49, 50)): 10,
+        **{("reading", slots): 80 for slots in (
+            (9,), (10,), (16, 17, 18), (19, 20), (21, 22), (23, 24),
+            (28, 29, 30, 31), (32, 33, 34), (35, 36, 37, 38), (39, 40),
+        )},
         ("listening", (41, 42, 43, 44, 45, 46, 47, 48, 49, 50)): 10,
+        ("listening", (3,)): 80,
+        ("listening", (13,)): 80,
+        ("listening", (16,)): 80,
+        ("listening", (17, 18, 19, 20)): 80,
+        **{("listening", (slot, slot + 1)): 80 for slot in range(21, 40, 2)},
     }
     reading_five = next(pool for pool in pools if pool.slot_numbers == [5])
     assert "책(소설, 시집)" in reading_five.items
@@ -75,6 +84,7 @@ def test_slot_pool_input_parsers_preserve_parenthesized_commas():
 
 def test_slot_pool_precedence_and_mixed_type_plan(tmp_path):
     store = TopicStore(tmp_path / "topic_bank.db")
+    store.set_slot_pool_active("default_reading_09_notices", False)
     units = generation_units((9, 10, 11, 12), 4, False)
     plan = store.select_plan(
         section="reading",
@@ -83,9 +93,11 @@ def test_slot_pool_precedence_and_mixed_type_plan(tmp_path):
         rng=random.Random(17),
     )
     assert [brief.slot_numbers for brief in plan] == [[9], [10], [11], [12]]
-    assert [brief.source for brief in plan] == ["global", "global", "slot_pool", "slot_pool"]
+    assert [brief.source for brief in plan] == ["global", "slot_pool", "slot_pool", "slot_pool"]
+    assert plan[1].pool_id == "default_reading_10_surveys"
     assert all(brief.pool_id == "default_reading_11_12_information" for brief in plan[2:])
 
+    store.set_slot_pool_active("default_reading_10_surveys", False)
     store.set_slot_pool_active("default_reading_11_12_information", False)
     fallback = store.select_plan(
         section="reading",
@@ -310,6 +322,7 @@ def test_apply_topic_plan_clears_unsolicited_metadata_when_no_topic_is_assigned(
 
 def test_selection_is_balanced_compatible_and_respects_global_recent_pairs(tmp_path):
     store = TopicStore(tmp_path / "topic_bank.db")
+    store.set_slot_pool_active("default_reading_35_38_social_arguments", False)
     units = generation_units((35, 36, 37, 38), 12, False)
     plan = store.select_plan(
         section="reading",
@@ -338,6 +351,7 @@ def test_selection_is_balanced_compatible_and_respects_global_recent_pairs(tmp_p
     )
     assert not ({brief.pair for brief in plan} & {brief.pair for brief in listening_plan})
 
+    store.set_slot_pool_active("default_listening_21_22_social_opinions", False)
     conversational = store.select_plan(
         section="listening",
         question_type="paired_21_22",
@@ -441,17 +455,17 @@ def test_topic_bank_page_renders():
     app = AppTest.from_file(str(root / "topik_question_lab/menus/topic_bank/topic_bank_app.py"), default_timeout=20).run()
     assert not app.exception
     assert any(title.value == "소재 은행" for title in app.title)
-    assert any(metric.label == "전체 소재" and metric.value == "120" for metric in app.metric)
-    assert [tab.label for tab in app.tabs] == ["공용 소재 은행", "문항별 지정 풀"]
-    assert any(button.label == "지정 풀 저장" for button in app.button)
+    assert app.radio(key="topic-view").value == "문항별 적용"
+    assert app.radio(key="topic-exam").value == "pbt"
     assert any(button.label == "새 지정 풀 저장" for button in app.button)
 
     coverage = next(
         dataframe.value
         for dataframe in app.dataframe
-        if list(dataframe.value.columns) == ["문항 번호", "상태", "적용 풀", "항목 수"]
+        if list(dataframe.value.columns) == ["문항", "유형", "적용 풀", "소재 수"]
     )
-    assert {13, 16}.issubset(set(coverage["문항 번호"]))
+    assert {"13", "16", "41~42"}.issubset(set(coverage["문항"]))
+    assert set(coverage[coverage["문항"].isin(["3", "13", "16", "17", "18", "19", "20"])]["소재 수"]) == {80}
 
 
 def test_planner_rows_keep_slots_without_a_custom_pool_visible():

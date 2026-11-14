@@ -11,6 +11,7 @@ data/media/
 data/media_generation/
 data/vocabulary_audio/
 data/media_migrations/
+data/set_deletions/
 /tmp/
 backups/
 .local/postgres-bank/

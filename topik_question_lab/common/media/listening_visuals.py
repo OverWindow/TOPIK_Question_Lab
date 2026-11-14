@@ -17,7 +17,7 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
-def render_chart(spec: ChartSpec, width: int = 640, height: int = 420) -> bytes:
+def render_chart(spec: ChartSpec, width: int = 640, height: int = 420, *, color: bool = False) -> bytes:
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     title_font, label_font = _font(24), _font(17)
@@ -80,6 +80,8 @@ def render_chart(spec: ChartSpec, width: int = 640, height: int = 420) -> bytes:
         for x, y in points:
             draw.ellipse((x-5,y-5,x+5,y+5), fill="#b33a3a")
     output = io.BytesIO()
+    if not color:
+        image = image.convert("L").convert("RGB")
     image.save(output, "PNG")
     return output.getvalue()
 

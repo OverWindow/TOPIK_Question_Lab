@@ -113,7 +113,9 @@ render_sets(st.session_state["snapshot"], "synthetic")
     monkeypatch.setattr(direct_publication, "read_batches", lambda _: [deepcopy(batch)])
     monkeypatch.setattr(bank_editor, "BankEditor", lambda _: SimpleNamespace(target="synthetic", load=lambda _: deepcopy(snapshot)))
     page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bank_editor/bank_editor_app.py"
-    editor = AppTest.from_file(str(page), default_timeout=20).run()
+    editor = AppTest.from_file(str(page), default_timeout=20)
+    editor.session_state["bank-editor-open-item"] = item["item_id"]
+    editor.run()
     assert not editor.exception and not editor.error
     assert expected in next(s for s in editor.selectbox if s.label == "세트 필터").options
     assert any(s.value == set_title(set_view(stored, batches=[batch])) for s in editor.subheader)

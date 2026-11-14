@@ -1,5 +1,6 @@
 from copy import deepcopy
 import io
+import json
 from pathlib import Path
 import uuid
 
@@ -7,6 +8,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from test_direct_publication import seed_batch, local_package
+from test_bank_transfer import data_editor_widget_events
 from topik_question_lab.common.question_bank.bank_editor import BankEditor, prepare_edit, item_metadata, media_ready, set_health, upload_media
 from topik_question_lab.common.question_bank.direct_publication import DirectPublicationService, PublicationBlocked, package_draft
 from topik_question_lab.common.question_bank.postgres_storage import PostgresQuestionBank, PublicationStateChanged
@@ -14,6 +16,18 @@ from topik_question_lab.common.question_bank.postgres_storage import PostgresQue
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "topik_question_lab/menus/bank_editor/bank_editor_app.py"
+
+
+def select_table_questions(app, item_ids):
+    table = next(frame for frame in app.dataframe if '문항 ID' in frame.value.columns)
+    states = app._tree.get_widget_states()
+    edit = next(state for state in states.widgets if state.id == table.proto.id)
+    edit.string_value = json.dumps({'edited_rows': {
+        str(index): {'선택': item_id in item_ids} for index, item_id in enumerate(table.value['문항 ID'])
+    }, 'added_rows': [], 'deleted_rows': []})
+    app._run(states)
+    assert not app.exception and not app.error
+    assert set(app.session_state['bank-editor-selected']) == set(item_ids)
 
 
 @pytest.fixture
@@ -78,6 +92,152 @@ def test_editor_entry_without_database_does_not_create_files(tmp_path):
     assert not app.exception
     assert app.title[0].value == "PostgreSQL 문제 관리"
     assert list(tmp_path.rglob("*")) == before
+
+
+@pytest.fixture
+def selection_editor(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from test_unversioned_questions import candidate, draft_item
+    from topik_question_lab.common.models import GeneratedQuestion
+    from topik_question_lab.common.question_bank.direct_publication import expected_item
+    import topik_question_lab.common.question_bank.bank_editor as editing
+    import topik_question_lab.common.question_bank.storage_overview as overview
+
+    rows, loads, saves = [], [], []
+    for number, label in enumerate(['첫째', '둘째', '셋째']):
+        question = GeneratedQuestion(type_slot=1, stem=f'{label} 학생은 도서관에 ( ) 공부한다.',
+            choices=['가서', '가면', '가지만', '가도록'], answer=1,
+            explanation=f'{label} 원래 해설', target_grammar='연결 어미').model_dump()
+        c = replace(candidate(offset=number * 100), question_type='grammar_blank', question=question)
+        rows.append(dict(expected_item(draft_item(c)), item_id=str(c.item_id), set_id=None,
+                         position=1, source_provenance={}))
+
+    def load(target, item_id):
+        loads.append(item_id)
+        row = next(r for r in rows if r['item_id'] == item_id)
+        return deepcopy(dict(target=target, item=row, items=[row], set=None,
+                             media=dict(item_visual_assets=[], item_audio_bindings=[], tts_audio_assets=[])))
+
+    def save(plan):
+        saves.append(deepcopy(plan))
+        for row in rows:
+            if row['item_id'] in plan['changes']:
+                row.update(deepcopy(plan['changes'][row['item_id']]), review_status='pending_review')
+        return {'message': '선택 문항 저장 완료'}
+
+    monkeypatch.setenv('DATABASE_URL', 'synthetic-source')
+    monkeypatch.setattr(editing, 'BankEditor', lambda target:
+                        SimpleNamespace(target=target, load=lambda item_id: load(target, item_id), save=save))
+    monkeypatch.setattr(overview, 'read_bank', lambda _: deepcopy(dict(available=True, media_available=True, items=rows, sets=[])))
+    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    assert not app.exception and not app.error
+    return SimpleNamespace(app=app, rows=rows, ids=[r['item_id'] for r in rows], loads=loads, saves=saves)
+
+
+def test_checkboxes_open_only_selected_questions_and_skip_unchecked(selection_editor):
+    page, app = selection_editor, selection_editor.app
+    first, middle, last = page.ids
+    assert not page.loads and not app.text_area
+    assert not any(s.label == '편집할 문제' for s in app.selectbox)
+    select_table_questions(app, [first, last])
+    assert page.loads == [first]
+    assert app.button(key='bank-editor-previous').disabled
+    app.button(key='bank-editor-next').click().run()
+    assert not app.error and page.loads == [first, last]
+    assert app.session_state['bank-editor-choice'] == last
+    assert app.button(key='bank-editor-next').disabled
+    assert any(c.value == '선택 2문항 · 현재 2/2' for c in app.caption)
+    app.button(key='bank-editor-previous').click().run()
+    assert app.session_state['bank-editor-choice'] == first
+    select_table_questions(app, [middle])
+    assert app.session_state['bank-editor-choice'] == middle
+    assert not any(b.key in {'bank-editor-next', 'bank-editor-previous'} for b in app.button)
+    select_table_questions(app, [])
+    assert not app.text_area and not page.saves
+
+
+def test_filter_drops_hidden_selection_and_clears_empty_editor(selection_editor):
+    page, app = selection_editor, selection_editor.app
+    select_table_questions(app, [page.ids[0], page.ids[2]])
+    app.text_input(key='bank-editor-search').set_value('셋째').run()
+    assert not app.exception and not app.error
+    assert app.session_state['bank-editor-selected'] == [page.ids[2]]
+    assert app.session_state['bank-editor-choice'] == page.ids[2]
+    app.text_input(key='bank-editor-search').set_value('존재하지않는내용').run()
+    assert app.session_state['bank-editor-selected'] == [] and not app.text_area
+    app.text_input(key='bank-editor-search').set_value('').run()
+    assert not app.text_area and not page.saves
+    assert not app.dataframe[0].value['선택'].any()
+
+
+def test_refresh_retains_item_ids_when_order_changes_and_prunes_removed_items(selection_editor):
+    page, app = selection_editor, selection_editor.app
+    first, _, last = page.ids
+    select_table_questions(app, [first, last])
+    page.rows.reverse()
+    next(b for b in app.button if b.label == '문제 목록 새로고침').click().run()
+    assert not app.exception and not app.error
+    assert app.session_state['bank-editor-choice'] == first
+    table = app.dataframe[0].value
+    assert table.loc[table['선택'], '문항 ID'].tolist() == [last, first]
+    page.rows[:] = [r for r in page.rows if r['item_id'] != first]
+    next(b for b in app.button if b.label == '문제 목록 새로고침').click().run()
+    assert app.session_state['bank-editor-selected'] == [last]
+    assert app.session_state['bank-editor-choice'] == last and not page.saves
+
+
+def test_checked_question_confirmation_save_and_next_preserve_selection(selection_editor):
+    page, app = selection_editor, selection_editor.app
+    first, middle, last = page.ids
+    originals = deepcopy(page.rows)
+    select_table_questions(app, [first, last])
+    next(w for w in app.text_area if w.label == '해설').set_value('체크한 문제의 수정 해설')
+    next(b for b in app.button if b.label == '변경 내용 확인').click().run()
+    assert not app.exception and not app.error
+    assert not page.saves and page.rows == originals
+    next(b for b in app.button if b.label == '편집으로 돌아가기').click().run()
+    assert next(w for w in app.text_area if w.label == '해설').value == '체크한 문제의 수정 해설'
+    assert app.session_state['bank-editor-selected'] == [first, last]
+    next(b for b in app.button if b.label == '변경 내용 확인').click().run()
+    next(b for b in app.button if b.label == 'PostgreSQL에 저장').click().run()
+    assert not app.exception and not app.error
+    assert len(page.saves) == 1 and page.saves[0]['affected'] == [first]
+    assert page.rows[1:] == originals[1:]
+    assert page.rows[0]['explanation'] == '체크한 문제의 수정 해설'
+    assert app.session_state['bank-editor-selected'] == [first, last]
+    app.button(key='bank-editor-next').click().run()
+    assert app.session_state['bank-editor-choice'] == last
+    assert next(w for w in app.text_area if w.label == '해설').value == originals[2]['explanation']
+    assert middle not in page.loads
+
+
+def test_external_item_link_checks_exact_item_outside_previous_filters(selection_editor):
+    page, app = selection_editor, selection_editor.app
+    select_table_questions(app, [page.ids[0]])
+    app.text_input(key='bank-editor-search').set_value('첫째').run()
+    next(w for w in app.text_area if w.label == '해설').set_value('저장하지 않은 수정')
+    next(b for b in app.button if b.label == '변경 내용 확인').click().run()
+    assert not app.error and not page.saves
+    app.session_state['bank-editor-open-item'] = page.ids[2]
+    app.run()
+    assert not app.exception and not app.error
+    assert app.session_state['bank-editor-selected'] == [page.ids[2]]
+    assert app.session_state['bank-editor-choice'] == page.ids[2]
+    assert app.text_input(key='bank-editor-search').value == ''
+    app.run()
+    assert app.session_state['bank-editor-choice'] == page.ids[2] and not page.saves
+
+
+def test_database_change_clears_checked_questions(selection_editor, monkeypatch):
+    page, app = selection_editor, selection_editor.app
+    select_table_questions(app, [page.ids[0]])
+    before = list(page.loads)
+    monkeypatch.setenv('DATABASE_URL', 'different-source')
+    app.run()
+    assert not app.exception and not app.error
+    assert app.session_state['bank-editor-selected'] == []
+    assert not app.text_area and page.loads == before and not page.saves
 
 
 def test_direct_edit_without_local_original_preserves_identity_and_columns(bank, tmp_path):
@@ -288,7 +448,7 @@ def test_representative_editors_render_without_mutations(bank, tmp_path):
     app = AppTest.from_file(str(PAGE), default_timeout=25).run()
     for section, slot in (("reading", 10), ("reading", 19), ("listening", 1), ("listening", 21)):
         row = pick(bank, slot, section)["item"]
-        next(w for w in app.selectbox if w.label == "편집할 문제").set_value(row["item_id"]).run()
+        select_table_questions(app, [row["item_id"]])
         assert not app.exception and not app.error
         if section == "listening":
             assert any(w.label.startswith("듣기 대본") for w in app.text_area)
@@ -302,7 +462,7 @@ def test_ui_edit_confirmation_save_and_delete_confirmation(bank):
     app = AppTest.from_file(str(PAGE), default_timeout=25).run()
     assert not app.exception
     snapshot = pick(bank)
-    next(w for w in app.selectbox if w.label == "편집할 문제").set_value(snapshot["item"]["item_id"]).run()
+    select_table_questions(app, [snapshot["item"]["item_id"]])
     next(w for w in app.text_area if w.label == "해설").set_value("화면에서 편집한 해설")
     next(b for b in app.button if b.label == "변경 내용 확인").click().run()
     assert not app.exception
@@ -395,7 +555,7 @@ def test_generated_shared_audio_keeps_provenance_and_manual_upload_still_works(b
     audio_binding(bank, [21, 22])
     snapshot = pick(bank, 21, "listening")
     monkeypatch.setattr(generation, "compose", lambda script, speech, path, config: path.write_bytes(b"generated mp3"))
-    monkeypatch.setattr(generation.MediaSettings, "validate", lambda *args: None)
+    monkeypatch.setattr(generation.MediaSettings, "validate", lambda *args, **kwargs: None)
     pending = prepare_edit(snapshot, edited(snapshot, dialogue_turns=[dict(speaker="여자", text="새로운 공통 대본입니다.")]),
                            item_metadata(snapshot["item"]), [dict(kind="audio", generate=True)], allow_generation=True)
     ready = generation.generate_replacements(pending, settings=settings(), client=FakeGoogle())

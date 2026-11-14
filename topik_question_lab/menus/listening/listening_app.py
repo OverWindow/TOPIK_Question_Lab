@@ -30,7 +30,7 @@ from topik_question_lab.common.generation.prompt_profiles import DEFAULT_PROVIDE
 from topik_question_lab.common.generation.providers import DEFAULT_ACTIVE_PROVIDERS, DEFAULT_PROVIDERS, GENERATION_PRESETS, call_provider, has_chatkhu_api_key, has_deepseek_api_key, generation_parameter_preview, list_chatkhu_models, manual_result, parse_generation_presets, provider_backend, provider_label, resolve_generation_preset, dump_generation_presets
 from topik_question_lab.common.generation.providers import BIZROUTER_PREFIX, SERVICE_LABELS, bizrouter_capabilities, can_gateway_call, has_bizrouter_api_key, parse_bizrouter_models, provider_model
 from topik_question_lab.common.ui.provider_ui import generation_service, render_bizrouter_sync, service_providers
-from topik_question_lab.common.generation.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore, uses_topic_bank
+from topik_question_lab.common.generation.topic_bank import TOPIC_METADATA_FIELDS, TOPIC_STORE_SCHEMA_VERSION, TopicBrief, TopicStore
 from topik_question_lab.common.ui.topic_ui import invalidate_topic_planner, render_topic_planner
 
 
@@ -715,25 +715,17 @@ elif stage == "4. 문제 생성":
             st.caption(f"{provider_label(provider)} · 프리셋 미지원 · 기본 API 설정")
     topic_planner_key = f"listening-{type_id}"
     topic_plan_providers = list(dict.fromkeys([manual_provider, *run_targets]))
-    if uses_topic_bank("listening", type_id) or topic_store.has_active_slot_pool(
-        "listening", profile.question_numbers
-    ):
-        topic_plans, topic_plan_error = render_topic_planner(
-            topic_store,
-            section="listening",
-            question_type=type_id,
-            providers=topic_plan_providers,
-            question_numbers=profile.question_numbers,
-            count=count,
-            shared=profile.shared_script,
-            key_prefix=topic_planner_key,
-            provider_label=provider_label,
-        )
-    else:
-        invalidate_topic_planner(topic_planner_key)
-        topic_plans = {provider: [] for provider in topic_plan_providers}
-        topic_plan_error = ""
-        st.info("이 유형은 번호별 지정 풀이 없어서 별도 소재 은행을 사용하지 않습니다.")
+    topic_plans, topic_plan_error = render_topic_planner(
+        topic_store,
+        section="listening",
+        question_type=type_id,
+        providers=topic_plan_providers,
+        question_numbers=profile.question_numbers,
+        count=count,
+        shared=profile.shared_script,
+        key_prefix=topic_planner_key,
+        provider_label=provider_label,
+    )
     if st.button(
         "선택 모델 병행 생성",
         type="primary",
@@ -840,9 +832,7 @@ elif stage == "5. 검수·비교":
         item = next(value for value in items if value["id"] == selected_id)
         question = GeneratedListeningQuestion.model_validate(item["question"])
         topic_values = [getattr(question, field) for field in TOPIC_METADATA_FIELDS]
-        slot_uses_topics = uses_topic_bank("listening", type_id) or topic_store.has_active_slot_pool(
-            "listening", [question.type_slot]
-        )
+        slot_uses_topics = topic_store.resolve_source("listening", type_id, [question.type_slot]).source != "none"
         if any(topic_values) and not all(value.strip() for value in topic_values) and not slot_uses_topics:
             question = question.model_copy(
                 update={field: "" for field in TOPIC_METADATA_FIELDS}

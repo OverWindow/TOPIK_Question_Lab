@@ -145,8 +145,9 @@ def render_topic_planner(
 
     st.subheader("이번 실행 소재 배정")
     st.caption(
-        "번호별 지정 풀이 있으면 그 풀을 우선해 균등 순환하고, 나머지는 최근 50개 조합을 제외한 "
-        "공용 소재 은행에서 모델별로 다르게 배정합니다."
+        "지정 풀이 있으면 덜 사용한 소재를 우선 선택합니다. 공용 소재 적용 유형은 최근 50개 조합을 "
+        "제외해 배정하고, 별도 소재를 사용하지 않는 유형은 배정 없이 생성합니다. "
+        "공통 지문·대본은 같은 소재를 공유합니다."
     )
     if error:
         st.error(error)
@@ -157,6 +158,10 @@ def render_topic_planner(
 
     rows, selectors = planner_rows(plans, providers, units, provider_label)
     st.dataframe(rows, width="stretch", hide_index=True)
+
+    if selectors and not any(plans.values()):
+        st.info("이 문항은 별도 소재를 배정하지 않습니다. 소재 은행에서 적용 현황을 확인할 수 있습니다.")
+        return plans, ""
 
     if not selectors:
         st.info("현재 생성 수에 포함되는 문항에는 배정할 소재가 없습니다.")
@@ -177,7 +182,7 @@ def render_topic_planner(
             slots = ", ".join(str(slot) for slot in unit_slots)
             st.error(
                 f"{unit_key}({slots}번)는 문항별 지정 풀이 없습니다. "
-                "‘소재 은행 > 문항별 지정 풀’에서 이 번호의 풀을 먼저 추가하세요."
+                "‘소재 은행 > 문항별 적용’에서 이 번호의 소재 설정을 확인하세요."
             )
             return plans, ""
         current_plan = plans[target_provider]

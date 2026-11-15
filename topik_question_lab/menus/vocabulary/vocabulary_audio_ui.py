@@ -1,7 +1,9 @@
 """Audio controls embedded in the existing vocabulary page."""
+import os
+
 import streamlit as st
 
-from topik_question_lab.common.media.media_provider import MediaSettings
+from topik_question_lab.common.media.media_provider import MediaSettings, TTS_PROVIDERS
 from topik_question_lab.common.media.media_cloud import cloudfront_url
 from topik_question_lab.common.vocabulary.vocabulary import search_vocabulary
 from topik_question_lab.common.vocabulary.vocabulary_audio import MAX_BATCH_SIZE, VocabularyAudioError, audio_profile, audio_status, generate_vocabulary_audio, prepare_audio_schema
@@ -55,11 +57,14 @@ def render_audio_controls(database_url, root, snapshot, selected, *, level, quer
         st.number_input("낭독 속도", min_value=0.8, max_value=1.2, value=settings.speaking_rate, step=0.05,
                         key="vocabulary-audio-rate")
         st.caption(f"모델: {settings.tts_model} · 목소리: {profile['voice']} · 한국어 단어를 한 번 읽습니다.")
-        st.caption("생성은 Google TTS를 사용하며 MP3를 S3에 저장합니다. 실행 중에는 화면을 유지하세요.")
+        st.caption(f"음성 서비스: {TTS_PROVIDERS[settings.tts_provider]} · 설정 메뉴에서 변경합니다. MP3를 S3에 저장하며 실행 중에는 화면을 유지하세요.")
+        if not settings.tts_supports_style:
+            st.caption("이 모델은 스타일 지시 없이 단어만 낭독합니다.")
 
-    configured = bool(settings.project and settings.bucket and settings.base_url)
+    tts_configured = settings.project if settings.tts_provider == "google" else os.getenv("BIZROUTER_API_KEY")
+    configured = bool(tts_configured and settings.bucket and settings.base_url)
     if not configured:
-        st.info("Google TTS 프로젝트, S3 버킷, CloudFront 주소를 설정하면 음성을 생성할 수 있습니다.")
+        st.info("선택한 음성 서비스의 인증 정보, S3 버킷, CloudFront 주소를 설정하면 음성을 생성할 수 있습니다.")
     single = st.button("선택 단어 음성 재생성" if selected.get("audio_storage_path") else "선택 단어 음성 생성",
                        key="vocabulary-audio-single", disabled=not configured)
 

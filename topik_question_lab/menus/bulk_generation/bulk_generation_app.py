@@ -16,7 +16,7 @@ load_dotenv(ROOT / ".env")
 
 from topik_question_lab.common.generation.bulk_generation import custom_model, model_options, model_capabilities_for, prepare_batch, profiles_for
 from topik_question_lab.common.media.media_generation import preflight
-from topik_question_lab.common.media.media_provider import MediaSettings
+from topik_question_lab.common.media.media_provider import IMAGE_PROVIDERS, TTS_PROVIDERS, MediaSettings
 from topik_question_lab.common.generation.runner_service import get_runner
 from topik_question_lab.menus.bulk_generation.bulk_progress import batch_review_details, completed_batches, needs_progress_refresh
 from topik_question_lab.common.ui.set_identity import set_view, set_label, render_set_summary
@@ -52,9 +52,14 @@ with advanced:
     store.set_setting("auto-media", "true" if auto_media else "false")
     tts_delay = st.number_input("TTS 요청 완료 후 대기 (초)", min_value=0.0, value=float(settings.get("tts-delay", 2)), step=0.5)
     image_delay = st.number_input("이미지 요청 완료 후 대기 (초)", min_value=0.0, value=float(settings.get("image-delay", 5)), step=0.5)
-    st.caption(f"새 작업 이미지: BizRouter · {MediaSettings.from_env().image_model}")
+    image_settings = MediaSettings.from_env()
+    st.caption(f"새 작업 이미지: {IMAGE_PROVIDERS[image_settings.image_provider]} · {image_settings.image_model} · 설정 메뉴에서 변경")
+    st.caption(f"새 작업 음성: {TTS_PROVIDERS[image_settings.tts_provider]} · {image_settings.tts_model} · 설정 메뉴에서 변경")
     speaking_rate = st.slider("낭독 속도", 0.8, 1.2, 1.0, 0.025)
-    style_prompt = st.text_input("음성 전달 스타일", placeholder="예: 차분하고 또렷하게")
+    style_prompt = st.text_input("음성 전달 스타일", placeholder="예: 차분하고 또렷하게", disabled=not image_settings.tts_supports_style)
+    if not image_settings.tts_supports_style:
+        style_prompt = ""
+        st.caption("현재 음성 모델은 스타일 지시 없이 대본만 낭독합니다.")
     st.caption("일시적 오류는 최대 5회 자동 재시도합니다. 성공한 파일은 보존합니다.")
 store.set_setting("tts-delay", str(tts_delay))
 store.set_setting("image-delay", str(image_delay))

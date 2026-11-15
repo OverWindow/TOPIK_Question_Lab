@@ -9,6 +9,7 @@ from topik_question_lab.menus.topic_bank.topic_browser import application_matche
 
 
 PAGE = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/topic_bank/topic_bank_app.py"
+WRITING_PAGE = PAGE.parents[1] / "writing/writing_topic_bank_app.py"
 
 
 def snapshot(store):
@@ -129,3 +130,30 @@ def test_all_pool_view_includes_disabled_pools_and_rejects_empty_items(tmp_path)
     next(button for button in app.button if button.label == "소재 풀 저장").click().run()
     assert not app.exception and app.error
     assert snapshot(store) == before
+
+
+def test_writing_bank_lists_and_edits_classified_topics_without_ibt(tmp_path):
+    from topik_question_lab.common.generation.writing_topic_catalog import WRITING_POOL_ID
+
+    store = TopicStore(tmp_path / "data/topic_bank.db")
+    applications = applications_for_exam(store, "writing", "pbt")
+    assert [a.slots for a in applications] == [[51], [52], [53], [54]]
+    assert all(a.resolved.pool.id == WRITING_POOL_ID for a in applications)
+    assert applications_for_exam(store, "writing", "ibt") == []
+    app = AppTest.from_file(str(PAGE), default_timeout=20).run()
+    app.radio(key="topic-exam").set_value("ibt").run()
+    assert app.radio(key="topic-section").options == ["듣기", "읽기"]
+    app = AppTest.from_file(str(WRITING_PAGE), default_timeout=20).run()
+    assert not app.exception
+    assert app.title[0].value == "쓰기 소재 은행"
+    assert not any(radio.label in {"영역", "시험 형식"} for radio in app.radio)
+    assert not any(button.label == "누락된 기본 공용 소재 복원" for button in app.button)
+    assert any({"수준", "분야", "소재"} <= set(table.value.columns) for table in app.dataframe)
+    assert len(app.text_area(key=f"pool-items-{WRITING_POOL_ID}").value.splitlines()) == 85
+    app.text_area(key=f"pool-items-{WRITING_POOL_ID}").set_value("고급 > 과학 > 기술\n중급 > 교육 > 유학")
+    next(button for button in app.button if button.label == "소재 풀 저장").click().run()
+    assert not app.exception and not app.error
+    assert store.get_slot_pool(WRITING_POOL_ID).items == ["고급 > 과학 > 기술", "중급 > 교육 > 유학"]
+    app.radio(key="writing-bank-view").set_value("전체 소재 풀").run()
+    assert not app.exception
+    assert not any(header.value == "공용 소재" for header in app.subheader)

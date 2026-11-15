@@ -1,4 +1,4 @@
-"""Back up and apply the reviewed 009 -> 010 upgrade on the managed local bank."""
+"""Back up and apply approved migrations on the managed local bank."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -83,13 +83,17 @@ def migrate_local_bank(root: Path, url: str) -> tuple[list[str], Path | None]:
             pending = [path.stem for path in paths if path.stem not in applied]
             if "011_item_audio_only" in pending:
                 raise StartupMigrationError("문항 음원 통합(011)은 백업·검증 후 수동 적용해야 합니다. 자동 변경하지 않았습니다.")
-            if pending == ["017_vocabulary_questions"]:
+            if pending and set(pending) <= {"017_vocabulary_questions", "018_writing_sets"}:
                 from topik_question_lab.common.vocabulary.vocabulary_questions import apply_question_migration
-                backup = _backup_database(root, url, config, label="017")
-                apply_question_migration(c)
+                from topik_question_lab.common.question_bank.writing_postgres import apply_writing_migration
+                backup = _backup_database(root, url, config, label=pending[-1].split("_")[0])
+                if "017_vocabulary_questions" in pending:
+                    apply_question_migration(c)
+                if "018_writing_sets" in pending:
+                    apply_writing_migration(c)
                 return pending, backup
             if pending and pending != [AUTO_VERSION]:
-                raise StartupMigrationError("자동 적용 범위는 009 → 010입니다. 다른 미적용 마이그레이션은 수동 검토가 필요합니다.")
+                raise StartupMigrationError("자동 적용할 수 없는 미적용 마이그레이션이 있습니다. 수동 검토가 필요합니다.")
             if not pending:
                 require_media_schema(c)
                 return [], None

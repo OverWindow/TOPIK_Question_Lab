@@ -12,7 +12,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from topik_question_lab.common.media.audio_composer import pcm, validate_mp3
-from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaSettings, RequestRunner
+from topik_question_lab.common.media.media_provider import MediaClient, MediaSettings, RequestRunner
 from topik_question_lab.common.question_bank.connection import connection, database_identity, digest
 from topik_question_lab.common.media.media_cloud import S3MediaStore, cloudfront_url, destination_key, digest_file
 from topik_question_lab.common.question_bank.postgres_storage import MIGRATION_DIR
@@ -41,9 +41,9 @@ class VocabularyAudioError(ValueError):
 def audio_profile(settings: MediaSettings, speaker: str = "여자") -> dict:
     if speaker not in ("여자", "남자"):
         raise VocabularyAudioError("음성 화자를 선택하세요.")
-    return {"provider": "google_cloud_tts", "model": settings.tts_model,
+    return {**settings.tts_cache_route(), "provider": settings.tts_asset_provider, "model": settings.tts_model,
             "voice": settings.female if speaker == "여자" else settings.male, "speaker": speaker,
-            "speaking_rate": settings.speaking_rate, "style_prompt": WORD_NARRATION_PROMPT,
+            "speaking_rate": settings.speaking_rate, "style_prompt": WORD_NARRATION_PROMPT if settings.tts_supports_style else "",
             "version": "vocabulary_word_v2"}
 
 
@@ -176,7 +176,7 @@ def generate_vocabulary_audio(database_url: str, root: Path, vocabulary_ids, *, 
     results = []
     try:
         settings.validate("listening")
-        client = client or GoogleMediaClient(settings)
+        client = client or MediaClient(settings)
         cloud = cloud or S3MediaStore(settings.bucket, settings.base_url, region=settings.region)
         runner = RequestRunner(settings)
         for index, vocabulary_id in enumerate(ids):
@@ -235,7 +235,7 @@ def generate_vocabulary_audio(database_url: str, root: Path, vocabulary_ids, *, 
                 progress(index + 1, len(ids), result["word"], result["message"])
         return results
     except Exception:
-        raise VocabularyAudioError("음성 생성을 시작하지 못했습니다. Google TTS·S3·CloudFront·FFmpeg 설정을 확인하세요.") from None
+        raise VocabularyAudioError("음성 생성을 시작하지 못했습니다. 선택한 음성 서비스·S3·CloudFront·FFmpeg 설정을 확인하세요.") from None
     finally:
         if owned_client and client is not None:
             client.close()

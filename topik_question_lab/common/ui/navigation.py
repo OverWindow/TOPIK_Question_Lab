@@ -8,6 +8,12 @@ from topik_question_lab.common.paths import PACKAGE_ROOT
 MENU_PAGES = {
     "app.py": "reading/app.py",
     "listening_app.py": "listening/listening_app.py",
+    "writing_app.py": "writing/writing_app.py",
+    "writing_evaluation_app.py": "writing/writing_evaluation_app.py",
+    "writing_experiments_app.py": "writing_experiments/writing_experiments_app.py",
+    "writing_topic_bank_app.py": "writing/writing_topic_bank_app.py",
+    "writing_bank_editor_app.py": "writing_bank_editor/writing_bank_editor_app.py",
+    "writing_transfer_app.py": "writing_transfer/writing_transfer_app.py",
     "bulk_generation_app.py": "bulk_generation/bulk_generation_app.py",
     "storage_overview_app.py": "storage_overview/storage_overview_app.py",
     "bank_editor_app.py": "bank_editor/bank_editor_app.py",
@@ -21,6 +27,8 @@ MENU_PAGES = {
     "vocabulary_transfer_app.py": "vocabulary_transfer/vocabulary_transfer_app.py",
     "korean_dictionary_app.py": "korean_dictionary/korean_dictionary_app.py",
     "postgres_cleanup_app.py": "postgres_cleanup/postgres_cleanup_app.py",
+    "settings_app.py": "settings/settings_app.py",
+    "writing_settings_app.py": "settings/writing_settings_app.py",
 }
 
 

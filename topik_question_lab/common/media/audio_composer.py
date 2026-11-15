@@ -63,6 +63,45 @@ def pcm(data):
         raise ValueError("음성 WAV 파일이 올바르지 않습니다.") from None
 
 
+def normalize_speech(data, content_type, ffmpeg, *, rate=1.0):
+    """Normalize BizRouter PCM/WAV to the composer's 24kHz mono WAV contract."""
+    mime = content_type.split(";", 1)[0].strip().lower()
+    raw = mime == "audio/pcm"
+    if not data or (raw and len(data) % 2) or (not raw and mime not in ("audio/wav", "audio/x-wav", "audio/wave")):
+        raise ValueError("음성 응답 형식이 올바르지 않습니다.")
+    if not raw:
+        if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            raise ValueError("음성 WAV 헤더가 없습니다.")
+        try:
+            frames = pcm(data)
+        except ValueError:
+            frames = None
+        if frames is not None and rate == 1.0:
+            return data
+    if raw and rate == 1.0:
+        frames = data
+    else:
+        command = [ffmpeg, "-nostdin", "-v", "error"]
+        if raw:
+            command += ["-f", "s16le", "-ar", "24000", "-ac", "1"]
+        command += ["-i", "pipe:0"]
+        if rate != 1.0:
+            command += ["-af", f"atempo={rate}"]
+        command += ["-f", "s16le", "-acodec", "pcm_s16le", "-ar", "24000", "-ac", "1", "pipe:1"]
+        try:
+            result = subprocess.run(command, input=data, capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            raise ValueError("음성 WAV 변환을 실행하지 못했습니다.") from None
+        if result.returncode or not result.stdout or len(result.stdout) % 2:
+            raise ValueError("음성 WAV 변환에 실패했습니다.")
+        frames = result.stdout
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+        audio.writeframes(frames)
+    return buffer.getvalue()
+
+
 def bell_pcm():
     output = bytearray()
     for frame in range(round(24000 * .620)):

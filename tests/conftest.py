@@ -15,7 +15,9 @@ def isolated_application_root(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     for name in ("GOOGLE_CLOUD_PROJECT_ID", "GOOGLE_CLOUD_CREDENTIALS_JSON", "GOOGLE_APPLICATION_CREDENTIALS"):
         monkeypatch.delenv(name, raising=False)
-    for name in ("BIZROUTER_IMAGE_MODEL", "BIZROUTER_BASE_URL"):
+    for name in ("BIZROUTER_IMAGE_MODEL", "BIZROUTER_BASE_URL", "GOOGLE_IMAGE_MODEL",
+                 "GOOGLE_TTS_MODEL", "GOOGLE_TTS_FEMALE_VOICE", "GOOGLE_TTS_MALE_VOICE",
+                 "BIZROUTER_TTS_MODEL", "BIZROUTER_TTS_FEMALE_VOICE", "BIZROUTER_TTS_MALE_VOICE"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     import streamlit as st

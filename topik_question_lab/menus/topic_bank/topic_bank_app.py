@@ -5,6 +5,7 @@ from uuid import uuid4
 import streamlit as st
 
 from topik_question_lab.common.paths import application_root
+from topik_question_lab.common.generation.writing_topic_catalog import WRITING_TOPIC_SOURCES, split_writing_topic
 from topik_question_lab.common.generation.exam_profiles import profiles_for_exam
 from topik_question_lab.common.generation.listening_profiles import LISTENING_TYPE_PROFILES
 from topik_question_lab.common.generation.prompt_profiles import QUESTION_TYPE_PROFILES
@@ -24,7 +25,7 @@ def get_topic_store(schema_version: int) -> TopicStore:
 
 
 def section_label(section: str) -> str:
-    return "읽기" if section == "reading" else "듣기"
+    return {"reading": "읽기", "listening": "듣기", "writing": "쓰기"}[section]
 
 
 def type_label(section: str, type_id: str) -> str:
@@ -68,19 +69,27 @@ def render_pool(store: TopicStore, pool: SlotTopicPool) -> None:
     st.subheader(pool.name)
     links = [
         f"{exam.upper()} {format_slot_numbers(pool_exam_slots(pool, exam)) or '연결 없음'}"
-        for exam in ("pbt", "ibt")
+        for exam in (("pbt",) if pool.section == "writing" else ("pbt", "ibt"))
     ]
     st.caption(f"{section_label(pool.section)} · {' / '.join(links)} · {'사용 중' if pool.active else '사용 안 함'}")
-    st.caption("같은 풀을 사용하는 PBT·IBT 문항에 수정한 소재와 지침이 함께 적용됩니다.")
+    st.caption("같은 풀을 사용하는 문항에 수정한 소재와 지침이 함께 적용됩니다.")
     query = st.text_input("풀 안의 소재 검색", key=f"pool-search-{pool.id}")
     rows = [{"번호": index, "소재": item} for index, item in enumerate(pool.items, 1) if query.casefold() in item.casefold()]
+    if pool.section == "writing":
+        rows = [{"번호": row["번호"], **dict(zip(("수준", "분야", "소재"), split_writing_topic(row["소재"])))} for row in rows]
     st.caption(f"전체 {len(pool.items)}개 · 검색 결과 {len(rows)}개")
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True, height=300)
     else:
         st.info("검색 결과가 없습니다.")
     with st.expander("선정 방식·생성 지침"):
-        st.write("사용 횟수가 적은 소재를 우선 선택합니다. 같은 실행의 중복은 가능한 한 피하고, 공통 지문·대본은 소재 하나를 공유합니다.")
+        if pool.section == "writing":
+            st.write("쓰기 1·2번(51·52번)은 중급, 3·4번(53·54번)은 고급 소재를 자동 배정합니다. "
+                     "덜 사용한 소재를 우선해 무작위로 뽑고, 같은 실행의 중복은 가능한 한 피합니다.")
+            st.caption("기본 소재 출처: " + " / ".join(WRITING_TOPIC_SOURCES.values()))
+            st.caption("‘건강·운동·쇼핑’은 원문의 분야명 없는 나열을 묶은 분류입니다.")
+        else:
+            st.write("사용 횟수가 적은 소재를 우선 선택합니다. 같은 실행의 중복은 가능한 한 피하고, 공통 지문·대본은 소재 하나를 공유합니다.")
         st.write(pool.prompt_instruction)
     with st.expander("소재 풀 수정"):
         with st.form(f"edit-pool-{pool.id}"):
@@ -90,19 +99,21 @@ def render_pool(store: TopicStore, pool: SlotTopicPool) -> None:
                 f"pool-slots-{pool.id}": format_slot_numbers(pool.slot_numbers),
             })
             name = st.text_input("풀 이름", key=f"pool-name-{pool.id}")
-            items = st.text_area("전체 소재 목록", height=260, key=f"pool-items-{pool.id}", help="검색 결과와 관계없이 전체 목록을 편집합니다. 한 줄에 소재 하나를 입력하세요.")
+            items = st.text_area("전체 소재 목록", height=260, key=f"pool-items-{pool.id}", help="한 줄에 소재 하나를 입력하세요. 쓰기는 ‘중급 > 분야 > 소재’ 또는 ‘고급 > 분야 > 소재’ 형식으로 분류를 유지합니다.")
             instruction = st.text_area("생성 지침", height=100, key=f"pool-instruction-{pool.id}")
             active = st.checkbox("이 풀 사용", key=f"pool-active-{pool.id}")
-            slots = st.text_input("연결 문항 (PBT 기준)", key=f"pool-slots-{pool.id}", help="IBT 대응 번호는 자동 연결됩니다. 공통 지문·대본의 문항은 같은 풀에 함께 지정하세요.")
+            slots = st.text_input("연결 문항 (PBT 기준)", key=f"pool-slots-{pool.id}",
+                                  help="쓰기 PBT는 51~54번을 지정하세요." if pool.section == "writing"
+                                  else "IBT 대응 번호는 자동 연결됩니다. 공통 지문·대본의 문항은 같은 풀에 함께 지정하세요.")
             if st.form_submit_button("소재 풀 저장", type="primary"):
                 try:
                     updated = SlotTopicPool.model_validate({
                         **pool.model_dump(), "name": name.strip(), "items": parse_pool_items(items),
                         "prompt_instruction": instruction.strip(), "active": active,
-                        "slot_numbers": parse_slot_numbers(slots),
+                        "slot_numbers": parse_slot_numbers(slots, section=pool.section),
                     })
                     store.save_slot_pool(updated)
-                    saved("소재 풀을 저장했습니다. 연결된 PBT·IBT 문항에 함께 적용됩니다.")
+                    saved("소재 풀을 저장했습니다. 연결된 문항에 함께 적용됩니다.")
                 except ValueError as exc:
                     st.error(str(exc))
     usages = [row for row in store.list_slot_pool_usages(5000) if row["pool_id"] == pool.id]
@@ -196,11 +207,12 @@ def render_all_pools(store: TopicStore, section: str, exam: str, query: str) -> 
     pools = [pool for pool in store.list_slot_pools(section=section)
              if (number in pool_exam_slots(pool, exam) if number is not None
                  else query.casefold() in " ".join([pool.name, *pool.items]).casefold())]
-    topics = store.list_topics()
+    topics = [] if section == "writing" else store.list_topics()
     show_global = not query or query in "공용 소재" or any(query.casefold() in " ".join([topic.domain, topic.title, *topic.angles]).casefold() for topic in topics)
     if number is not None:
         show_global = any(number in application.slots and application.resolved and application.resolved.source == "global"
                           for application in applications_for_exam(store, section, exam))
+    show_global = show_global and section != "writing"
     rows = [{"소재 풀": pool.name, f"{exam.upper()} 연결 문항": format_slot_numbers(pool_exam_slots(pool, exam)) or "연결 없음", "소재 수": len(pool.items), "상태": "사용 중" if pool.active else "사용 안 함"} for pool in pools]
     if show_global:
         rows.append({"소재 풀": "공용 소재 전체", f"{exam.upper()} 연결 문항": "유형별 적용", "소재 수": len(topics), "상태": "소재별 설정"})
@@ -221,15 +233,15 @@ def render_all_pools(store: TopicStore, section: str, exam: str, query: str) -> 
 
 def render_additions(store: TopicStore, section: str, exam: str) -> None:
     with st.expander("새 소재 추가"):
-        kind = st.radio("추가할 항목", ["지정 풀", "공용 소재"], horizontal=True)
+        kind = st.radio("추가할 항목", ["지정 풀"] if section == "writing" else ["지정 풀", "공용 소재"], horizontal=True)
         if kind == "지정 풀":
             applications = applications_for_exam(store, section, exam)
             with st.form("add-pool"):
                 chosen = st.multiselect("연결할 문항", list(range(len(applications))), format_func=lambda i: f"{exam.upper()} {format_slot_numbers(applications[i].slots)}번 · {applications[i].label}")
                 name = st.text_input("새 풀 이름")
-                items = st.text_area("새 풀 소재 목록", help="한 줄에 소재 하나를 입력하세요.")
+                items = st.text_area("새 풀 소재 목록", help="한 줄에 소재 하나를 입력하세요. 쓰기 분류 형식: 중급 > 분야 > 소재 / 고급 > 분야 > 소재")
                 instruction = st.text_area("새 풀 생성 지침")
-                st.caption("선택한 문항의 PBT·IBT 대응 번호가 함께 연결됩니다. 기존 활성 풀이 있는 번호는 중복 지정할 수 없습니다.")
+                st.caption("선택한 문항에 연결됩니다. 기존 활성 풀이 있는 번호는 중복 지정할 수 없습니다.")
                 if st.form_submit_button("새 지정 풀 저장"):
                     try:
                         references = sorted({n for i in chosen for n in applications[i].reference_slots})
@@ -253,28 +265,43 @@ def render_additions(store: TopicStore, section: str, exam: str) -> None:
     with st.expander("기본 소재 복원"):
         st.caption("누락된 기본값을 추가합니다. 기존 풀·소재의 수정 내용과 사용 이력은 유지합니다.")
         if st.button("누락된 기본 지정 풀 복원"):
-            count = store.seed_default_slot_pools()
+            sections = ("writing",) if section == "writing" else ("reading", "listening")
+            count = sum(store.seed_default_slot_pools(section=value) for value in sections)
             saved(f"누락된 기본 풀 {count}개를 추가했습니다.")
-        if st.button("누락된 기본 공용 소재 복원"):
+        if section != "writing" and st.button("누락된 기본 공용 소재 복원"):
             count = store.seed_defaults()
             saved(f"누락된 기본 공용 소재 {count}개를 추가했습니다.")
 
 
-st.set_page_config(page_title="TOPIK 소재 은행", page_icon="🗂️", layout="wide")
-st.markdown("<style>.block-container {padding-top: 2rem; padding-bottom: 2rem;}</style>", unsafe_allow_html=True)
-st.title("소재 은행")
-st.caption("시험과 문항을 선택해 실제 적용 풀, 전체 소재, 생성 지침을 한곳에서 확인하고 수정합니다.")
-if message := st.session_state.pop("topic-save-message", ""):
-    st.success(message)
-topic_store = get_topic_store(TOPIC_STORE_SCHEMA_VERSION)
-section_col, exam_col, view_col = st.columns([1, 1, 2])
-section = section_col.radio("영역", ["listening", "reading"], format_func=section_label, horizontal=True, key="topic-section")
-exam = exam_col.radio("시험 형식", ["pbt", "ibt"], format_func=str.upper, horizontal=True, key="topic-exam")
-view = view_col.radio("보기", ["문항별 적용", "전체 소재 풀"], horizontal=True, key="topic-view")
-query = st.text_input("문항·풀·소재 검색", placeholder="문항 번호, 유형, 풀 이름 또는 소재", key="topic-query").strip()
-if view == "문항별 적용":
-    render_applications(topic_store, section, exam, query)
-else:
-    render_all_pools(topic_store, section, exam, query)
-st.divider()
-render_additions(topic_store, section, exam)
+def render_page(*, writing: bool = False) -> None:
+    title = "쓰기 소재 은행" if writing else "소재 은행"
+    st.set_page_config(page_title=title, page_icon="🗂️", layout="wide")
+    st.markdown("<style>.block-container {padding-top: 2rem; padding-bottom: 2rem;}</style>", unsafe_allow_html=True)
+    st.title(title)
+    st.caption("쓰기 PBT 51~54번의 중급·고급 소재와 생성 지침을 확인하고 수정합니다." if writing
+               else "읽기·듣기의 시험과 문항을 선택해 적용 풀, 소재, 생성 지침을 확인하고 수정합니다.")
+    if message := st.session_state.pop("topic-save-message", ""):
+        st.success(message)
+
+    topic_store = get_topic_store(TOPIC_STORE_SCHEMA_VERSION)
+    if writing:
+        section, exam = "writing", "pbt"
+        prefix = "writing-bank"
+        view = st.radio("보기", ["문항별 적용", "전체 소재 풀"], horizontal=True, key=f"{prefix}-view")
+    else:
+        prefix = "topic"
+        section_col, exam_col, view_col = st.columns([1, 1, 2])
+        section = section_col.radio("영역", ["listening", "reading"], format_func=section_label, horizontal=True, key="topic-section")
+        exam = exam_col.radio("시험 형식", ["pbt", "ibt"], format_func=str.upper, horizontal=True, key="topic-exam")
+        view = view_col.radio("보기", ["문항별 적용", "전체 소재 풀"], horizontal=True, key="topic-view")
+    query = st.text_input("문항·풀·소재 검색", placeholder="문항 번호, 유형, 풀 이름 또는 소재", key=f"{prefix}-query").strip()
+    if view == "문항별 적용":
+        render_applications(topic_store, section, exam, query)
+    else:
+        render_all_pools(topic_store, section, exam, query)
+    st.divider()
+    render_additions(topic_store, section, exam)
+
+
+if __name__ == "__main__":
+    render_page()

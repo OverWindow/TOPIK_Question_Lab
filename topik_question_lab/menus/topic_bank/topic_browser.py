@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 
 from topik_question_lab.common.generation.exam_profiles import profiles_for_exam
+from topik_question_lab.common.writing_models import PROFILES as WRITING_PROFILES
 from topik_question_lab.common.generation.topic_bank import (
     SlotPoolConfigurationError, SlotTopicPool, TopicSource, TopicStore,
     format_slot_numbers, generation_units, topic_reference,
@@ -33,6 +34,16 @@ class TopicApplication:
 
 def applications_for_exam(store: TopicStore, section: str, exam_format: str) -> list[TopicApplication]:
     applications = []
+    if section == "writing":
+        if exam_format != "pbt":
+            return []
+        for slot, profile in WRITING_PROFILES.items():
+            try:
+                source = store.resolve_source(section, "writing_pbt", [slot])
+                applications.append(TopicApplication("writing_pbt", profile.label, [slot], [slot], source))
+            except SlotPoolConfigurationError as exc:
+                applications.append(TopicApplication("writing_pbt", profile.label, [slot], [slot], None, str(exc)))
+        return applications
     for type_id, profile in profiles_for_exam(section, exam_format).items():
         shared = profile.shared_script if section == "listening" else profile.shared_passage
         for _, slots in generation_units(profile.question_numbers, len(profile.question_numbers), shared):
@@ -46,6 +57,8 @@ def applications_for_exam(store: TopicStore, section: str, exam_format: str) -> 
 
 
 def pool_exam_slots(pool: SlotTopicPool, exam_format: str) -> list[int]:
+    if pool.section == "writing":
+        return list(pool.slot_numbers) if exam_format == "pbt" else []
     slots = []
     for type_id, profile in profiles_for_exam(pool.section, exam_format).items():
         _, references = topic_reference(pool.section, type_id, list(profile.question_numbers))

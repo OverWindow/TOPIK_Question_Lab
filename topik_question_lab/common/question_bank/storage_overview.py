@@ -173,11 +173,16 @@ def preparation_progress(batch, records, tasks):
                             or (provider == "bizrouter" and snapshot.get("base_url") != media_settings.get("image_base_url"))):
                         continue
                 if expected["kind"] == "audio" and task["kind"] == "compose" and snapshot.get("script") == expected["script"]:
+                    provider = media_settings.get("tts_provider", "google")
+                    if snapshot.get("provider", "google") != provider or (
+                        provider == "bizrouter" and snapshot.get("base_url") != media_settings.get("tts_base_url")
+                    ):
+                        continue
                     audio_positions.update(expected["positions"])
                     audio_files.add(tuple(expected["positions"]))
                     break
                 if expected["kind"] == "image" and task["kind"] in ("image", "chart") and all(
-                    snapshot.get(k) == expected[k] for k in ("prompt", "chart_spec", "color")
+                    snapshot.get(k) == expected.get(k) for k in ("prompt", "chart_spec", "color", "output_size", "frame_style")
                 ):
                     images_ready += 1
                     break

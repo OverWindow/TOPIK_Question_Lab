@@ -13,6 +13,7 @@ from test_bank_media_generation import snapshot, plan
 from test_ibt_pipeline import generated_batch, COMBO
 from test_media_generation import Clock, FakeGoogle, pipeline, settings, assert_image_color
 from topik_question_lab.common.media import media_provider as providers, media_generation as media
+from topik_question_lab.common.generation.bulk_generation import BulkStore
 from topik_question_lab.common.question_bank.publication import collect_candidate_catalog
 from topik_question_lab.common.question_bank.storage_overview import preparation_progress
 from topik_question_lab.menus.bank_editor.bank_media_generation import generate_replacements
@@ -108,6 +109,49 @@ def test_catalog_rejects_unavailable_or_non_image_model(monkeypatch, models):
             client.authenticate()
     finally:
         client.close()
+
+
+def test_image_model_catalog_filters_and_deduplicates_without_generating(monkeypatch):
+    requests = []
+    entries = [{"id": "vendor/image", "output_modalities": ["text", "image"]},
+               {"id": "vendor/image", "output_modalities": ["image"]},
+               {"id": "vendor/text", "output_modalities": ["text"]},
+               {"id": "vendor/audio", "output_modalities": ["audio"]},
+               {"id": "vendor/malformed", "output_modalities": "image"},
+               {"id": " ", "output_modalities": ["image"]},
+               {"id": 123, "output_modalities": ["image"]}, None, {}]
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"models": entries})
+
+    client = mock_images(monkeypatch, respond)
+    try:
+        assert client.list_models() == ["vendor/image"]
+    finally:
+        client.close()
+    assert [(request.method, request.url.path) for request in requests] == [("GET", "/v1/models")]
+    assert requests[0].headers["Authorization"] == "Bearer synthetic-image-key"
+
+
+def test_saved_bizrouter_model_is_sent_to_image_generation(tmp_path, monkeypatch):
+    store = BulkStore(tmp_path)
+    store.set_setting("image_model_bizrouter", "vendor/selected-image")
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"models": [{"id": "vendor/selected-image", "output_modalities": ["image"]}]})
+        return httpx.Response(200, json=image_response())
+
+    client = mock_images(monkeypatch, respond)
+    try:
+        client.authenticate()
+        client.image("test")
+    finally:
+        client.close()
+    assert json.loads(requests[-1].content)["model"] == "vendor/selected-image"
 
 
 @pytest.mark.parametrize("content,finish", [

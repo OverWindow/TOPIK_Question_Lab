@@ -12,14 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from topik_question_lab.common.generation.topic_catalog import default_topic_records
 from topik_question_lab.common.generation.slot_topic_catalog import default_slot_pool_records
+from topik_question_lab.common.generation.writing_topic_catalog import WRITING_POOL_ID, default_writing_pool
 
 
 RECENT_TOPIC_LIMIT = 50
-TOPIC_STORE_SCHEMA_VERSION = 5
+TOPIC_STORE_SCHEMA_VERSION = 7
 TOPIC_METADATA_FIELDS = ("topic_id", "topic_domain", "topic_title", "topic_angle")
 TOPIC_FREE_READING_TYPES = {"grammar_blank", "similar_expression"}
 TOPIC_FREE_LISTENING_TYPES = {
@@ -33,6 +34,8 @@ TOPIC_FREE_LISTENING_TYPES = {
 
 
 def uses_topic_bank(section: str, question_type: str) -> bool:
+    if section == "writing":
+        return False  # Writing uses designated pools, never reading/listening global topics.
     if question_type.startswith("ibt_"):
         from .exam_profiles import profile_for
         question_type = profile_for(section, question_type).base_type_id
@@ -105,7 +108,7 @@ def parse_pool_items(value: str | list[str]) -> list[str]:
     return result
 
 
-def parse_slot_numbers(value: str | list[int]) -> list[int]:
+def parse_slot_numbers(value: str | list[int], *, section: str = "reading") -> list[int]:
     if isinstance(value, list):
         numbers = [int(number) for number in value]
     else:
@@ -126,8 +129,9 @@ def parse_slot_numbers(value: str | list[int]) -> list[int]:
             else:
                 raise ValueError(f"문항 번호 형식을 확인하세요: {token}")
     result = sorted(set(numbers))
-    if not result or any(number < 1 or number > 50 for number in result):
-        raise ValueError("문항 번호는 1~50 사이에서 하나 이상 지정해야 합니다.")
+    minimum, maximum = (51, 54) if section == "writing" else (1, 50)
+    if not result or any(number < minimum or number > maximum for number in result):
+        raise ValueError(f"문항 번호는 {minimum}~{maximum} 사이에서 하나 이상 지정해야 합니다.")
     return result
 
 
@@ -153,7 +157,7 @@ def slot_item_topic_id(pool_id: str, item: str) -> str:
 
 class SlotTopicPool(BaseModel):
     id: str = Field(min_length=1)
-    section: Literal["reading", "listening"]
+    section: Literal["reading", "listening", "writing"]
     slot_numbers: list[int] = Field(min_length=1)
     name: str = Field(min_length=1)
     prompt_instruction: str = Field(min_length=1)
@@ -164,8 +168,8 @@ class SlotTopicPool(BaseModel):
 
     @field_validator("slot_numbers")
     @classmethod
-    def clean_slot_numbers(cls, values: list[int]) -> list[int]:
-        return parse_slot_numbers(values)
+    def clean_slot_numbers(cls, values: list[int], info: ValidationInfo) -> list[int]:
+        return parse_slot_numbers(values, section=info.data.get("section", "reading"))
 
     @field_validator("items", mode="before")
     @classmethod
@@ -194,6 +198,11 @@ class TopicSource:
 
 def topic_reference(section: str, question_type: str, slot_numbers: list[int]) -> tuple[str, list[int]]:
     """Resolve displayed exam numbers to the shared pool's PBT references."""
+    if section == "writing":
+        if question_type != "writing_pbt":
+            raise ValueError("쓰기는 PBT 51~54번만 지원합니다.")
+        parse_slot_numbers(slot_numbers, section="writing")
+        return question_type, list(slot_numbers)
     if section not in {"reading", "listening"}:
         raise ValueError(f"알 수 없는 영역입니다: {section}")
     if question_type.startswith("ibt_"):
@@ -351,16 +360,29 @@ class TopicStore:
                 )
         return inserted
 
-    def seed_default_slot_pools(self) -> int:
-        """Restore only missing built-in pools; never overwrite an existing row."""
+    def seed_default_slot_pools(self, *, section: str = "") -> int:
+        """Restore missing pools and refresh untouched legacy writing guidance."""
         inserted = 0
         with self.connect() as connection:
-            for raw in default_slot_pool_records():
+            for raw in [*default_slot_pool_records(), default_writing_pool()]:
+                if section and raw["section"] != section:
+                    continue
                 pool = SlotTopicPool.model_validate({**raw, "is_default": True})
                 existing = connection.execute(
                     "SELECT 1 FROM slot_topic_pools WHERE id = ?", (pool.id,)
                 ).fetchone()
                 if existing:
+                    if pool.id == WRITING_POOL_ID:
+                        # Update only the untouched default from before level-based assignment.
+                        legacy_instruction = pool.prompt_instruction.replace(
+                            "51·52번은 중급, 53·54번은 고급 소재를 사용하십시오.",
+                            "분류는 문항 번호를 제한하지 않습니다.",
+                        )
+                        connection.execute(
+                            """UPDATE slot_topic_pools SET prompt_instruction = ?, updated_at = CURRENT_TIMESTAMP
+                               WHERE id = ? AND is_default = 1 AND user_modified = 0 AND prompt_instruction = ?""",
+                            (pool.prompt_instruction, pool.id, legacy_instruction),
+                        )
                     continue
                 active_rows = connection.execute(
                     "SELECT slot_numbers_json FROM slot_topic_pools WHERE section = ? AND active = 1",
@@ -730,7 +752,7 @@ class TopicStore:
         initial_domain_counts: Counter[str] | None = None,
         rng: random.Random | random.SystemRandom | None = None,
     ) -> list[TopicBrief]:
-        if section not in {"reading", "listening"}:
+        if section not in {"reading", "listening", "writing"}:
             raise ValueError(f"알 수 없는 영역입니다: {section}")
 
         chooser = rng or random.SystemRandom()

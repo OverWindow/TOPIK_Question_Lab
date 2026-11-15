@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 import uuid
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from topik_question_lab.common.listening_models import ChartSpec
 from topik_question_lab.common.media.listening_visuals import render_chart, render_banner
@@ -22,6 +22,18 @@ from topik_question_lab.common.question_bank.direct_publication import _hash, _j
 from topik_question_lab.common.media.media_cloud import S3MediaStore, cloudfront_url, destination_key, digest_file
 from topik_question_lab.common.media.media_registration import MediaRegistration
 from topik_question_lab.common.question_bank.publication import PUBLICATION_NAMESPACE
+
+
+LISTENING_IMAGE_SIZE = (1200, 900)
+LISTENING_IMAGE_FRAME = "black_rectangle_v1"
+LISTENING_FRAME_PROMPT = (
+    "Framing requirement: Render the complete scene or chart on a plain rectangular white canvas. "
+    "Do not draw an enclosing border or frame, circular or oval vignette, rounded corners, "
+    "panel outline or decorative edge. Do not crop or mask the image into a shape. "
+    "Ignore any framing or border-style requests in the scene description. "
+    "Preserve round objects, chart axes, pie charts and all chart data; this rule applies only to the enclosing frame. "
+    "A uniform rectangular border will be added after generation."
+)
 
 
 def chart_spec(value, source=""):
@@ -126,6 +138,8 @@ def image_tasks(candidate, content_hash, targets=None):
             raise ValueError("필수 이미지 설명이 없습니다.")
         tasks.append({"kind": "image", "color": color, "item_id": str(candidate.item_id), "content_hash": content_hash,
                       "visual_role": "choice", "option_number": number, "prompt": prompt, "chart_spec": spec,
+                      **({"output_size": list(LISTENING_IMAGE_SIZE), "frame_style": LISTENING_IMAGE_FRAME}
+                         if candidate.section == "listening" else {}),
                       **({"model_chart": True} if model_chart else {})})
     if options and {o["number"] for o in options} != {1, 2, 3, 4}:
         raise ValueError("선택지 이미지 네 장이 모두 필요합니다.")
@@ -155,20 +169,34 @@ def image_tasks(candidate, content_hash, targets=None):
 
 def render_image(task, client):
     color = task.get("color", False)
+    prompt = task["prompt"]
+    framed = task.get("frame_style") == LISTENING_IMAGE_FRAME
+    if framed:
+        prompt += "\n" + LISTENING_FRAME_PROMPT
     if task.get("model_chart"):
-        data = client.image(task["prompt"], chart=True)
+        data = client.image(prompt, chart=True)
     elif task.get("model_banner"):
-        data = client.image(task["prompt"], banner=True, color=True)
+        data = client.image(prompt, banner=True, color=True)
     elif task.get("banner_text"):
         data = render_banner(task["banner_text"])
     elif task["chart_spec"]:
         data = render_chart(ChartSpec.model_validate(task["chart_spec"]), color=color)
     else:
-        data = client.image(task["prompt"], color=color)
+        data = client.image(prompt, color=color)
     with Image.open(io.BytesIO(data)) as image:
         image.load()
         image = image.convert("RGB") if color else image.convert("L").convert("RGB")
-        image.thumbnail((1200, 900))
+        if task.get("output_size"):
+            size = tuple(task["output_size"])
+            if framed:
+                # Reserve space so the 3px border and 9px white padding never cover content.
+                inner_size = (size[0] - 24, size[1] - 24)
+                image = ImageOps.pad(image, inner_size, method=Image.Resampling.LANCZOS, color="white")
+                image = ImageOps.expand(ImageOps.expand(image, border=9, fill="white"), border=3, fill="black")
+            else:
+                image = ImageOps.pad(image, size, method=Image.Resampling.LANCZOS, color="white")
+        else:
+            image.thumbnail((1200, 900))
         output = io.BytesIO()
         image.save(output, format="PNG", optimize=True)
         return output.getvalue()
@@ -283,7 +311,7 @@ class MediaPipeline:
     def _speech(self, speaker, text):
         s = self.settings
         snapshot = {"speaker": speaker, "text": text, "model": s.tts_model, "female": s.female, "male": s.male,
-                    "rate": s.speaking_rate, "style": s.style_prompt, "version": "literal_v1"}
+                    "rate": s.speaking_rate, "style": s.style_prompt, "version": "literal_v1", **s.tts_cache_route()}
 
         def generate(key):
             data = self.client.speech(speaker, text)
@@ -299,7 +327,7 @@ class MediaPipeline:
     def _audio(self, task):
         s = self.settings
         snapshot = {"script": task["script"], "model": s.tts_model, "female": s.female, "male": s.male,
-                    "rate": s.speaking_rate, "style": s.style_prompt, "composer": COMPOSER_VERSION}
+                    "rate": s.speaking_rate, "style": s.style_prompt, "composer": COMPOSER_VERSION, **s.tts_cache_route()}
 
         def generate(key):
             path = self.directory / f"{key}.mp3"
@@ -314,7 +342,7 @@ class MediaPipeline:
         source_hash = _hash([generation_hash, result["file_sha256"]])
         return {**row, "kind": "audio", "audio_asset_id": str(uuid.uuid5(PUBLICATION_NAMESPACE, "audio:" + source_hash)),
                 "source_hash": source_hash, "binding_source_hash": generation_hash, "positions": task["positions"],
-                "model_name": s.tts_model, "female_voice": s.female, "male_voice": s.male,
+                "provider": s.tts_asset_provider, "model_name": s.tts_model, "female_voice": s.female, "male_voice": s.male,
                 "narration_version": "exam_track_v4", "script_snapshot": {**task["script"], "generationSourceHash": generation_hash},
                 "tts_style": {"speakingRate": s.speaking_rate, "stylePrompt": s.style_prompt}, "duration_ms": result["duration_ms"]}
 
@@ -325,7 +353,11 @@ class MediaPipeline:
         snapshot = {**({"banner_text": task["banner_text"]} if task.get("banner_text") else {}), "prompt": task["prompt"], "chart_spec": task["chart_spec"], "model": self.settings.image_model,
                     "color": task.get("color", False),
                     "version": "ibt_banner_image_v1" if model_banner else "ibt_chart_image_v1" if model_chart else "exam_image_v1"}
-        # Preserve old Google checkpoint hashes; new remote images include their route.
+        if task.get("output_size"):
+            snapshot["output_size"] = task["output_size"]
+        if task.get("frame_style"):
+            snapshot["frame_style"] = task["frame_style"]
+        # Remote BizRouter images include their provider route in the checkpoint.
         if not local_render and self.settings.image_provider == "bizrouter":
             snapshot.update(provider="bizrouter", base_url=self.settings.image_base_url,
                             aspect_ratio=BANNER_ASPECT_RATIO if model_banner else "4:3")

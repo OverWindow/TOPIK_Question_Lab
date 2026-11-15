@@ -36,11 +36,12 @@ def test_default_bank_seeds_once_and_restore_does_not_overwrite_edits(tmp_path):
 def test_default_slot_pools_seed_exactly_and_restore_without_overwrite(tmp_path):
     store = TopicStore(tmp_path / "topic_bank.db")
     pools = store.list_slot_pools()
-    assert len(pools) == 32
+    assert len(pools) == 33
     assert {
         (pool.section, tuple(pool.slot_numbers)): len(pool.items)
         for pool in pools
     } == {
+        ("writing", (51, 52, 53, 54)): 85,
         ("reading", (5,)): 50,
         ("reading", (6,)): 41,
         ("reading", (7,)): 24,

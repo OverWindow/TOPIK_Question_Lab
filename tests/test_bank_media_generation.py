@@ -6,9 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from PIL import Image
 from streamlit.testing.v1 import AppTest
 
-from test_media_generation import FakeGoogle, assert_image_color, seed_media, settings
+from test_media_generation import FakeGoogle, assert_image_color, assert_listening_image_frame, seed_media, settings
+from topik_question_lab.common.media.media_generation import LISTENING_FRAME_PROMPT
 from topik_question_lab.menus.bank_editor import bank_media_generation as generation
 from topik_question_lab.common.question_bank.bank_editor import BankEditor, item_metadata, prepare_edit, upload_media
 from topik_question_lab.common.question_bank.direct_publication import PublicationBlocked, expected_item, package_draft, _hash
@@ -68,12 +70,13 @@ def test_selected_image_and_manual_upload_are_prepared_without_writes(snapshot, 
     monkeypatch.setattr("topik_question_lab.common.media.media_cloud.S3MediaStore", lambda *a, **k: pytest.fail("generation must not upload"))
     client = FakeGoogle()
     result = generate(prepared, client)
-    assert client.images == ["새로운 그림 설명"]
+    assert client.images == ["새로운 그림 설명\n" + LISTENING_FRAME_PROMPT]
     assert result["replacements"][1] == upload
     generated = result["replacements"][0]
     assert "generate" not in generated
     assert client.image_colors == [exam_format == "ibt"]
     assert_image_color(generated["data"], color=exam_format == "ibt")
+    assert_listening_image_frame(generated["data"])
     assert result["affected"] == [current["item"]["item_id"]]
     assert current == old
 
@@ -109,11 +112,16 @@ def test_generated_image_cannot_follow_changed_description(snapshot):
         prepare_edit(result["snapshot"], question, result["metadata"], result["replacements"])
 
 
-def test_material_chart_uses_local_renderer_without_google(snapshot, monkeypatch):
-    prepared = plan(snapshot("reading", 10), [dict(kind="image", visual_role="material", option_number=1, generate=True)])
+@pytest.mark.parametrize("section,slot,role", [("reading", 10, "material"), ("listening", 3, "choice")])
+def test_pbt_chart_uses_local_renderer_without_google(snapshot, monkeypatch, section, slot, role):
+    prepared = plan(snapshot(section, slot), [dict(kind="image", visual_role=role, option_number=1, generate=True)])
     monkeypatch.setattr(generation, "MediaClient", lambda *a: pytest.fail("PBT chart must render locally"))
     result = generation.generate_replacements(prepared)
     assert_image_color(result["replacements"][0]["data"], color=False)
+    with Image.open(io.BytesIO(result["replacements"][0]["data"])) as image:
+        assert image.size == ((1200, 900) if section == "listening" else (640, 420))
+    if section == "listening":
+        assert_listening_image_frame(result["replacements"][0]["data"])
 
 
 @pytest.mark.parametrize("exam_format,slot", [("pbt", 21), ("ibt", 15)])
@@ -162,6 +170,10 @@ def test_ibt_chart_replacement_uses_image_model(snapshot, section, slot, role, n
     assert len(client.images) == len(client.chart_prompts) == 1
     assert ready["replacements"][0]["option_number"] == number
     assert_image_color(ready["replacements"][0]["data"], color=True)
+    with Image.open(io.BytesIO(ready["replacements"][0]["data"])) as image:
+        assert image.size == ((1200, 900) if section == "listening" else (80, 60))
+    if section == "listening":
+        assert_listening_image_frame(ready["replacements"][0]["data"])
 
 
 def test_generated_audio_upload_preserves_metadata_and_validates_bytes(monkeypatch):
@@ -222,7 +234,7 @@ def test_ui_generation_preview_does_not_repeat_on_rerun_and_requires_save(editor
     next(t for t in app.text_area if t.label == "해설").set_value("수정한 해설")
     next(b for b in app.button if b.label == "변경 내용 확인").click().run()
     assert not app.exception and not app.error
-    assert client.images == ["수정한 장면"] and len(app.get("imgs")) == 1
+    assert client.images == ["수정한 장면\n" + LISTENING_FRAME_PROMPT] and len(app.get("imgs")) == 1
     assert not editor.save.called
     app.run()
     assert len(calls) == 1

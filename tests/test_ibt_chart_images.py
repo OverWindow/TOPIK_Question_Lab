@@ -1,14 +1,17 @@
 from topik_question_lab.common.ui.navigation import menu_page
 import base64
 from copy import deepcopy
+from dataclasses import replace
+import io
 import json
 from pathlib import Path
 
 import httpx
 import pytest
+from PIL import Image
 
 from test_ibt_pipeline import COMBO, generated_batch
-from test_media_generation import Clock, FakeGoogle, assert_image_color, pipeline, seed_media, settings
+from test_media_generation import Clock, FakeGoogle, assert_image_color, assert_listening_image_frame, pipeline, seed_media, settings
 from topik_question_lab.common.listening_models import ChartSpec
 from topik_question_lab.common.media import media_generation as media
 from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaError
@@ -63,13 +66,16 @@ def test_chart_request_keeps_endpoint_and_body_shape_without_scene_text_prohibit
 
 
 @pytest.mark.parametrize("exam_format", ["pbt", "ibt"])
-@pytest.mark.parametrize("cached_style", ["legacy", "opposite"])
-def test_scene_color_cache_and_progress_follow_exam_format(tmp_path, monkeypatch, exam_format, cached_style):
+@pytest.mark.parametrize("cached_style", ["legacy", "opposite", "variable_size", "unframed"])
+@pytest.mark.parametrize("provider", ["google", "bizrouter"])
+def test_scene_color_cache_and_progress_follow_exam_format(tmp_path, monkeypatch, exam_format, cached_style, provider):
     if exam_format == "ibt":
         _, bid, _, _ = generated_batch(tmp_path, "listening", monkeypatch)
     else:
         bid = seed_media(tmp_path, "listening")
     run = pipeline(tmp_path, bid)
+    run.settings = replace(run.settings, image_provider=provider)
+    run.store.configure_media(bid, {**run.config, "settings": run.settings.snapshot()})
     task = next(t for t in media.media_plan(run.registration.package(bid), run.settings)
                 if t["kind"] == "image" and not t["chart_spec"])
     color = exam_format == "ibt"
@@ -78,7 +84,18 @@ def test_scene_color_cache_and_progress_follow_exam_format(tmp_path, monkeypatch
                 "version": "exam_image_v1"}
     if cached_style == "opposite":
         snapshot["color"] = not color
-    old_data = media.render_image({**task, "color": not color}, FakeGoogle())
+    elif cached_style in ("variable_size", "unframed"):
+        snapshot["color"] = color
+    if provider == "bizrouter":
+        snapshot.update(provider=provider, base_url=run.settings.image_base_url, aspect_ratio="4:3")
+    if cached_style != "variable_size":
+        snapshot["output_size"] = task["output_size"]
+    if cached_style != "unframed":
+        snapshot["frame_style"] = task["frame_style"]
+    old_task = {k: v for k, v in task.items() if cached_style != "variable_size" or k != "output_size"}
+    if cached_style == "unframed":
+        old_task.pop("frame_style")
+    old_data = media.render_image({**old_task, "color": color if cached_style in ("variable_size", "unframed") else not color}, FakeGoogle())
 
     def old_image(key):
         path = run.directory / f"{key}.png"
@@ -93,6 +110,7 @@ def test_scene_color_cache_and_progress_follow_exam_format(tmp_path, monkeypatch
     asset = run._image(task)
     assert run.client.image_colors == [color]
     assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=color)
+    assert_listening_image_frame(run.cloud.objects[asset["storage_path"]][0])
     assert preparation_progress(batch, records, run.store.media_tasks(bid))["images_ready"] > 0
     assert run._image(task) == asset
     assert run.client.image_colors == [color]
@@ -129,7 +147,12 @@ def test_ibt_chart_images_preserve_items_and_ignore_legacy_render_cache(tmp_path
     assets = [run._image(t) for t in plan if t["kind"] == "image"]
     for asset in assets:
         assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=True)
-    assert set(run.client.chart_prompts) == {t["prompt"] for t in charts}
+        with Image.open(io.BytesIO(run.cloud.objects[asset["storage_path"]][0])) as image:
+            assert image.size == ((1200, 900) if section == "listening" else (80, 60))
+        if section == "listening":
+            assert_listening_image_frame(run.cloud.objects[asset["storage_path"]][0])
+    suffix = "\n" + media.LISTENING_FRAME_PROMPT if section == "listening" else ""
+    assert set(run.client.chart_prompts) == {t["prompt"] + suffix for t in charts}
     assert len(run.client.images) == len(set(t["prompt"] for t in plan if t["kind"] == "image"))
     for task in charts:
         asset = next(a for a in assets if a["item_id"] == task["item_id"] and a["option_number"] == task["option_number"])
@@ -182,11 +205,22 @@ def test_pbt_charts_still_render_locally(tmp_path, section):
     run = pipeline(tmp_path, bid)
     charts = [t for t in media.media_plan(run.registration.package(bid), run.settings) if t.get("chart_spec")]
     assert charts and all(not t.get("model_chart") for t in charts)
+    if section == "listening":
+        run._image({k: v for k, v in charts[0].items() if k != "frame_style"})
+        records = collect_candidate_catalog(tmp_path).records
+        batch = run.store.batches()[0]
+        assert preparation_progress(batch, records, run.store.media_tasks(bid))["images_ready"] == 0
     for task in charts:
         asset = run._image(task)
         assert asset["mime_type"] == "image/png"
         assert_image_color(run.cloud.objects[asset["storage_path"]][0], color=False)
+        with Image.open(io.BytesIO(run.cloud.objects[asset["storage_path"]][0])) as image:
+            assert image.size == ((1200, 900) if section == "listening" else (640, 420))
+        if section == "listening":
+            assert_listening_image_frame(run.cloud.objects[asset["storage_path"]][0])
     assert not run.client.images
+    if section == "listening":
+        assert preparation_progress(batch, records, run.store.media_tasks(bid))["images_ready"] == len(charts)
 
 
 def test_ibt_reading_registration_waits_for_model_image_and_preserves_package(tmp_path, monkeypatch):

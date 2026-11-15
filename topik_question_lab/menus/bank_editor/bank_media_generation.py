@@ -57,7 +57,7 @@ def generate_replacements(plan, *, settings=None, client=None, progress=None):
                     path = Path(directory) / "preview.mp3"
                     compose(signature, speech, path, settings)
                     data = path.read_bytes()
-                generation.update(provider="google_cloud_tts", model_name=settings.tts_model,
+                generation.update(provider=settings.tts_asset_provider, model_name=settings.tts_model,
                                   female_voice=settings.female, male_voice=settings.male,
                                   tts_style={"speakingRate": settings.speaking_rate, "stylePrompt": settings.style_prompt})
             else:

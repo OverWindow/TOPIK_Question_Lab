@@ -3,14 +3,15 @@ import json
 import shutil
 import sqlite3
 import threading
+from types import SimpleNamespace
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageChops
 import pytest
 
 from test_direct_publication import seed_batch, change_question
 from topik_question_lab.common.generation.bulk_generation import BulkRunner, BulkStore
-from topik_question_lab.common.media.media_generation import MediaPipeline, chart_spec, media_plan
+from topik_question_lab.common.media.media_generation import LISTENING_FRAME_PROMPT, MediaPipeline, chart_spec, image_tasks, media_plan, render_image
 from topik_question_lab.common.media.media_provider import GoogleMediaClient, MediaError, MediaSettings, RequestRunner, Stopped
 from topik_question_lab.common.question_bank.direct_publication import DirectPublicationService, PublicationBlocked
 from topik_question_lab.common.media.media_cloud import digest_file
@@ -100,6 +101,53 @@ def assert_image_color(data, *, color):
         assert image.format == "PNG" and image.mode == "RGB"
         red, green, blue = (band.tobytes() for band in image.split())
         assert (red != green or green != blue) == color
+
+
+def assert_listening_image_frame(data):
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.size == (1200, 900)
+        for box in [(0, 0, 1200, 3), (0, 897, 1200, 900), (0, 0, 3, 900), (1197, 0, 1200, 900)]:
+            assert image.crop(box).getextrema() == ((0, 0),) * 3
+        for box in [(3, 3, 1197, 12), (3, 888, 1197, 897), (3, 3, 12, 897), (1188, 3, 1197, 897)]:
+            assert image.crop(box).getextrema() == ((255, 255),) * 3
+
+
+@pytest.mark.parametrize("exam_format", ["pbt", "ibt"])
+@pytest.mark.parametrize("source_size,bounds", [
+    ((1024, 1024), (150, 0, 1026, 876)),
+    ((1536, 1024), (0, 46, 1176, 830)),
+    ((1024, 1536), (296, 0, 880, 876)),
+    ((2400, 1800), (4, 0, 1172, 876)),
+    ((80, 60), (4, 0, 1172, 876)),
+])
+def test_listening_scene_has_fixed_size_without_stretching_or_cropping(exam_format, source_size, bounds):
+    candidate = SimpleNamespace(section="listening", exam_format=exam_format, item_id="synthetic-item",
+        question={"visual_kind": "scene", "visual_options": [
+            {"number": number, "image_prompt": "학생이 책을 읽는 장면"} for number in range(1, 5)]})
+    source = io.BytesIO()
+    Image.new("RGB", source_size, "#35a76f").save(source, "PNG")
+    client = SimpleNamespace(image=lambda *args, **kwargs: source.getvalue())
+    task = image_tasks(candidate, "synthetic-hash")[0]
+    data = render_image(task, client)
+    assert_image_color(data, color=exam_format == "ibt")
+    assert_listening_image_frame(data)
+    with Image.open(io.BytesIO(data)) as image:
+        content = image.crop((12, 12, 1188, 888))
+        assert ImageChops.difference(content, Image.new("RGB", content.size, "white")).getbbox() == bounds
+
+
+@pytest.mark.parametrize("exam_format", ["pbt", "ibt"])
+def test_listening_frame_instruction_overrides_description_without_changing_scene(exam_format):
+    description = "원형 프레임 안에서 학생이 둥근 시계를 보고 있습니다."
+    candidate = SimpleNamespace(section="listening", exam_format=exam_format, item_id="synthetic-item",
+        question={"visual_kind": "scene", "visual_options": [
+            {"number": number, "image_prompt": description} for number in range(1, 5)]})
+    client = FakeGoogle()
+    render_image(image_tasks(candidate, "synthetic-hash")[0], client)
+    assert client.images == [description + "\n" + LISTENING_FRAME_PROMPT]
+    assert "circular or oval vignette, rounded corners" in client.images[0]
+    assert "Ignore any framing or border-style requests" in client.images[0]
+    assert "Preserve round objects, chart axes, pie charts" in client.images[0]
 
 
 class FakeCloud:

@@ -17,12 +17,20 @@ PAGES = [
     ("topic_bank_app.py", "소재 은행"),
     ("bank_transfer_app.py", "서버에 문제 등록"),
     ("backup_restore_app.py", "백업·복원"),
+    ("writing_app.py", "TOPIK II 쓰기 PBT"),
+    ("writing_evaluation_app.py", "평가 프롬프트 실험실"),
+    ("writing_experiments_app.py", "쓰기 실험 관리"),
+    ("writing_topic_bank_app.py", "쓰기 소재 은행"),
+    ("writing_bank_editor_app.py", "쓰기 Hub PostgreSQL 관리"),
+    ("writing_transfer_app.py", "서버에 쓰기 문제 등록"),
     ("vocabulary_app.py", "TOPIK II 단어장"),
     ("vocabulary_questions_app.py", "단어 연습문제 생성"),
     ("vocabulary_question_editor_app.py", "단어 문제 관리"),
     ("vocabulary_transfer_app.py", "서버에 단어장·문제 등록"),
     ("korean_dictionary_app.py", "한국어 사전 등록"),
     ("postgres_cleanup_app.py", "PostgreSQL 정리"),
+    ("settings_app.py", "설정"),
+    ("writing_settings_app.py", "쓰기 설정"),
 ]
 
 
@@ -32,6 +40,8 @@ def test_main_routes_to_each_menu_with_existing_urls(filename, title, monkeypatc
     urls = []
 
     def navigation(pages, **kwargs):
+        assert [page.title for page in pages["TOPIK 쓰기"]] == ["TOPIK II 쓰기 PBT", "평가 프롬프트 실험실", "쓰기 실험 관리", "쓰기 소재 은행", "쓰기 Hub PostgreSQL 관리", "서버에 쓰기 문제 등록"]
+        assert [page.title for page in pages["설정"]] == ["설정", "쓰기 설정"]
         urls.extend(page.url_path for group in pages.values() for page in group)
         return original(pages, **kwargs)
 

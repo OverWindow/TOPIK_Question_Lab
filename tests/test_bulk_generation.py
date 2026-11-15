@@ -371,12 +371,17 @@ def test_bulk_page_runs_to_completion_and_remembers_common_preset(tmp_path, monk
 
 @pytest.mark.parametrize("exam_format,total", [("pbt", 50), ("ibt", 30)])
 @pytest.mark.parametrize("section", ["reading", "listening"])
-def test_one_click_starts_selected_exam_with_media_registration(monkeypatch, exam_format, total, section):
+@pytest.mark.parametrize("image_provider", ["google", "bizrouter"])
+def test_one_click_starts_selected_exam_with_media_registration(tmp_path, monkeypatch, exam_format, total, section, image_provider):
     from types import SimpleNamespace
     import topik_question_lab.common.generation.bulk_generation as bulk
     import topik_question_lab.common.generation.runner_service as runners
     import topik_question_lab.common.media.media_generation as media
+    from topik_question_lab.common.media.media_provider import IMAGE_PROVIDERS
 
+    BulkStore(tmp_path).set_setting("image_provider", image_provider)
+    image_model = f"{image_provider}-saved-image"
+    BulkStore(tmp_path).set_setting(f"image_model_{image_provider}", image_model)
     starts, preflights = [], []
     config = {"settings": {}, "target": "synthetic-target"}
     store = SimpleNamespace(settings=lambda: {}, set_setting=lambda *args: None, batches=lambda: [])
@@ -388,7 +393,7 @@ def test_one_click_starts_selected_exam_with_media_registration(monkeypatch, exa
                         ([{"slots": [1], "type_id": "synthetic", "count": 1, "approved_count": 1,
                            "difficulty": "standard", "section": selected, "exam_format": exam}], []))
     monkeypatch.setattr(media, "preflight", lambda root, settings, selected, url, exam:
-                        preflights.append((selected, exam)) or config)
+                        preflights.append((selected, exam, settings.image_provider, settings.image_model)) or config)
     page = Path(__file__).resolve().parents[1] / "topik_question_lab/menus/bulk_generation/bulk_generation_app.py"
     app = AppTest.from_file(str(page), default_timeout=30).run()
     app.radio(key="bulk-exam-format").set_value(exam_format)
@@ -397,7 +402,8 @@ def test_one_click_starts_selected_exam_with_media_registration(monkeypatch, exa
     assert f"{total}문제 생성하고 등록" in button.label
     button.click().run()
     assert not app.exception
-    assert preflights == [(section, exam_format)] and len(starts) == 1
+    assert preflights == [(section, exam_format, image_provider, image_model)] and len(starts) == 1
+    assert any(f"새 작업 이미지: {IMAGE_PROVIDERS[image_provider]} · {image_model}" in caption.value for caption in app.caption)
     assert starts[0][0][0]["section"] == section
     assert starts[0][0][0]["exam_format"] == exam_format
     assert starts[0][1] == {"media_config": config}

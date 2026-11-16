@@ -13,6 +13,7 @@ from topik_question_lab.menus.writing.writing_ui import render_question
 def render_publication(storage, database_url):
     st.subheader("Hub에 쓰기 세트 저장")
     st.caption("51~54번을 각각 골라 한 세트로 저장합니다. ‘5. 수정·내보내기’에서 저장한 수정본을 사용합니다.")
+    st.caption("53번 자료 이미지도 함께 업로드합니다. 이미지가 없으면 먼저 ‘5. 수정·내보내기’에서 생성하세요.")
     records = storage.list_generated()
     if not records:
         st.info("먼저 ‘4. 문제 생성’에서 유형별로 한 문항씩 생성하세요.")
@@ -52,7 +53,9 @@ def render_publication(storage, database_url):
             # Reload at the write boundary; an old preview must not replace newer edits.
             current = [row for row in storage.list_generated() if row["id"] in selected_ids]
             validate_writing_set(current)
-            receipt = bank.save_set(storage.selection_source_key(selected_ids, create=True), current)
+            with st.spinner("53번 이미지 업로드·검증 및 Hub 세트 저장 중…"):
+                receipt = bank.save_set(storage.selection_source_key(selected_ids, create=True), current,
+                                        image_directory=storage.path.parent / "media/writing")
             action = "저장" if receipt["created"] else "갱신"
             st.success(f"쓰기 4문항을 한 세트로 {action}했습니다. 세트 ID: {receipt['set_id']}")
     except ValueError as exc:

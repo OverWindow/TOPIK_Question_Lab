@@ -1,0 +1,35 @@
+{
+  "request_id": "0e1794de51422364b0b9ef8cd3549d12cabca7f027f080a3643fb3357ecd29da",
+  "type_slot": 51,
+  "scores": {
+    "a": {
+      "score": 0,
+      "rationale": "미응답",
+      "quotes": [],
+      "parts": {}
+    },
+    "b": {
+      "score": 0,
+      "rationale": "미응답",
+      "quotes": [],
+      "parts": {}
+    }
+  },
+  "task_checks": [
+    {
+      "requirement_id": "a",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    },
+    {
+      "requirement_id": "b",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    }
+  ],
+  "corrections": [],
+  "summary": "작성된 답안이 없어 0점으로 처리했습니다.",
+  "review_reasons": []
+}

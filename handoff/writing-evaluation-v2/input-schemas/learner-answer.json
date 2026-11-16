@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "a": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "A",
+      "type": "string"
+    },
+    "b": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "B",
+      "type": "string"
+    },
+    "text": {
+      "default": "",
+      "maxLength": 20000,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "title": "LearnerAnswer",
+  "type": "object"
+}

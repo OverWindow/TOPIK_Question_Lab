@@ -1,0 +1,90 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "source_key": {
+      "pattern": "^\\d+:(51|52|53|54)$",
+      "title": "Source Key",
+      "type": "string"
+    },
+    "source_file": {
+      "pattern": "^\\d+_answer\\.pdf$",
+      "title": "Source File",
+      "type": "string"
+    },
+    "source_page": {
+      "minimum": 1,
+      "title": "Source Page",
+      "type": "integer"
+    },
+    "blank_answers": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "propertyNames": {
+        "enum": [
+          "a",
+          "b"
+        ]
+      },
+      "title": "Blank Answers",
+      "type": "object"
+    },
+    "text": {
+      "default": "",
+      "title": "Text",
+      "type": "string"
+    },
+    "source_char_count": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Char Count"
+    },
+    "blank_weights": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "propertyNames": {
+          "enum": [
+            "content",
+            "form"
+          ]
+        },
+        "type": "object"
+      },
+      "propertyNames": {
+        "enum": [
+          "a",
+          "b"
+        ]
+      },
+      "title": "Blank Weights",
+      "type": "object"
+    },
+    "published_rules": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Published Rules",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_key",
+    "source_file",
+    "source_page"
+  ],
+  "title": "AnswerReference",
+  "type": "object"
+}

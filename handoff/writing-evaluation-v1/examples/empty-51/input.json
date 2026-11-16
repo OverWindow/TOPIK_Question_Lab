@@ -1,0 +1,42 @@
+{
+  "reference": {
+    "source_exam": 102,
+    "source_file": "102_writing.pdf",
+    "source_page": 1,
+    "source_instruction": "다음 글의 ㉠과 ㉡에 알맞은 말을 각각 쓰시오.",
+    "question": {
+      "exam_format": "pbt",
+      "section": "writing",
+      "type_slot": 51,
+      "topic": "동아리 방 이동 전 개인 물건 정리 요청",
+      "instruction": "다음 글의 ㉠과 ㉡에 알맞은 말을 각각 쓰시오.",
+      "context_title": "개인 물건 정리 요청",
+      "passage": "안녕하세요. 동아리 회장 호영입니다.\n학생회관 공사 때문에 동아리 방을 옮기게 되었습니다.\n그런데 현재 개인 물건들이 너무 많습니다.\n동아리 방을 옮기려면 이 물건들부터 먼저 (㉠).\n방학을 하자마자 공사가 시작됩니다.\n방학이 (㉡) 개인 물건을 모두 가져가 주십시오.",
+      "data_source": "",
+      "materials": [],
+      "material_notes": [],
+      "requirements": []
+    }
+  },
+  "answer_reference": {
+    "source_key": "102:51",
+    "source_file": "102_answer.pdf",
+    "source_page": 1,
+    "blank_answers": {
+      "a": [
+        "정리해야 합니다"
+      ],
+      "b": [
+        "시작되기 전에"
+      ]
+    },
+    "text": "",
+    "source_char_count": null,
+    "blank_weights": {},
+    "published_rules": []
+  },
+  "answer": {
+    "a": " \n",
+    "b": ""
+  }
+}

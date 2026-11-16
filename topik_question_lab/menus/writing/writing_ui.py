@@ -30,8 +30,9 @@ def render_question(question: WritingQuestion, *, instruction: str | None = None
     if question.passage:
         st.markdown(question.passage.replace("\n", "  \n"))
     path = image_path(question)
-    if question.type_slot == 53 and path.is_file():
-        st.image(path.read_bytes(), caption="53번 자료 이미지", width="stretch")
+    if question.type_slot == 53 and (path.is_file() or question.image):
+        st.image(question.image.storage_url if question.image else path.read_bytes(),
+                 caption="53번 자료 이미지", width="stretch")
         with st.expander("원본 자료 확인"):
             render_materials(question)
     else:
@@ -158,4 +159,6 @@ def edit_question(question: WritingQuestion, question_id: int | str) -> dict:
     if question.type_slot == 54:
         draft["requirements"] = [st.text_input(f"요구 사항 {i + 1}", value, key=f"{key}-requirement-{i}")
                                  for i, value in enumerate(question.requirements)]
+    if any(draft[field] != value for field, value in question.model_dump(exclude={"image", "instruction"}).items()):
+        draft.pop("image", None)
     return draft

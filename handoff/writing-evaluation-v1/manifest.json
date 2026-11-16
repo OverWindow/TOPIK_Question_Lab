@@ -1,0 +1,126 @@
+{
+  "package_version": "writing-evaluation-v1",
+  "snapshot_date": "2026-11-16",
+  "timezone": "Asia/Seoul",
+  "source": "Unigate-PBT-Hub current local working tree",
+  "base_git_commit": "f3a91f80f1c45792c95f2a3a3a6ba6f9aeafca12",
+  "prompt_source_has_uncommitted_changes": true,
+  "source_files": {
+    "topik_question_lab/menus/writing/writing_evaluation_prompts.py": "5d0b38910649a737a62d5e84cd18494e6d9fcabf951e924f48601f6c9049f61b",
+    "topik_question_lab/common/writing_evaluation.py": "8784a1a384ec10f7d079d72da3134a71e682aaea820e77f38072ff72a4ad42f6",
+    "topik_question_lab/common/writing_models.py": "df7b3b4acc284e8d27d03ad6ca0759b88b3da9b906ee20bf8f8a0fccd24b3a4e",
+    "topik_question_lab/common/generation/providers.py": "eae8c2b02ca775486014bc9c5e7776f1c78b716cfbd2e06da36f30ccee761a1b",
+    "topik_question_lab/menus/writing/pbt_references.json": "92241cbac0a63bda1536cf4a6dd1b8fcd4e752e206d4c70344e20bc99a20bb06",
+    "topik_question_lab/menus/writing/pbt_answer_references.json": "9b285aba16d30a7eed5e556eced28a4e921b21888b82f353359033db5ddc6100"
+  },
+  "rubric_version": "pbt-writing-2017-v1",
+  "experimental_notes": "",
+  "model_id": null,
+  "api_parameters_explicitly_set": [],
+  "prompts": {
+    "51": {
+      "path": "prompts/51.txt",
+      "sha256": "2c684214bcaffcea7fde998c5cfd327403c713532157af88a45d84c5043b1a0b",
+      "character_count": 2497,
+      "prompt_version": "db6cc76f6a266060f10b56083680cb37ec700c0b4cfcd0ab7d6c63eeea30c5a4"
+    },
+    "52": {
+      "path": "prompts/52.txt",
+      "sha256": "017521f1010162f746d8fcf22912808d8e05f6b1cc47220816000f48f2c52793",
+      "character_count": 2493,
+      "prompt_version": "1a6a2d7d9662b7ef50d02540bac6ac75d3a16b544cb8a25eb4fe582537b8e5eb"
+    },
+    "53": {
+      "path": "prompts/53.txt",
+      "sha256": "bb6efe3b2a32150dc76c0c953e88ceedc49bc28cd55adcbe9cc2102dbdc3da66",
+      "character_count": 3394,
+      "prompt_version": "6d7c79b1c9f191237ec9ef2c814e6ea8ba7c5c6738c782e646278a662e579816"
+    },
+    "54": {
+      "path": "prompts/54.txt",
+      "sha256": "9c1da9f91109f1371e0bc59c60b0bf2a1a9f54b9da28e5db43e8149dcc77b6e7",
+      "character_count": 3401,
+      "prompt_version": "1047e269e73d35d3ea78059f7abe18aa5060b903efc4b69627893dcd2ebd8df4"
+    }
+  },
+  "examples": [
+    {
+      "name": "51",
+      "source_key": "102:51",
+      "description": "두 빈칸 합성 답안. 출처 세부 배점 없음.",
+      "expected_fixture_total": 9,
+      "request_id": "19863e77d14da14b607c5a409984c3ac3a5b55239dd9a233ce28ed51f15498f6"
+    },
+    {
+      "name": "52",
+      "source_key": "102:52",
+      "description": "한 빈칸만 미응답인 합성 답안.",
+      "expected_fixture_total": 5,
+      "request_id": "8045e3f6dec62f8bc0dd21b35e3d74bc6afb4ce751acbd1f60c6e765dd5e89ab"
+    },
+    {
+      "name": "53",
+      "source_key": "102:53",
+      "description": "자료 설명 합성 답안. 점수는 형식 검증용.",
+      "expected_fixture_total": 23,
+      "request_id": "fe38eaa97390dd4c966d24baac7e66c12c54f6caa1682212143415aa2b8020e2"
+    },
+    {
+      "name": "54",
+      "source_key": "102:54",
+      "description": "논술 합성 답안. 사회적 해결 방안은 부족한 예시.",
+      "expected_fixture_total": 34,
+      "request_id": "ada062f158d1125b6db7e91797ed69eb9bc939de148ca8fe2905f03e748d1062"
+    },
+    {
+      "name": "51-with-parts",
+      "source_key": "60:51",
+      "description": "출처가 있는 빈칸 세부 배점 예시. 참고답안을 입력으로 재사용한 전송 fixture이며 만점 검증 자료가 아님.",
+      "expected_fixture_total": 10,
+      "request_id": "f9ad434f22215991038bdb27d6e096221efae4972a08efaa977361962700b05f"
+    },
+    {
+      "name": "empty-51",
+      "source_key": "102:51",
+      "description": "공백을 포함한 완전 미응답. 원본 코드의 로컬 0점 응답.",
+      "expected_fixture_total": 0,
+      "request_id": "0e1794de51422364b0b9ef8cd3549d12cabca7f027f080a3643fb3357ecd29da"
+    }
+  ],
+  "files": {
+    "examples/51/input.json": "403bd2930fdd520a74aff8df50d5c950cd4150333157644bd605a6b442b3fafb",
+    "examples/51/request.json": "84094f70a8d41b33db7a85ecf5eb319d48b5f5cfc4ac778ff9732281651d793f",
+    "examples/51/response.json": "175dc733744f2cd9ab85edbc7bbe014610c43dcfa23354a6da26926187e51b8e",
+    "examples/51-with-parts/input.json": "3b4b907989449e06489d3922ccc5f3fb06e9be583cc123d4c4b2bcff5d600d61",
+    "examples/51-with-parts/request.json": "8bf35ace90fa6639410217f6c3d5b93afb1182482a6d6eaf966984a66bf95be0",
+    "examples/51-with-parts/response.json": "1161749d3cacb1d9d782a3a1d11c85eae60335f6c6bbaec1794e6e945669762c",
+    "examples/52/input.json": "d7ba1788b76dc39bdac780743804ac8c28d700851b0951c1df34c678888dbd17",
+    "examples/52/request.json": "c4db1d0767bbb21070717e156bcf4899763ed0e02457c9b19ee6308f5720513d",
+    "examples/52/response.json": "cc06f51bbfb9a831fd3420fc6610d8d1fe02d2373eb2d36ad4c58077fb8474c4",
+    "examples/53/input.json": "5ffcfc8eaef2b6fbc54d676f8775ce420891915ad6bf8d0665f0323c2af9fdfa",
+    "examples/53/request.json": "6dc1e43a02408e74a5fbfb30d1a97527ba5b89ddec64de054f03bf7fcf78d2ff",
+    "examples/53/response.json": "834b7632b207fccd63649a94ab25205af2d9ce6afa1109bb6d502f64f0058882",
+    "examples/54/input.json": "7764c3101f93285237ab82f83573002637a8454864809d00bf410bbd638013a2",
+    "examples/54/request.json": "741065058194a1f4e9c257a4f6835fbe2b30ff06f8b561620c0976935666c54c",
+    "examples/54/response.json": "94c3f68f2821c975ad6ca8e5d08b23ead4ab3602a10b0c4cfb406bde25651d59",
+    "examples/empty-51/input.json": "64e5768db583508e20c0b184ff2222b8503f646fea1265e8a444b4df5224d84a",
+    "examples/empty-51/request.json": "e07ae7deb661e769201c07ff123e669e764f91df70f6262358351348c52e0cd0",
+    "examples/empty-51/response.json": "c8d67cf4d2a122901a70410e1b1346360cd1194ae2fb46fd1e1252c10cd1f5be",
+    "input-schemas/answer-reference.json": "facf1917fcda802b604a555e2be733af17e0d0186e53dae3c56589ae36d017dd",
+    "input-schemas/learner-answer.json": "acd618f7828f995491c421181a22c5123a8ed9c2bc4c0a00f46f372503eb979f",
+    "input-schemas/question-reference.json": "1a9c307599d7a0a9954538425b2c1dfd15df720fe83f9d0fa92eaac8b5515e96",
+    "input-schemas/question.json": "01760d1ed099ecf41bdf336b65866800ad82fbcd97b7d0e273b7d1a577eb42e9",
+    "output-schema.json": "86eb748206732c34e310e98c523b98925322ab8c6b0430a24e4082c61d7d5328",
+    "prompts/51.txt": "2c684214bcaffcea7fde998c5cfd327403c713532157af88a45d84c5043b1a0b",
+    "prompts/52.txt": "017521f1010162f746d8fcf22912808d8e05f6b1cc47220816000f48f2c52793",
+    "prompts/53.txt": "bb6efe3b2a32150dc76c0c953e88ceedc49bc28cd55adcbe9cc2102dbdc3da66",
+    "prompts/54.txt": "9c1da9f91109f1371e0bc59c60b0bf2a1a9f54b9da28e5db43e8149dcc77b6e7",
+    "README.md": "440d5d5c81b72a5bb542125b07083116e310d6dd1eb8ef26f068b3a77c63212b",
+    "reference/evaluation_contract.py": "f275f7ed99c49373eb12fc8f414e35eb7a1963ee83241abe8c0a577b7016218f",
+    "reference/writing_models.py": "df7b3b4acc284e8d27d03ad6ca0759b88b3da9b906ee20bf8f8a0fccd24b3a4e",
+    "requirements.txt": "d6dffaa81d888aa0584529e06b9d58449b022a038676fe6dd4556ff67e88fcdc",
+    "rubrics.json": "c4aec72ddbbb63321ee55c739b6e82fa92381b4a951a3a43b5c881632d98c610",
+    "verification.json": "ed6092e7bd0e93448a5664e44719e2e244176fd444c55601fd6d4466c6e031f7",
+    "verify.py": "84abe77a4a81883c98ab52678910cb3c11300cc2721708b84754dc50971e7cda"
+  }
+}

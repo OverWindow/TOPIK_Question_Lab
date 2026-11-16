@@ -1,8 +1,8 @@
 """Generate and retain local 53rd-question images using the shared media client."""
 from __future__ import annotations
 
-import hashlib
 import io
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -10,8 +10,9 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from topik_question_lab.common.media.media_provider import MediaClient, MediaSettings
+from topik_question_lab.common.media.media_cloud import S3MediaStore, cloudfront_url, destination_key, digest_file
 from topik_question_lab.common.paths import application_root
-from topik_question_lab.common.writing_models import WritingQuestion
+from topik_question_lab.common.writing_models import WritingImage, WritingQuestion
 from topik_question_lab.menus.writing.writing_prompts import DEFAULT_IMAGE_STYLE, build_image_prompt, prompt_settings
 
 
@@ -20,9 +21,37 @@ IMAGE_ERROR = "자료 이미지 생성에 실패했습니다. 이미지 서비�
 
 def image_path(question: WritingQuestion, directory: Path | None = None) -> Path:
     # A saved edit must never reuse an image containing the previous data.
-    digest = hashlib.sha256(question.model_dump_json().encode()).hexdigest()
+    digest = question.content_sha256()
     directory = directory if directory is not None else application_root() / "data/media/writing"
     return directory / f"{digest}.png"
+
+
+def upload_image(question: WritingQuestion, *, directory: Path | None = None) -> WritingImage:
+    if question.type_slot != 53:
+        raise ValueError("자료 이미지는 쓰기 53번에만 저장할 수 있습니다.")
+    path = image_path(question, directory)
+    if not path.is_file():
+        raise ValueError("현재 53번 문항의 자료 이미지가 없습니다. ‘5. 수정·내보내기’에서 이미지를 생성한 뒤 저장하세요.")
+    store = None
+    try:
+        with Image.open(path) as source:
+            if source.format != "PNG":
+                raise ValueError("PNG required")
+            source.load()
+        size, digest = digest_file(path)
+        store = S3MediaStore(os.getenv("S3_BUCKET", ""), os.getenv("CLOUDFRONT_BASE_URL", ""))
+        key = destination_key("writing", digest, "image/png")
+        asset = WritingImage(storage_bucket=store.bucket, storage_path=key,
+                             storage_url=cloudfront_url(store.base_url, key), byte_size=size,
+                             file_sha256=digest, question_sha256=question.content_sha256())
+        store.upload(path, key, size, digest, "image/png")
+        store.verify(asset.model_dump(), local_path=path)
+        return asset
+    except Exception:
+        raise ValueError("53번 이미지 S3 업로드·CloudFront 검증에 실패했습니다. 설정과 파일을 확인한 뒤 다시 저장하세요.") from None
+    finally:
+        if store is not None:
+            store.close()
 
 
 def generate_image(question: WritingQuestion, *, directory: Path | None = None,

@@ -26,10 +26,11 @@ def create_tables(url):
 
 
 @pytest.fixture
-def banks(postgres_database_factory):
+def banks(postgres_database_factory, writing_png, writing_cloud):
     source, target = postgres_database_factory(), postgres_database_factory()
     create_tables(source)
     questions = [r.question.model_dump() for r in load_references() if r.source_exam == 102]
+    writing_png(next(q for q in questions if q["type_slot"] == 53))
     bank = WritingQuestionBank(source)
     ids = []
     for offset in (0, 100):
@@ -58,6 +59,8 @@ def edit_passage(url, sid, text):
 def test_preview_is_read_only_initial_registration_and_retry_are_exact(banks, tmp_path):
     source, target, ids = banks
     original = read_rows(source, ids)
+    assert all(q["content_json"]["image"]["storage_backend"] == "s3"
+               for q in original["writing_questions"] if q["type_slot"] == 53)
     catalog = transfer.list_source_sets(source)
     assert {r["set_id"] for r in catalog} == set(ids)
     assert all(r["items"] == 4 and r["exam_format"] == "pbt" for r in catalog)
@@ -99,7 +102,7 @@ def test_updates_preserve_other_sets_and_backup_previous_selected_contents(banks
         assert c.execute("SELECT value FROM public.unrelated_data").fetchone()[0] == "keep"
 
 
-@pytest.mark.parametrize("case", ["missing_question", "invalid_question", "ibt", "missing_set", "empty_selection"])
+@pytest.mark.parametrize("case", ["missing_question", "invalid_question", "stale_image", "ibt", "missing_set", "empty_selection"])
 def test_invalid_sources_are_blocked(banks, case):
     source, target, ids = banks
     with psycopg.connect(source) as c:
@@ -107,6 +110,9 @@ def test_invalid_sources_are_blocked(banks, case):
             c.execute("DELETE FROM topik_bank.writing_questions WHERE set_id=%s AND type_slot=52", (ids[0],))
         elif case == "invalid_question":
             c.execute("UPDATE topik_bank.writing_questions SET content_json=jsonb_set(content_json,'{materials}','[]') WHERE set_id=%s AND type_slot=53", (ids[0],))
+        elif case == "stale_image":
+            c.execute("UPDATE topik_bank.writing_questions SET content_json=jsonb_set(content_json,'{data_source}',%s) WHERE set_id=%s AND type_slot=53",
+                      (Jsonb("이미지 생성 후 변경된 자료"), ids[0]))
         elif case == "ibt":
             c.execute("UPDATE topik_bank.writing_sets SET exam_format='ibt' WHERE set_id=%s", (ids[0],))
     selected = [] if case == "empty_selection" else [str(uuid.uuid4())] if case == "missing_set" else ids[:1]

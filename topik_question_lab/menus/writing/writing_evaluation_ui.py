@@ -21,7 +21,8 @@ from topik_question_lab.menus.writing.writing_ui import render_question
 
 
 def render_sources(reference, answer_reference, rubric, pdf_renderer):
-    with st.expander("기출 답안과 채점 기준"):
+    with st.expander("기출 답안 열람·채점 기준"):
+        st.caption("기출 참고답안과 문항별 세부 배점은 열람용입니다. 평가 요청에는 공통 채점 기준만 전달합니다.")
         st.caption(f"답안 출처: {answer_reference.source_file} · {answer_reference.source_page}쪽. "
                    "배점은 문항의 최대 점수이며, 모범답안의 실제 채점 기록이 아닙니다.")
         if answer_reference.blank_answers:
@@ -69,6 +70,8 @@ def render_sources(reference, answer_reference, rubric, pdf_renderer):
 def render_saved_evaluation(storage, run):
     result = ProviderResult.model_validate_json(run["result_json"])
     payload = json.loads(run["prompt_user"])
+    st.caption("평가 입력: 문제·학생 답안·채점 기준" +
+               ("·참고답안 (기존 기록)" if "reference_answer" in payload else " (참고답안 없음)"))
     request = EvaluationRequest(run["prompt_system"], run["prompt_user"], payload["request_id"])
     st.caption(f"실행 #{run['id']} · {payload['source_key']} · {run['created_at']} · {run['model']}")
     with st.expander("이 실행의 원본 답안·프롬프트·응답"):
@@ -165,6 +168,7 @@ def render_comparisons(storage, runs):
 def render_evaluation_lab(storage, references, slot, *, pdf_renderer=None):
     st.subheader(f"{slot}번 평가 프롬프트 실험실")
     st.caption("기출·답안 확인 → 익명 답안 입력 → 평가 프롬프트 조정 → 평가 → 사람 채점 비교")
+    st.info("문제·학생 원본 답안·채점 기준만으로 평가합니다. 기출 참고답안은 자동으로 전달하지 않습니다.")
     st.caption("이름·연락처·학생 식별정보를 제외한 연습 답안만 입력하세요. 실행 시 선택한 모델로 전송하고 로컬 실험 기록에 저장합니다.")
     answers = load_answer_references(references)
     candidates = {r.source_key: r for r in sorted(references, key=lambda r: -r.source_exam) if r.question.type_slot == slot}
@@ -176,6 +180,7 @@ def render_evaluation_lab(storage, references, slot, *, pdf_renderer=None):
     render_sources(reference, answer_reference, rubric, pdf_renderer)
 
     st.write("평가할 원본 답안")
+    st.caption("모범답안을 불러오면 그 문장 자체가 평가 대상 답안이 됩니다. 별도의 참고답안으로 전달되는 것은 아닙니다.")
     if st.button("모범답안을 입력란에 불러오기", key=f"evaluation-load-answer-{source_key}"):
         if slot < 53:
             for key in ("a", "b"):
@@ -195,7 +200,8 @@ def render_evaluation_lab(storage, references, slot, *, pdf_renderer=None):
 
     settings = evaluation_settings(storage, slot)
     with st.expander("평가 프롬프트 편집"):
-        st.caption("저장한 설정만 평가에 적용합니다. 기존 문제 생성 프롬프트와 별도로 저장합니다.")
+        st.caption("참고답안 없는 평가용 설정입니다. 이전 버전의 저장 설정은 자동 적용하지 않습니다. "
+                   "문제·답안에 대한 추가 정답이나 참고답안을 지침에 넣지 마세요.")
         with st.form(f"evaluation-prompt-form-{slot}"):
             system = st.text_area("평가 시스템 프롬프트", settings["system"], height=360, key=f"evaluation-system-{slot}")
             notes = st.text_area("실험용 보조 지침", settings["notes"], height=140, key=f"evaluation-notes-{slot}",
@@ -208,7 +214,7 @@ def render_evaluation_lab(storage, references, slot, *, pdf_renderer=None):
                 else:
                     settings = evaluation_settings(storage, slot)
                     st.success("평가 프롬프트를 저장했습니다.")
-    request = build_evaluation_request(reference, answer_reference, answer, system=settings["system"],
+    request = build_evaluation_request(reference, answer, system=settings["system"],
                                        rubric=rubric, notes=settings["notes"])
     with st.expander("이번 평가 요청 확인·내보내기"):
         st.code(request.system, language=None)

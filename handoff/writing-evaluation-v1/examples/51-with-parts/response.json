@@ -1,0 +1,51 @@
+{
+  "request_id": "f9ad434f22215991038bdb27d6e096221efae4972a08efaa977361962700b05f",
+  "type_slot": 51,
+  "scores": {
+    "a": {
+      "score": 5,
+      "rationale": "연동 검증용 모의 점수. 실제 모델 평가 또는 사람 채점 결과가 아님.",
+      "quotes": [
+        "필요하다고 합니다"
+      ],
+      "parts": {
+        "content": 3,
+        "form": 2
+      }
+    },
+    "b": {
+      "score": 5,
+      "rationale": "연동 검증용 모의 점수. 실제 모델 평가 또는 사람 채점 결과가 아님.",
+      "quotes": [
+        "어떻게 해야 합니까"
+      ],
+      "parts": {
+        "content": 2,
+        "form": 3
+      }
+    }
+  },
+  "task_checks": [
+    {
+      "requirement_id": "a",
+      "status": "충족",
+      "reason": "모의 응답: 문맥에 맞는 내용을 작성했다.",
+      "quotes": [
+        "필요하다고 합니다"
+      ]
+    },
+    {
+      "requirement_id": "b",
+      "status": "충족",
+      "reason": "모의 응답: 문맥에 맞는 내용을 작성했다.",
+      "quotes": [
+        "어떻게 해야 합니까"
+      ]
+    }
+  ],
+  "corrections": [],
+  "summary": "연동 검증용 모의 응답입니다. 이 예시 점수로 채점 정확도를 판단하지 마세요.",
+  "review_reasons": [
+    "모의 응답이며 실제 채점 결과가 아님."
+  ]
+}

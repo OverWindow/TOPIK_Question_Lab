@@ -1,0 +1,34 @@
+{
+  "checked_date": "2026-11-16",
+  "timezone": "Asia/Seoul",
+  "existing_tests": {
+    "command": "python -B -m pytest -q -p no:cacheprovider tests/test_writing_evaluation.py tests/test_writing_experiments.py",
+    "passed": 117,
+    "failed": 0
+  },
+  "original_core_example_validation": {
+    "passed": 6
+  },
+  "environment": {
+    "python": "3.11.9",
+    "pydantic": "2.11.7"
+  },
+  "live_model_calls": 0,
+  "production_server_accessed": false,
+  "scoring_accuracy_revalidated": false,
+  "new_http_apis": [],
+  "new_database_tables": [],
+  "prompt_and_rubric_match_current_source": {
+    "passed": 4
+  },
+  "json_schemas_checked": 5,
+  "example_inputs_and_responses_schema_validated": 6,
+  "portable_and_original_requests_identical": 28,
+  "portable_and_original_empty_results_identical": 28,
+  "portable_and_original_fixture_results_identical": 6,
+  "portable_offline_verifier": {
+    "examples": 6,
+    "empty_answer_checks": 6,
+    "invalid_responses_rejected": 20
+  }
+}

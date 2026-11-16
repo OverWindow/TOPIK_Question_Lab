@@ -1,0 +1,68 @@
+{
+  "source_key": "102:53",
+  "question": {
+    "exam_format": "pbt",
+    "section": "writing",
+    "type_slot": 53,
+    "topic": "한국 캠핑 인구의 변화",
+    "instruction": "다음은 ‘한국 캠핑 인구의 변화’에 대한 자료이다. 이 내용을 200~300자의 글로 쓰시오. 단, 글의 제목은 쓰지 마시오.",
+    "context_title": "",
+    "passage": "",
+    "data_source": "조사 기관: 한국관광공사",
+    "materials": [
+      {
+        "title": "캠핑 인구 변화",
+        "kind": "line",
+        "unit": "만 명",
+        "categories": [
+          "2019년",
+          "2024년"
+        ],
+        "series": [
+          {
+            "label": "캠핑 인구",
+            "values": [
+              340.0,
+              650.0
+            ]
+          }
+        ],
+        "columns": [],
+        "rows": []
+      },
+      {
+        "title": "연령별 순위 변화",
+        "kind": "table",
+        "unit": "",
+        "categories": [],
+        "series": [],
+        "columns": [
+          "순위",
+          "2019년",
+          "2024년"
+        ],
+        "rows": [
+          [
+            "1위",
+            "20대~30대",
+            "40대~50대"
+          ],
+          [
+            "2위",
+            "40대~50대",
+            "20대~30대"
+          ]
+        ]
+      }
+    ],
+    "material_notes": [
+      "캠핑 인구: 2019년 대비 2024년 약 2배",
+      "원인: 장비의 고급화와 캠핑장 대여료 증가 → 경제력이 요구됨",
+      "원인: 자녀와의 여가 활동을 위한 가족 단위 캠핑 증가"
+    ],
+    "requirements": []
+  },
+  "answer": {
+    "text": " \r\n"
+  }
+}

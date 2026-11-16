@@ -10,10 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, m
 
 from topik_question_lab.common.generation.providers import call_provider
 from topik_question_lab.common.models import ProviderResult, utc_now
-from topik_question_lab.common.writing_models import WritingReference
+from topik_question_lab.common.writing_models import WritingQuestion, WritingReference
 
 
 OPERATION = "writing_evaluation"
+EVALUATION_INPUT_VERSION = 2
 SCORE_LIMITS = {
     51: {"a": 5, "b": 5}, 52: {"a": 5, "b": 5},
     53: {"content": 7, "organization": 7, "language": 16},
@@ -77,7 +78,7 @@ class CriterionScore(EvaluationModel):
     rationale: str = Field(min_length=1)
     quotes: list[str] = Field(default_factory=list, description="학습자 원본 답안에서 그대로 인용")
     parts: dict[Literal["content", "form"], StrictInt] = Field(default_factory=dict,
-        description="문항에 출처가 있는 빈칸 세부 배점이 제공된 경우에만 사용")
+        description="현재 평가는 빈 객체. 기존 기록 조회 시에만 출처가 있는 빈칸 세부 배점을 허용")
 
 
 class TaskCheck(EvaluationModel):
@@ -121,8 +122,7 @@ def character_counts(text: str) -> dict:
     }
 
 
-def evaluation_tasks(reference: WritingReference) -> dict[str, str]:
-    question = reference.question
+def evaluation_tasks(question: WritingQuestion) -> dict[str, str]:
     if question.type_slot < 53:
         return {"a": "㉠의 문맥·의미·문법·격식", "b": "㉡의 문맥·의미·문법·격식"}
     if question.type_slot == 54:
@@ -144,20 +144,26 @@ class EvaluationRequest:
         return json.loads(self.user)
 
 
-def build_evaluation_request(reference: WritingReference, answer_reference: AnswerReference,
-                             answer: LearnerAnswer, *, system: str, rubric: dict, notes: str = "") -> EvaluationRequest:
-    if reference.source_key != answer_reference.source_key:
-        raise ValueError("문항과 참고답안의 출처가 다릅니다.")
+def build_evaluation_request(reference: WritingReference | WritingQuestion, answer: LearnerAnswer, *,
+                             system: str, rubric: dict, notes: str = "",
+                             source_key: str | None = None) -> EvaluationRequest:
     if not system.strip():
         raise ValueError("평가 시스템 프롬프트를 입력하세요.")
-    slot = reference.question.type_slot
+    if isinstance(reference, WritingReference):
+        question, question_payload, source_key = reference.question, reference.model_dump(), reference.source_key
+    else:
+        if not isinstance(source_key, str) or not source_key.strip():
+            raise ValueError("운용 문항의 실제 식별자 source_key가 필요합니다.")
+        question = reference
+        question_payload = {"question": question.model_dump(), "source_instruction": question.instruction}
+    slot = question.type_slot
     original = answer.for_slot(slot)
     payload = {
-        "source_key": reference.source_key, "type_slot": slot,
-        "question": reference.model_dump(), "answer": original,
-        "reference_answer": answer_reference.model_dump(), "rubric": rubric,
+        "source_key": source_key, "type_slot": slot,
+        "question": question_payload, "answer": original,
+        "rubric": rubric,
         "experimental_notes": notes,
-        "tasks": evaluation_tasks(reference),
+        "tasks": evaluation_tasks(question),
         "character_counts": {key: character_counts(value) for key, value in original.items()},
         "score_limits": SCORE_LIMITS[slot],
         "output_schema": EvaluationResult.model_json_schema(),
@@ -166,7 +172,7 @@ def build_evaluation_request(reference: WritingReference, answer_reference: Answ
         # Substitute simultaneously so learner text cannot introduce a second replacement.
         import re
         payload["completed_passage"] = re.sub(
-            r"\((㉠|㉡)\)", lambda match: original["a" if match[1] == "㉠" else "b"], reference.question.passage)
+            r"\((㉠|㉡)\)", lambda match: original["a" if match[1] == "㉠" else "b"], question.passage)
     request_id = digest({"system": system, "payload": payload})
     payload["request_id"] = request_id
     return EvaluationRequest(system, json.dumps(payload, ensure_ascii=False, indent=2), request_id)
@@ -194,7 +200,8 @@ def validate_evaluation(result: ProviderResult, request: EvaluationRequest) -> E
     validate_scores(slot, {key: item.score for key, item in parsed.scores.items()})
     original = payload["answer"]
     texts = list(original.values())
-    weights = payload["reference_answer"]["blank_weights"]
+    # Old saved responses retain their original per-blank scoring contract.
+    weights = payload.get("reference_answer", {}).get("blank_weights", {})
     for key, item in parsed.scores.items():
         relevant = [original[key]] if slot < 53 else texts
         if not any(text.strip() for text in relevant) and item.score:
@@ -228,11 +235,12 @@ def evaluate_writing(request: EvaluationRequest, *, provider: str, model: str,
                      model_capabilities: dict | None = None, managed_retries: bool | None = None,
                      request_timeout: float | None = None) -> ProviderResult:
     payload = request.payload
+    if "reference_answer" in payload:
+        raise ValueError("참고답안을 포함한 기존 요청은 다시 실행할 수 없습니다. 새 평가 요청을 만드세요.")
     if not any(value.strip() for value in payload["answer"].values()):
-        weights = payload["reference_answer"]["blank_weights"]
         parsed = EvaluationResult(
             request_id=request.request_id, type_slot=payload["type_slot"],
-            scores={key: CriterionScore(score=0, rationale="미응답", parts={p: 0 for p in weights.get(key, {})})
+            scores={key: CriterionScore(score=0, rationale="미응답")
                     for key in SCORE_LIMITS[payload["type_slot"]]},
             task_checks=[TaskCheck(requirement_id=key, status="미충족", reason="미응답") for key in payload["tasks"]],
             summary="작성된 답안이 없어 0점으로 처리했습니다.")

@@ -1,0 +1,125 @@
+{
+  "package_version": "writing-evaluation-v2",
+  "evaluation_input_version": 2,
+  "snapshot_date": "2026-11-16",
+  "timezone": "Asia/Seoul",
+  "source": "Unigate-PBT-Hub current local working tree",
+  "base_git_commit": "f3a91f80f1c45792c95f2a3a3a6ba6f9aeafca12",
+  "source_has_uncommitted_changes": true,
+  "source_files": {
+    "topik_question_lab/common/writing_evaluation.py": "b1597c4d69c7120f2910b8e14d462b06a24dea78d7a92601b88ddf4ef53d4c98",
+    "topik_question_lab/common/writing_experiments.py": "e095e4b8c848373b6142b49383181a482b471434cadfc2b1b544d9262731c7dd",
+    "topik_question_lab/common/writing_models.py": "df7b3b4acc284e8d27d03ad6ca0759b88b3da9b906ee20bf8f8a0fccd24b3a4e",
+    "topik_question_lab/menus/writing/writing_evaluation_prompts.py": "1eef4812a41c497d873323a437db7183f72e9330ddcabfa071db6b5bc964b7f0",
+    "topik_question_lab/common/generation/providers.py": "eae8c2b02ca775486014bc9c5e7776f1c78b716cfbd2e06da36f30ccee761a1b",
+    "topik_question_lab/menus/writing/pbt_references.json": "92241cbac0a63bda1536cf4a6dd1b8fcd4e752e206d4c70344e20bc99a20bb06"
+  },
+  "reference_answer_transmitted": false,
+  "experimental_notes": "",
+  "model_id": null,
+  "rubric_version": "pbt-writing-2017-v1",
+  "prompts": {
+    "51": {
+      "path": "prompts/51.txt",
+      "sha256": "7d76252e6718678e824aeff22558d0e76d25aca78dae3855400904ec6acb3e8d",
+      "character_count": 2458,
+      "prompt_version": "d4b1b805888996479d709258d3052cb7d0d8f1ce1914e91f24d0be226ac8ae87"
+    },
+    "52": {
+      "path": "prompts/52.txt",
+      "sha256": "97d59095a9146d624f1bfa8b9e1372c037fba40de250d3250cb51a6a0954784e",
+      "character_count": 2451,
+      "prompt_version": "bba47ae2a178b43831700fd9f8109bc9585d40c3a157285a3750c95560b53071"
+    },
+    "53": {
+      "path": "prompts/53.txt",
+      "sha256": "41e6272c6bc738fdd77897cc8c095e76c2e5c20cd5ef4f2a9d8b66b8c77d16f0",
+      "character_count": 3345,
+      "prompt_version": "ba818b9b312e62e1d6f00caff4dcb214eba71c3fa447a1b99b6c558413f17154"
+    },
+    "54": {
+      "path": "prompts/54.txt",
+      "sha256": "992f7664c21b3f580d5a4dc117f7bdd5160933a20f7c750d51f949c9bd011773",
+      "character_count": 3333,
+      "prompt_version": "064a6311d4e0ac8d652ac46123c4dce10e001b2045104aefb2983c541b70eb7b"
+    }
+  },
+  "examples": [
+    {
+      "name": "51",
+      "source_key": "102:51",
+      "request_id": "ff3134002cc10d8efb44495417677572c57d692e9ab5ca393206ca4913c30eec",
+      "expected_fixture_total": 9,
+      "response_kind": "synthetic_transport_fixture"
+    },
+    {
+      "name": "52",
+      "source_key": "102:52",
+      "request_id": "a6f4d3f5b3f12615cc091f0c566f02d50b3722458eac4fcc79ea3cf702e01c01",
+      "expected_fixture_total": 5,
+      "response_kind": "synthetic_transport_fixture"
+    },
+    {
+      "name": "53",
+      "source_key": "102:53",
+      "request_id": "d2f4823cc9c54fe1ae121f67568bd0e748b8638299bba1f6f359d75cce448a99",
+      "expected_fixture_total": 23,
+      "response_kind": "synthetic_transport_fixture"
+    },
+    {
+      "name": "54",
+      "source_key": "102:54",
+      "request_id": "730d7d03ed7b61f77e42a10693ed0c04405f195d82da00034b9af53f6071b3ab",
+      "expected_fixture_total": 34,
+      "response_kind": "synthetic_transport_fixture"
+    },
+    {
+      "name": "empty-51",
+      "source_key": "102:51",
+      "request_id": "ea46b28c43d7a82aa6533c78cb1ba5dde77c513cf61c891e8a1df0ea0dbcbce6",
+      "expected_fixture_total": 0,
+      "response_kind": "local_empty_answer"
+    },
+    {
+      "name": "empty-53",
+      "source_key": "102:53",
+      "request_id": "6fba1db82bcd1c09c8b6f4e7f8f83b5699e6ced399ff7c3d157918fc639b2c02",
+      "expected_fixture_total": 0,
+      "response_kind": "local_empty_answer"
+    }
+  ],
+  "files": {
+    "examples/51/input.json": "7ae271b84734bff023e7332bf85ba52525f7b56f05e40b98dac9f8e9cf3de01f",
+    "examples/51/request.json": "7c64a6fc096b224572a9283b5de1e558815bae7d006cded9435e70e4ef14088e",
+    "examples/51/response.json": "a51dd4be05fede69bb19798471e82415b3e513af3f2872a5ba369234a60a8e2b",
+    "examples/52/input.json": "09e6d3bb9cc5ceeaf1db11783e28823b5308fbfab7f5a1e1d730595f72349ab3",
+    "examples/52/request.json": "e785b67d1c06042d9091b76ef46fa036715677a574bbc2bf76d8d8b990922453",
+    "examples/52/response.json": "03cf0dd746b8a6dd2139a956bedb0975347a0f4a6315710844b332ff66d1c2ca",
+    "examples/53/input.json": "b0876b80597435ed2c7863c91fb13aba7c9712ff126e671ec54ef9cda77fecd8",
+    "examples/53/request.json": "822f4d40fde1e4425e3f2db602fc932e5022e1d06ad12e8da5e27b8755a86e1d",
+    "examples/53/response.json": "060b05c2e4bd731016bc1f3657a1c0b243dd81abe5abfd218023d28839f1f0ee",
+    "examples/54/input.json": "ebab737e9bb8cbd9fd62ec6e49a3042603b96fb279d11f7985843fd850c6e3a1",
+    "examples/54/request.json": "176546fd3c63e45058d14ebb056ce1e090fb90ac9d2c85216439267bc12745fd",
+    "examples/54/response.json": "4d5f19da90f8b7f93d46ecf2d47a97f902634e9daf3ca4f7eed154c442e338cb",
+    "examples/empty-51/input.json": "31ae316a6b94c9f8a310e73a3b283dfda9429b2624e80e7fcb50c424e00efeb7",
+    "examples/empty-51/request.json": "28b65ba0ff564db0ae5d0129394bbed271c168644df41220224ce8d317888d16",
+    "examples/empty-51/response.json": "7e43aa3e8fe83e272066d6de3ebbd31689f5526a3c145770939c774cd488d208",
+    "examples/empty-53/input.json": "a88416771e6bc5e9481433713ba0bb131147620fbb93a1111bc646b4a5e60f44",
+    "examples/empty-53/request.json": "990facdd4df1606336bcbc223b122abd740f90acd5cc6e093208af143debff45",
+    "examples/empty-53/response.json": "2563258dedda5c48b995564b07c594eeb9dd47ba570a715ab347708eb12277ef",
+    "input-schemas/learner-answer.json": "acd618f7828f995491c421181a22c5123a8ed9c2bc4c0a00f46f372503eb979f",
+    "input-schemas/question.json": "01760d1ed099ecf41bdf336b65866800ad82fbcd97b7d0e273b7d1a577eb42e9",
+    "output-schema.json": "f87bad65f24fbe976e40b3398f6e2ebe9fcc4f333b05d761fbd2dc07ddb7783f",
+    "prompts/51.txt": "7d76252e6718678e824aeff22558d0e76d25aca78dae3855400904ec6acb3e8d",
+    "prompts/52.txt": "97d59095a9146d624f1bfa8b9e1372c037fba40de250d3250cb51a6a0954784e",
+    "prompts/53.txt": "41e6272c6bc738fdd77897cc8c095e76c2e5c20cd5ef4f2a9d8b66b8c77d16f0",
+    "prompts/54.txt": "992f7664c21b3f580d5a4dc117f7bdd5160933a20f7c750d51f949c9bd011773",
+    "README.md": "bc98cffd0497134756969ca1856111976a45367131c7e794f0232973839b0b8e",
+    "reference/evaluation_contract.py": "77ca5dc9ed1535359e67e2f1478f396ca4b8cbcd672de5a44b0a156858f09802",
+    "reference/writing_models.py": "df7b3b4acc284e8d27d03ad6ca0759b88b3da9b906ee20bf8f8a0fccd24b3a4e",
+    "requirements.txt": "d6dffaa81d888aa0584529e06b9d58449b022a038676fe6dd4556ff67e88fcdc",
+    "rubrics.json": "c4aec72ddbbb63321ee55c739b6e82fa92381b4a951a3a43b5c881632d98c610",
+    "verification.json": "3828cae13861056feb3fec4bfa8251bb7bf7b9a3acad56f95833ad1c63663322",
+    "verify.py": "c55c9ecfad5ccfaa316dc73687ae80ba12ec9a3ba7208c67dd4f25ea1affa13e"
+  }
+}

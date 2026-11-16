@@ -22,18 +22,19 @@ APP = str(PACKAGE_ROOT / "menus/writing/writing_app.py")
 
 
 @pytest.fixture
-def local_set(tmp_path):
+def local_set(tmp_path, writing_png):
     storage = WritingStorage(tmp_path / "data/writing_pbt.db")
     questions = [r.question.model_dump() for r in load_references() if r.source_exam == 102]
     questions.sort(key=lambda q: q["type_slot"])
     result = manual_result("test", "test-model", "generation", json.dumps({"questions": questions}))
     receipt = save_result(storage, result, "system", "user", [51, 52, 53, 54])
     assert not receipt["error"]
+    writing_png(next(q for q in questions if q["type_slot"] == 53))
     return storage, receipt["run_id"]
 
 
 @pytest.fixture
-def bank(postgres_database_factory):
+def bank(postgres_database_factory, writing_cloud):
     url = postgres_database_factory()
     PostgresQuestionBank(url).ensure_schema()
     return writing_postgres.WritingQuestionBank(url)
@@ -59,13 +60,15 @@ def test_source_identity_is_read_only_until_save_and_survives_reload(local_set, 
 
 
 @pytest.fixture
-def individual_set(tmp_path):
+def individual_set(tmp_path, writing_png):
     storage = WritingStorage(tmp_path / "data/writing_pbt.db")
     for ref in (r for r in load_references() if r.source_exam == 102):
         slot = ref.question.type_slot
         result = manual_result(f"service-{slot}", f"model-{slot}", "generation",
                                json.dumps({"questions": [ref.question.model_dump()]}))
         assert not save_result(storage, result, "system", "user", [slot])["error"]
+        if slot == 53:
+            writing_png(ref.question)
     return storage
 
 
@@ -108,7 +111,7 @@ def test_individual_selection_publishes_latest_edits_and_keeps_identity(individu
         def get_set(self, source):
             return published.get(source)
 
-        def save_set(self, source, rows):
+        def save_set(self, source, rows, *, image_directory=None):
             writing_postgres.validate_writing_set(rows)
             created = source not in published
             published[source] = {"set_id": source, "rows": deepcopy(rows)}
@@ -181,7 +184,8 @@ def test_save_retry_and_edit_preserve_full_questions(local_set, bank):
     assert retry == {"set_id": first["set_id"], "created": False}
     snapshot = bank.get_set(source)
     assert snapshot["exam_format"] == "pbt"
-    assert [q["content_json"] for q in snapshot["questions"]] == [q.model_dump() for _, q in writing_postgres.validate_writing_set(rows)]
+    assert [{k: v for k, v in q["content_json"].items() if k != "image"} for q in snapshot["questions"]] == [q.model_dump() for _, q in writing_postgres.validate_writing_set(rows)]
+    assert snapshot["questions"][2]["content_json"]["image"]["storage_backend"] == "s3"
     row = next(r for r in rows if r["question"]["type_slot"] == 51)
     edit = {**row["question"], "passage": "새로 신청하려고 (㉠). 언제까지 (㉡)?"}
     storage.save_generated_edit(row["id"], edit)

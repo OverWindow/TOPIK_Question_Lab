@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "ChartSeries": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "label",
+        "values"
+      ],
+      "title": "ChartSeries",
+      "type": "object"
+    },
+    "WritingMaterial": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "bar",
+            "line",
+            "table"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Categories",
+          "type": "array"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/$defs/ChartSeries"
+          },
+          "maxItems": 6,
+          "title": "Series",
+          "type": "array"
+        },
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Rows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "kind"
+      ],
+      "title": "WritingMaterial",
+      "type": "object"
+    },
+    "WritingQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "exam_format": {
+          "const": "pbt",
+          "default": "pbt",
+          "title": "Exam Format",
+          "type": "string"
+        },
+        "section": {
+          "const": "writing",
+          "default": "writing",
+          "title": "Section",
+          "type": "string"
+        },
+        "type_slot": {
+          "enum": [
+            51,
+            52,
+            53,
+            54
+          ],
+          "title": "Type Slot",
+          "type": "integer"
+        },
+        "topic": {
+          "minLength": 1,
+          "title": "Topic",
+          "type": "string"
+        },
+        "instruction": {
+          "default": "",
+          "title": "Instruction",
+          "type": "string"
+        },
+        "context_title": {
+          "default": "",
+          "title": "Context Title",
+          "type": "string"
+        },
+        "passage": {
+          "default": "",
+          "title": "Passage",
+          "type": "string"
+        },
+        "data_source": {
+          "default": "",
+          "title": "Data Source",
+          "type": "string"
+        },
+        "materials": {
+          "items": {
+            "$ref": "#/$defs/WritingMaterial"
+          },
+          "maxItems": 4,
+          "title": "Materials",
+          "type": "array"
+        },
+        "material_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Material Notes",
+          "type": "array"
+        },
+        "requirements": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Requirements",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type_slot",
+        "topic"
+      ],
+      "title": "WritingQuestion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "source_exam": {
+      "title": "Source Exam",
+      "type": "integer"
+    },
+    "source_file": {
+      "pattern": "^\\d+_writing\\.pdf$",
+      "title": "Source File",
+      "type": "string"
+    },
+    "source_page": {
+      "enum": [
+        1,
+        2
+      ],
+      "title": "Source Page",
+      "type": "integer"
+    },
+    "source_instruction": {
+      "minLength": 1,
+      "title": "Source Instruction",
+      "type": "string"
+    },
+    "question": {
+      "$ref": "#/$defs/WritingQuestion"
+    }
+  },
+  "required": [
+    "source_exam",
+    "source_file",
+    "source_page",
+    "source_instruction",
+    "question"
+  ],
+  "title": "WritingReference",
+  "type": "object"
+}

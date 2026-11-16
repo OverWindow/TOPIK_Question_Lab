@@ -1,0 +1,43 @@
+{
+  "reference": {
+    "source_exam": 102,
+    "source_file": "102_writing.pdf",
+    "source_page": 1,
+    "source_instruction": "다음 글의 ㉠과 ㉡에 알맞은 말을 각각 쓰시오.",
+    "question": {
+      "exam_format": "pbt",
+      "section": "writing",
+      "type_slot": 52,
+      "topic": "항공기의 크기와 비행 고도",
+      "instruction": "다음 글의 ㉠과 ㉡에 알맞은 말을 각각 쓰시오.",
+      "context_title": "",
+      "passage": "큰 항공기는 주로 고도가 높은 하늘에서 비행을 한다. 높이 올라가면 날씨의 영향을 별로 (㉠) 흔들림이 적다. 반면 작은 항공기는 날씨의 영향을 받더라도 낮은 고도에서 비행을 해야 한다. 왜냐하면 높은 고도에서 (㉡) 항공기의 엔진이 크고 좋아야 하며 연료도 많이 필요하기 때문이다.",
+      "data_source": "",
+      "materials": [],
+      "material_notes": [],
+      "requirements": []
+    }
+  },
+  "answer_reference": {
+    "source_key": "102:52",
+    "source_file": "102_answer.pdf",
+    "source_page": 1,
+    "blank_answers": {
+      "a": [
+        "받지 않아서"
+      ],
+      "b": [
+        "비행을 하기 위해서는",
+        "날기 위해서는"
+      ]
+    },
+    "text": "",
+    "source_char_count": null,
+    "blank_weights": {},
+    "published_rules": []
+  },
+  "answer": {
+    "a": "받지 않기 때문에",
+    "b": ""
+  }
+}

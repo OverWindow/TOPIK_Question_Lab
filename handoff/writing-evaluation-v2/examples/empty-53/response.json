@@ -1,0 +1,59 @@
+{
+  "request_id": "6fba1db82bcd1c09c8b6f4e7f8f83b5699e6ced399ff7c3d157918fc639b2c02",
+  "type_slot": 53,
+  "scores": {
+    "content": {
+      "score": 0,
+      "rationale": "미응답",
+      "quotes": [],
+      "parts": {}
+    },
+    "organization": {
+      "score": 0,
+      "rationale": "미응답",
+      "quotes": [],
+      "parts": {}
+    },
+    "language": {
+      "score": 0,
+      "rationale": "미응답",
+      "quotes": [],
+      "parts": {}
+    }
+  },
+  "task_checks": [
+    {
+      "requirement_id": "material:1",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    },
+    {
+      "requirement_id": "material:2",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    },
+    {
+      "requirement_id": "note:1",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    },
+    {
+      "requirement_id": "note:2",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    },
+    {
+      "requirement_id": "note:3",
+      "status": "미충족",
+      "reason": "미응답",
+      "quotes": []
+    }
+  ],
+  "corrections": [],
+  "summary": "작성된 답안이 없어 0점으로 처리했습니다.",
+  "review_reasons": []
+}

@@ -4,6 +4,60 @@ import uuid
 import pytest
 
 
+@pytest.fixture
+def writing_png():
+    from PIL import Image
+    from topik_question_lab.common.writing_models import WritingQuestion
+    from topik_question_lab.menus.writing.writing_images import image_path
+
+    def create(question):
+        if isinstance(question, dict):
+            question = WritingQuestion.model_validate(question)
+        path = image_path(question)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (120, 90), "white").save(path, "PNG")
+        return path
+
+    return create
+
+
+@pytest.fixture
+def writing_cloud(monkeypatch):
+    from topik_question_lab.common.media.media_cloud import digest_file
+    from topik_question_lab.menus.writing import writing_images
+
+    class Store:
+        bucket = "test-writing"
+        base_url = "https://media.example.com"
+        uploaded = []
+        verified = []
+        objects = {}
+        failure = None
+        closed = 0
+
+        def __init__(self, *args):
+            pass
+
+        def upload(self, path, key, size, sha256, mime):
+            assert digest_file(path) == (size, sha256)
+            if self.failure == "upload":
+                raise RuntimeError("secret-provider-error")
+            self.objects[key] = path.read_bytes()
+            self.uploaded.append(key)
+
+        def verify(self, row, *, local_path):
+            if self.failure == "verify":
+                raise RuntimeError("secret-provider-error")
+            assert self.objects[row["storage_path"]] == local_path.read_bytes()
+            self.verified.append(row)
+
+        def close(self):
+            type(self).closed += 1
+
+    monkeypatch.setattr(writing_images, "S3MediaStore", Store)
+    return Store
+
+
 @pytest.fixture(autouse=True)
 def isolated_application_root(tmp_path, monkeypatch):
     """App smoke tests must never open the user's databases or credentials."""

@@ -8,7 +8,7 @@ from topik_question_lab.common.generation.providers import manual_result
 from topik_question_lab.common.paths import PACKAGE_ROOT
 from topik_question_lab.common.writing_evaluation import LearnerAnswer, SCORE_LIMITS
 from topik_question_lab.common.writing_storage import WritingStorage
-from topik_question_lab.menus.writing.writing_evaluation_prompts import DEFAULT_SYSTEM, load_answer_references, rubric_for
+from topik_question_lab.menus.writing.writing_evaluation_prompts import DEFAULT_SYSTEMS, load_answer_references, rubric_for
 from topik_question_lab.menus.writing.writing_pipeline import load_references
 from topik_question_lab.menus.writing.writing_settings import save_generation_default
 
@@ -25,7 +25,7 @@ def create(storage, slot=53):
 
 
 def add_round(storage, experiment_id, slot=53, repeats=2, notes=""):
-    return lab.create_round(storage, experiment_id, evaluator=CHOICE, system=DEFAULT_SYSTEM,
+    return lab.create_round(storage, experiment_id, evaluator=CHOICE, system=DEFAULT_SYSTEMS[slot],
                             notes=notes, rubric=rubric_for(slot), repeats=repeats, name="평가 실험")
 
 
@@ -48,10 +48,9 @@ def fake_models(monkeypatch):
                 "reasons": {key: "PRIOR_SENTINEL 사전 판단 근거" for key in SCORE_LIMITS[slot]}, "uncertainties": []}
         else:
             original = payload["answer"]
-            weights = payload["reference_answer"]["blank_weights"]
             data = {"request_id": payload["request_id"], "type_slot": slot,
                 "scores": {key: {"score": maximum, "rationale": "모의 평가 근거",
-                    "quotes": [original[key] if slot < 53 else original["text"]], "parts": weights.get(key, {})}
+                    "quotes": [original[key] if slot < 53 else original["text"]], "parts": {}}
                     for key, maximum in SCORE_LIMITS[slot].items()},
                 "task_checks": [{"requirement_id": key, "status": "충족", "reason": "모의 과제 수행",
                     "quotes": [original[key] if slot < 53 else original["text"]]} for key in payload["tasks"]],
@@ -96,7 +95,10 @@ def test_full_experiment_keeps_prediction_blind_and_resumes_without_duplicate_ca
             encoded = json.dumps(call["payload"], ensure_ascii=False)
             assert "DESIGN_SENTINEL" not in encoded and "goal_level" not in call["payload"]
             assert "profile" not in call["payload"]
+            assert "reference_answer" not in call["payload"]
+            assert "참고답안은 제공되지 않는다" in call["system"]
         if call["operation"] == "writing_evaluation":
+            assert call["system"] == DEFAULT_SYSTEMS[slot]
             assert "PRIOR_SENTINEL" not in json.dumps(call["payload"], ensure_ascii=False)
             assert "assessment" not in call["payload"] and "scores" not in call["payload"]
     assert not storage.list_generated()
@@ -129,19 +131,98 @@ def test_edit_then_freeze_and_new_round_use_same_answers_and_saved_prompts(tmp_p
     assert len([c for c in fake_models if c["operation"] == "writing_prior_assessment"]) == 5
 
 
-def test_stricter_default_only_applies_to_new_rounds_and_old_retries_keep_snapshot(tmp_path, fake_models, monkeypatch):
+@pytest.mark.parametrize("slot", [51, 52, 53, 54])
+def test_legacy_scoring_stages_are_read_only_and_new_round_reuses_answers_without_references(tmp_path, fake_models, slot):
+    from copy import deepcopy
+
+    storage = WritingStorage(tmp_path / "legacy.db")
+    experiment_id = create(storage, slot)
+    lab.run_pending(storage, experiment_id, "generation")
+    lab.run_pending(storage, experiment_id, "prior")
+    old_round = add_round(storage, experiment_id, slot, repeats=1)
+    lab.run_pending(storage, experiment_id, "evaluation", old_round)
+    with storage.connect() as connection:
+        experiment = lab._read(connection, experiment_id)
+        experiment.pop("prior_input_version")
+        experiment["rounds"][0].pop("evaluation_input_version")
+        experiment["rounds"][0]["tasks"][0]["status"] = "failed"
+        lab._write(connection, experiment)
+    before = deepcopy(lab.load_experiment(storage, experiment_id))
+    old_runs = lab.experiment_runs(storage, experiment_id, round_ids=[old_round])
+    calls_before = len(fake_models)
+    for stage, round_id in (("prior", None), ("evaluation", old_round)):
+        assert lab.legacy_scoring_stage(before, stage, round_id)
+        with pytest.raises(ValueError, match="조회만"):
+            lab.build_stage_request(before, before["cases"][0], stage, round_id)
+        with pytest.raises(ValueError, match="조회만"):
+            lab.retry_failed(storage, experiment_id, stage, round_id)
+    assert len(fake_models) == calls_before
+    assert lab.load_experiment(storage, experiment_id) == before
+
+    new_round = add_round(storage, experiment_id, slot, repeats=1)
+    updated = lab.load_experiment(storage, experiment_id)
+    assert not lab.legacy_scoring_stage(updated, "evaluation", new_round)
+    # Scoring remains usable even if the generation-only reference is unavailable.
+    without_reference = deepcopy(updated)
+    without_reference.pop("answer_reference")
+    request = lab.build_stage_request(without_reference, updated["cases"][0], "evaluation", new_round)
+    assert "reference_answer" not in request.payload
+    assert request.payload["answer"] == LearnerAnswer.model_validate(before["cases"][0]["answer"]).for_slot(slot)
+    lab.run_pending(storage, experiment_id, "evaluation", new_round)
+    after = lab.load_experiment(storage, experiment_id)
+    assert after["cases"] == before["cases"] and after["rounds"][0] == before["rounds"][0]
+    assert lab.experiment_runs(storage, experiment_id, round_ids=[old_round]) == old_runs
+    assert all("reference_answer" not in call["payload"] for call in fake_models[calls_before:])
+
+
+def test_new_prior_request_does_not_require_generation_reference(tmp_path, fake_models):
+    storage = WritingStorage(tmp_path / "prior.db")
+    experiment_id = create(storage)
+    lab.run_pending(storage, experiment_id, "generation")
+    experiment = lab.load_experiment(storage, experiment_id)
+    experiment.pop("answer_reference")
+    request = lab.build_stage_request(experiment, experiment["cases"][0], "prior")
+    assert "reference_answer" not in request.payload
+    assert request.system == lab.PRIOR_SYSTEM
+
+
+@pytest.mark.parametrize("stage", ["prior", "evaluation"])
+def test_legacy_pending_scoring_cannot_claim_or_call_model(tmp_path, fake_models, stage):
+    storage = WritingStorage(tmp_path / "legacy-pending.db")
+    experiment_id = create(storage)
+    lab.run_pending(storage, experiment_id, "generation")
+    round_id = None
+    if stage == "evaluation":
+        lab.run_pending(storage, experiment_id, "prior")
+        round_id = add_round(storage, experiment_id)
+    with storage.connect() as connection:
+        experiment = lab._read(connection, experiment_id)
+        experiment.pop("prior_input_version")
+        if round_id:
+            experiment["rounds"][0].pop("evaluation_input_version")
+        lab._write(connection, experiment)
+    before = lab.load_experiment(storage, experiment_id)
+    calls = len(fake_models)
+    with pytest.raises(ValueError, match="조회만"):
+        lab.run_next(storage, experiment_id, stage, round_id)
+    assert lab.load_experiment(storage, experiment_id) == before
+    assert len(fake_models) == calls
+
+
+@pytest.mark.parametrize("slot", [51, 52, 53, 54])
+def test_type_default_only_applies_to_new_rounds_and_old_retries_keep_snapshot(tmp_path, fake_models, monkeypatch, slot):
     from copy import deepcopy
     from topik_question_lab.common import writing_evaluation
     from topik_question_lab.menus.writing import writing_evaluation_prompts as prompts
 
     storage = WritingStorage(tmp_path / "lab.db")
-    experiment_id = create(storage)
+    experiment_id = create(storage, slot)
     lab.run_pending(storage, experiment_id, "generation")
     lab.run_pending(storage, experiment_id, "prior")
-    monkeypatch.setattr(prompts, "DEFAULT_SYSTEM", "이전에 사용한 평가 프롬프트")
-    old_settings = prompts.evaluation_settings(storage, 53)
+    monkeypatch.setattr(prompts, "DEFAULT_SYSTEMS", {**DEFAULT_SYSTEMS, slot: "이전에 사용한 평가 프롬프트"})
+    old_settings = prompts.evaluation_settings(storage, slot)
     old_round = lab.create_round(storage, experiment_id, evaluator=CHOICE, system=old_settings["system"],
-        notes=old_settings["notes"], rubric=rubric_for(53), repeats=1, name="기존 차수")
+        notes=old_settings["notes"], rubric=rubric_for(slot), repeats=1, name="기존 차수")
     normal = writing_evaluation.call_provider
     def fail(*args, **kwargs):
         return normal(*args, **kwargs).model_copy(update={"error": "한 번의 모의 실패"})
@@ -153,10 +234,10 @@ def test_stricter_default_only_applies_to_new_rounds_and_old_retries_keep_snapsh
     old_runs = lab.experiment_runs(storage, experiment_id, round_ids=[old_round])
     old_request = lab.build_stage_request(before, before["cases"][0], "evaluation", old_round)
 
-    monkeypatch.setattr(prompts, "DEFAULT_SYSTEM", DEFAULT_SYSTEM)
-    settings = prompts.evaluation_settings(storage, 53)
+    monkeypatch.setattr(prompts, "DEFAULT_SYSTEMS", DEFAULT_SYSTEMS)
+    settings = prompts.evaluation_settings(storage, slot)
     new_round = lab.create_round(storage, experiment_id, evaluator=CHOICE, system=settings["system"],
-        notes=settings["notes"], rubric=rubric_for(53), repeats=1, name="새 평가 차수")
+        notes=settings["notes"], rubric=rubric_for(slot), repeats=1, name="새 평가 차수")
     lab.run_pending(storage, experiment_id, "evaluation", new_round)
     after = lab.load_experiment(storage, experiment_id)
     assert after["rounds"][0] == before["rounds"][0]
@@ -165,7 +246,7 @@ def test_stricter_default_only_applies_to_new_rounds_and_old_retries_keep_snapsh
     assert after["prior_system"] == before["prior_system"]
     assert lab.build_stage_request(after, after["cases"][0], "evaluation", old_round) == old_request
     new_request = lab.build_stage_request(after, after["cases"][0], "evaluation", new_round)
-    assert new_request.system == DEFAULT_SYSTEM and new_request.request_id != old_request.request_id
+    assert new_request.system == DEFAULT_SYSTEMS[slot] and new_request.request_id != old_request.request_id
     assert "assessment" not in new_request.payload and "goal_level" not in new_request.payload
     assert lab.experiment_runs(storage, experiment_id, round_ids=[old_round]) == old_runs
 
@@ -176,7 +257,7 @@ def test_stricter_default_only_applies_to_new_rounds_and_old_retries_keep_snapsh
     assert fake_models[-1]["system"] == old_settings["system"]
     preserved = lab.experiment_runs(storage, experiment_id, round_ids=[old_round])
     assert all(preserved[run_id] == run for run_id, run in old_runs.items())
-    assert all(run["prompt_system"] == DEFAULT_SYSTEM
+    assert all(run["prompt_system"] == DEFAULT_SYSTEMS[slot]
                for run in lab.experiment_runs(storage, experiment_id, round_ids=[new_round]).values())
 
 
@@ -302,18 +383,22 @@ def test_invalid_actual_score_is_excluded_and_retry_keeps_completed_repeats(tmp_
     assert all(row["완료"] == 2 and row["실패"] == 0 for row in rows)
 
 
-def test_bulk_ui_runs_all_stages_and_compares_rounds(tmp_path, fake_models, monkeypatch):
+@pytest.mark.parametrize("slot", [51, 52, 53, 54])
+def test_bulk_ui_runs_all_stages_and_compares_rounds(tmp_path, fake_models, monkeypatch, slot):
+    from topik_question_lab.menus.writing import writing_evaluation_prompts as prompts
+
     monkeypatch.setenv("BIZROUTER_API_KEY", "synthetic-key")
     storage = WritingStorage(tmp_path / "data/writing_pbt.db")
     save_generation_default(storage, "bizrouter:fixture", "fixture")
     app = AppTest.from_file(APP, default_timeout=30).run()
-    app.selectbox(key="writing-evaluation-type").set_value(53).run()
+    app.selectbox(key="writing-evaluation-type").set_value(slot).run()
     app.radio(key="writing-evaluation-mode").set_value("대량 실험").run()
     assert not app.exception
     app.number_input(key="experiment-per-level").set_value(1).run()
     app.button(key="experiment-create").click().run()
     assert not app.exception and not fake_models
-    experiment_id = app.selectbox(key="experiment-selected-102:53").value
+    experiment_id = app.selectbox(key=f"experiment-selected-102:{slot}").value
+    assert app.text_area(key=f"experiment-system-{experiment_id}").value == DEFAULT_SYSTEMS[slot]
     app.button(key=f"experiment-{experiment_id}-generation-None-run").click().run()
     assert not app.exception and len(fake_models) == 5
     app.button(key=f"experiment-{experiment_id}-prior-None-run").click().run()
@@ -324,8 +409,14 @@ def test_bulk_ui_runs_all_stages_and_compares_rounds(tmp_path, fake_models, monk
     round_id = app.selectbox(key=f"experiment-round-{experiment_id}").value
     app.button(key=f"experiment-{experiment_id}-evaluation-{round_id}-run").click().run()
     assert not app.exception and not app.error and len(fake_models) == 20
+    assert all(c["system"] == DEFAULT_SYSTEMS[slot] for c in fake_models if c["operation"] == "writing_evaluation")
     assert any("차이(실제−예상)" in frame.value.columns for frame in app.dataframe)
-    assert any(metric.value == "6.00점" for metric in app.metric)
+    assert any(metric.value == ("4.00점" if slot < 53 else "6.00점") for metric in app.metric)
+    revised = DEFAULT_SYSTEMS[slot] + "\n새 비교용 평가 지침"
+    monkeypatch.setattr(prompts, "DEFAULT_SYSTEMS", {**DEFAULT_SYSTEMS, slot: revised})
+    app.run()
+    assert not app.exception
+    assert app.text_area(key=f"experiment-system-{experiment_id}").value == revised
     app.text_area(key=f"experiment-notes-{experiment_id}").set_value("새 비교 지침").run()
     app.button(key="experiment-add-round").click().run()
     assert not app.exception
@@ -333,8 +424,11 @@ def test_bulk_ui_runs_all_stages_and_compares_rounds(tmp_path, fake_models, monk
     assert second_id != round_id
     app.button(key=f"experiment-{experiment_id}-evaluation-{second_id}-run").click().run()
     assert not app.exception and len(fake_models) == 30
+    assert all(c["system"] == revised for c in fake_models[-10:])
+    rounds = lab.load_experiment(storage, experiment_id)["rounds"]
+    assert rounds[0]["system"] == DEFAULT_SYSTEMS[slot] and rounds[1]["system"] == revised
     reopened = AppTest.from_file(APP, default_timeout=30).run()
-    reopened.selectbox(key="writing-evaluation-type").set_value(53).run()
+    reopened.selectbox(key="writing-evaluation-type").set_value(slot).run()
     reopened.radio(key="writing-evaluation-mode").set_value("대량 실험").run()
     assert not reopened.exception
     assert len(lab.load_experiment(storage, experiment_id)["rounds"]) == 2

@@ -1,0 +1,183 @@
+{
+  "$defs": {
+    "Correction": {
+      "additionalProperties": false,
+      "properties": {
+        "original": {
+          "minLength": 1,
+          "title": "Original",
+          "type": "string"
+        },
+        "suggestion": {
+          "minLength": 1,
+          "title": "Suggestion",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "original",
+        "suggestion",
+        "reason"
+      ],
+      "title": "Correction",
+      "type": "object"
+    },
+    "CriterionScore": {
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "description": "언어 사용은 2배 적용 후 짝수 점수",
+          "maximum": 26,
+          "minimum": 0,
+          "title": "Score",
+          "type": "integer"
+        },
+        "rationale": {
+          "minLength": 1,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "quotes": {
+          "description": "학습자 원본 답안에서 그대로 인용",
+          "items": {
+            "type": "string"
+          },
+          "title": "Quotes",
+          "type": "array"
+        },
+        "parts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "문항에 출처가 있는 빈칸 세부 배점이 제공된 경우에만 사용",
+          "propertyNames": {
+            "enum": [
+              "content",
+              "form"
+            ]
+          },
+          "title": "Parts",
+          "type": "object"
+        }
+      },
+      "required": [
+        "score",
+        "rationale"
+      ],
+      "title": "CriterionScore",
+      "type": "object"
+    },
+    "TaskCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "requirement_id": {
+          "minLength": 1,
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "충족",
+            "부분 충족",
+            "미충족"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "quotes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quotes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "status",
+        "reason"
+      ],
+      "title": "TaskCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "type_slot": {
+      "enum": [
+        51,
+        52,
+        53,
+        54
+      ],
+      "title": "Type Slot",
+      "type": "integer"
+    },
+    "scores": {
+      "additionalProperties": {
+        "$ref": "#/$defs/CriterionScore"
+      },
+      "propertyNames": {
+        "enum": [
+          "a",
+          "b",
+          "content",
+          "organization",
+          "language"
+        ]
+      },
+      "title": "Scores",
+      "type": "object"
+    },
+    "task_checks": {
+      "items": {
+        "$ref": "#/$defs/TaskCheck"
+      },
+      "title": "Task Checks",
+      "type": "array"
+    },
+    "corrections": {
+      "items": {
+        "$ref": "#/$defs/Correction"
+      },
+      "title": "Corrections",
+      "type": "array"
+    },
+    "summary": {
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "review_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Review Reasons",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_id",
+    "type_slot",
+    "scores",
+    "task_checks",
+    "summary"
+  ],
+  "title": "EvaluationResult",
+  "type": "object"
+}

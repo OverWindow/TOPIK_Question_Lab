@@ -41,6 +41,10 @@ def _stage_controls(storage, experiment, stage, label, model, round_id=None, rea
     counts = Counter(task["status"] for _, task in items)
     st.caption(f"완료 {counts['succeeded']} · 대기 {counts['pending']} · 실패 {counts['failed']} · 실행 중 {counts['running']}")
     blocked = not ready or any(t["status"] == "running" for t in lab.all_tasks(experiment))
+    if lab.legacy_scoring_stage(experiment, stage, round_id):
+        blocked = True
+        st.info("참고답안을 포함한 기존 평가·사전 판단 기록입니다. 기존 차수의 실행·재시도는 중지됩니다. "
+                "실제 평가는 같은 답안으로 새 평가 차수를 만들어 비교할 수 있습니다.")
     enabled = bool(model["model"]) and can_gateway_call(model["provider"])
     if not enabled:
         st.info("실험에 저장된 모델의 API 연결 설정이 필요합니다.")
@@ -155,6 +159,8 @@ def _compare(storage, experiment, round_data):
 def render_bulk_experiments(storage, references, slot):
     st.subheader("대량 실험")
     st.caption("합성 답안 생성 → 독립적인 사전 판단 → 실제 평가 프롬프트 실행 → 점수 비교")
+    st.info("새 사전 판단·실제 평가는 문제·학생 답안·채점 기준만 사용합니다. 참고답안은 평가 모델에 전달하지 않습니다.")
+    st.caption("합성 답안 생성 단계는 기존처럼 기출 참고답안을 사용합니다.")
     st.caption("화면에서 순차 실행합니다. 화면 이동·앱 종료 시 중단될 수 있으며 완료 기록은 보존됩니다. "
                "모델 호출은 항목당 한 번이며 실패 항목은 직접 재시도합니다.")
     candidates = {r.source_key: r for r in sorted(references, key=lambda r: -r.source_exam) if r.question.type_slot == slot}
@@ -187,6 +193,9 @@ def render_bulk_experiments(storage, references, slot):
     by_id = {e["id"]: e for e in experiments}
     experiment_id = st.selectbox("저장된 실험", list(by_id), format_func=lambda key: f"{by_id[key]['name']} · {by_id[key]['created_at']}", key=selection_key)
     experiment = by_id[experiment_id]
+    if lab.legacy_scoring_stage(experiment, "prior"):
+        st.caption("이 실험의 기존 사전 예상 점수는 참고답안을 제공한 조건에서 산출되었습니다. "
+                   "새 평가 차수의 점수와 입력 조건이 다릅니다.")
     running = [t for t in lab.all_tasks(experiment) if t["status"] == "running"]
     if running:
         st.info("응답 대기 중인 호출이 있습니다. 다른 화면에서 실행 중인지 확인하세요. "
@@ -221,7 +230,8 @@ def render_bulk_experiments(storage, references, slot):
         evaluator = _model(storage, "experiment-evaluator", "실제 평가")
         system = st.text_area("이 차수의 평가 시스템 프롬프트", settings["system"], height=220, key=f"experiment-system-{experiment_id}")
         notes = st.text_area("이 차수의 보조 지침", settings["notes"], key=f"experiment-notes-{experiment_id}")
-        st.caption("현재 개별 평가의 저장된 프롬프트를 초기값으로 사용합니다. 수정 내용은 새 차수에만 적용하고 생성 목표·예상 점수는 넣지 마세요.")
+        st.caption("참고답안 없는 개별 평가의 저장된 프롬프트를 초기값으로 사용합니다. "
+                   "수정 내용은 새 차수에만 적용하고 참고답안·생성 목표·예상 점수는 넣지 마세요.")
         if not prior_ready:
             st.caption("모든 사전 판단이 완료되면 실제 평가 차수를 만들 수 있습니다.")
         if st.button("평가 차수 만들기", key="experiment-add-round",

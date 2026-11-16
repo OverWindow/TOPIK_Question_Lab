@@ -1,0 +1,59 @@
+{
+  "reference": {
+    "source_exam": 60,
+    "source_file": "60_writing.pdf",
+    "source_page": 1,
+    "source_instruction": "다음을 읽고 ㉠과 ㉡에 들어갈 말을 각각 한 문장으로 쓰시오.",
+    "question": {
+      "exam_format": "pbt",
+      "section": "writing",
+      "type_slot": 51,
+      "topic": "졸업생의 도서관 이용 문의",
+      "instruction": "다음 글의 ㉠과 ㉡에 알맞은 말을 각각 쓰시오.",
+      "context_title": "도서관을 이용하고 싶습니다.",
+      "passage": "한국대학교를 졸업한 학생인데 도서관을 이용하고 싶습니다.\n선배에게 물어보니 졸업생이 도서관을 이용하려면 출입증이 (㉠).\n출입증을 만들려면 (㉡)?\n방법을 알려 주시면 감사하겠습니다.",
+      "data_source": "",
+      "materials": [],
+      "material_notes": [],
+      "requirements": []
+    }
+  },
+  "answer_reference": {
+    "source_key": "60:51",
+    "source_file": "60_answer.pdf",
+    "source_page": 1,
+    "blank_answers": {
+      "a": [
+        "필요하다고 합니다",
+        "있어야 한다고 합니다"
+      ],
+      "b": [
+        "어떻게 해야 합니까",
+        "어떻게 해야 됩니까"
+      ]
+    },
+    "text": "",
+    "source_char_count": null,
+    "blank_weights": {
+      "a": {
+        "content": 3,
+        "form": 2
+      },
+      "b": {
+        "content": 2,
+        "form": 3
+      }
+    },
+    "published_rules": [
+      "㉠ 내용 요소(3점): '출입증이'와 호응하는 '필요하다/있어야 하다' 등의 의미를 나타내는 어휘 사용.",
+      "㉠ 형식 요소(2점): '선배에게 물어보니'와 호응하는 간접화법 '-다고 하다/듣다' 표현 사용. 격식체.",
+      "㉡ 내용 요소(2점): '어떻게 하다'의 의미를 나타내는 어휘 사용. '무엇을 하다/어디로 가다'와 같은 의미도 정답으로 처리.",
+      "㉡ 형식 요소(3점): '만들려면'과 호응하는 '-아/어/여야 하다' 표현 사용. 격식체.",
+      "문항의 수준(3급 하~3급 중)을 고려하여 문법의 난이도가 높은 ㉠의 문법 점수 비중을 낮춤."
+    ]
+  },
+  "answer": {
+    "a": "필요하다고 합니다",
+    "b": "어떻게 해야 합니까"
+  }
+}

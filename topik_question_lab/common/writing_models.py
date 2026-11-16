@@ -1,11 +1,14 @@
 """PBT writing question formats; no learner answers or scoring models."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,27 @@ class WritingMaterial(WritingModel):
         return self
 
 
+class WritingImage(WritingModel):
+    storage_backend: Literal["s3"] = "s3"
+    storage_bucket: str = Field(min_length=1)
+    storage_path: str
+    storage_url: str
+    mime_type: Literal["image/png"] = "image/png"
+    byte_size: int = Field(gt=0)
+    file_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    question_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def check_location(self):
+        url = urlsplit(self.storage_url)
+        if (self.storage_path != f"media/writing/{self.file_sha256}.png"
+                or url.scheme != "https" or not url.hostname or url.username or url.password
+                or url.port not in (None, 443) or url.query or url.fragment
+                or url.path != "/" + self.storage_path):
+            raise ValueError("쓰기 이미지 주소와 S3 경로가 올바르지 않습니다.")
+        return self
+
+
 class WritingQuestion(WritingModel):
     exam_format: Literal["pbt"] = "pbt"
     section: Literal["writing"] = "writing"
@@ -76,6 +100,18 @@ class WritingQuestion(WritingModel):
     materials: list[WritingMaterial] = Field(default_factory=list, max_length=4)
     material_notes: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
+    # Delivery metadata is supplied by publication, never by the generation model.
+    image: SkipJsonSchema[WritingImage | None] = None
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        data = handler(self)
+        if data.get("image") is None:
+            data.pop("image", None)
+        return data
+
+    def content_sha256(self) -> str:
+        return hashlib.sha256(self.model_dump_json(exclude={"image"}).encode()).hexdigest()
 
     @model_validator(mode="after")
     def check_question(self):
@@ -103,6 +139,8 @@ class WritingQuestion(WritingModel):
                 raise ValueError("54번에는 도표나 실용문 제목을 넣을 수 없습니다.")
         if self.type_slot == 52 and self.context_title:
             raise ValueError("52번에는 실용문 제목을 넣을 수 없습니다.")
+        if self.image and (self.type_slot != 53 or self.image.question_sha256 != self.content_sha256()):
+            raise ValueError("자료 이미지가 현재 53번 문항과 일치하지 않습니다. 이미지를 다시 생성하세요.")
         return self
 
 

@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 from topik_question_lab.common.paths import MIGRATION_DIR
 from topik_question_lab.common.question_bank.connection import connection
 from topik_question_lab.common.writing_models import WritingQuestion
+from topik_question_lab.menus.writing.writing_images import upload_image
 
 
 MIGRATION = "018_writing_sets"
@@ -64,6 +65,12 @@ class WritingQuestionBank:
         return result
 
     def save_question(self, original, draft):
+        # Editing content invalidates its old image, while unchanged saves retain it.
+        draft = dict(draft)
+        body = WritingQuestion.model_validate({k: v for k, v in draft.items() if k != "image"})
+        previous = WritingQuestion.model_validate(original["content_json"])
+        if body.content_sha256() != previous.content_sha256():
+            draft.pop("image", None)
         question = WritingQuestion.model_validate(draft)
         if question.type_slot != original["type_slot"]:
             raise ValueError("문항 번호는 변경할 수 없습니다.")
@@ -86,12 +93,15 @@ class WritingQuestionBank:
             return c.execute("""UPDATE topik_bank.writing_sets SET updated_at=CURRENT_TIMESTAMP
                 WHERE set_id=%s RETURNING updated_at""", (set_id,)).fetchone()[0]
 
-    def save_set(self, source_key, records):
+    def save_set(self, source_key, records, *, image_directory=None):
         questions = validate_writing_set(records)
         if not source_key or not source_key.strip():
             raise ValueError("원본 문항 조합 식별자가 필요합니다.")
         metadata = {field: " / ".join(dict.fromkeys(row[field] for row, _ in questions))
                     for field in ("provider", "model")}
+        # Finish external I/O before opening the publication write transaction.
+        question53 = next(q for _, q in questions if q.type_slot == 53)
+        question53.image = upload_image(question53, directory=image_directory)
         with connection(self.url, readonly=False) as c:
             c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"writing-set:{source_key}",))
             existing = c.execute("""SELECT set_id,exam_format,provider,model FROM topik_bank.writing_sets
